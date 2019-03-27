@@ -17,7 +17,7 @@ def request_match_data(team_code):
   origin_data = json.loads(origin_data.text)
   save_league_type(origin_data['legs'])
   extract_userful_data(origin_data['list'], team_code)
-
+  last_data = get_last_data(team_code)
   
 def save_league_type(data):
   file_path = os.path.dirname(os.getcwd()) + "/data/base_data/league.json"
@@ -59,6 +59,18 @@ def save_action(data, file_path):
   data = json.dumps(data, ensure_ascii=False)
   with open(file_path, 'w') as f:
     f.write(data)
+  
 
+def get_last_data(team_code):
+  file_path = os.path.dirname(os.getcwd()) + \
+      "/data/base_data/" + str(team_code) + '.json'
+  data = json.loads(open(file_path).read())
+  return data
+
+def get_team_data(team_code) :
+  last_data = request_match_data(team_code)
+  return last_data
+
+  
 if __name__ == "__main__":
-  request_match_data(1072)
+  request_match_data(1072)  
