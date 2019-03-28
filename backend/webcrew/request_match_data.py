@@ -18,6 +18,7 @@ def request_match_data(team_code):
   save_league_type(origin_data['legs'])
   extract_userful_data(origin_data['list'], team_code)
   last_data = get_last_data(team_code)
+  return last_data
   
 def save_league_type(data):
   file_path = os.path.dirname(os.getcwd()) + "/data/base_data/league.json"

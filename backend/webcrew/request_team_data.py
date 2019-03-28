@@ -50,9 +50,9 @@ def request_data(league_code):
   league_code = league_code or 'zuqiu-4826'
   request_url = generate_request_url(base_url, league_code, data_type)
   html_content = split_html(request_url)
-  leaguae_data = generate_league_data(html_content)
-  update_league_data_file(league_code, leaguae_data)
-
+  league_data = generate_league_data(html_content)
+  update_league_data_file(league_code, league_data)
+  return league_data
 
 if __name__ == "__main__":
-  get_data('zuqiu-4826')
+  print('===>')
