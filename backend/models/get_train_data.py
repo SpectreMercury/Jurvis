@@ -12,6 +12,8 @@ def combine_useful_data(data):
 		"draw": []
 	}
 	for k, v in data.items():
+		if v['WIN'] == None or v['LOST'] == None or v['DRAW'] == None:
+			continue
 		single_match_item = [v['WIN'], v['LOST'], v['DRAW']]
 		if v['lpl_on'] > 0:
 			useful_data['win'].append(single_match_item)
@@ -19,7 +21,6 @@ def combine_useful_data(data):
 			useful_data['draw'].append(single_match_item)
 		elif v['lpl_on'] < 0:
 			useful_data['lost'].append(single_match_item)
-	print(useful_data)
 	return useful_data
 
 
@@ -90,4 +91,4 @@ def get_league_data(league_code, mode=0):
 
 if __name__ == "__main__":
 	print('==>start')
-	get_match_train_data(1072)
+	#get_match_train_data(1072)

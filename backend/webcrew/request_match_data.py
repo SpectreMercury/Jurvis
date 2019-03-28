@@ -39,6 +39,7 @@ def extract_userful_data(data, team_code):
   for i in data:
     single_item = {}
     FIXTUREID = i['FIXTUREID']
+
     for j in userful_key:
       single_item[j] = i[j]
     userful_data[FIXTUREID] = single_item
@@ -74,4 +75,5 @@ def get_team_data(team_code) :
 
   
 if __name__ == "__main__":
-  request_match_data(1072)  
+  print('==>')
+  get_team_data(516)
