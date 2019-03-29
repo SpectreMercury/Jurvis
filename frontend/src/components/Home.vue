@@ -26,6 +26,10 @@
             :key="index"
             @click="getReusltData(key)"
           >
+            <div class="team-choice">
+              <div class="choice">主队</div>
+              <div class="choice">客队</div>
+            </div>
             <img
               :src="'http://liansai.500.com/static/soccerdata/images/TeamPic/teamsignnew_'+ key + '.png'"
             >
@@ -46,7 +50,7 @@
               <Input prefix="ios-trending-up" placeholder="主队输球赔率" style="width: 120px"/>
               <div slot="content">主队输球赔率</div>
             </Poptip>
-            <Button type="primary" :loading="loading" icon="ios-power" >
+            <Button type="primary" :loading="loading" icon="ios-power">
               <span v-if="!loading">Predict!</span>
               <span v-else>Loading...</span>
             </Button>
@@ -191,6 +195,7 @@ export default {
   line-height: 80px;
 }
 .team-item {
+  position: relative;
   width: 80px;
   height: 60px;
   margin: 10px 0;
@@ -201,9 +206,28 @@ export default {
   }
   &:hover {
     cursor: pointer;
+    .team-choice {
+      display: block;
+    }
   }
   &.active {
     opacity: 1;
+  }
+  .team-choice {
+    display: none;
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    background-color: #000;
+    border-radius: 5px;
+    .choice {
+      height: 30px;
+      line-height: 30px;
+      color: #ffffff;
+      &:hover {
+        color: #2db7f5;
+      }
+    }
   }
 }
 </style>
