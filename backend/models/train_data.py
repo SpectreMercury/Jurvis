@@ -2,8 +2,9 @@ import os
 import json
 import numpy
 from sklearn.linear_model import LogisticRegression
-import get_train_data
+from backend.models import get_train_data
 import warnings
+
 warnings.filterwarnings("ignore")
 
 
@@ -23,6 +24,16 @@ def transfer_arr2_numpyarr(data, label, odd):
 	return t_data, t_label, t_odd
 
 
+def get_team_name(home, away, league):
+	file_path = os.path.dirname(os.getcwd()) + \
+							"/Jurvis/backend/data/base_data/" + str(league) + '.json'
+	teams = json.loads(open(file_path).read())
+	return {
+		'home': teams[home],
+		'away': teams[away]
+	}
+
+
 """
 	@params 	
 	home: use to get team data of home
@@ -32,17 +43,22 @@ def transfer_arr2_numpyarr(data, label, odd):
 
 
 def train_data(home, away, league, odd):
+	if type(odd) != 'list':
+		odd = [odd.split(',')]
 	origin_data = get_train_data.get_match_train_data(home)
 	base_train_data, base_train_label = create_label_arry(origin_data)
 	t_data, t_label, t_odd = transfer_arr2_numpyarr(base_train_data, base_train_label, odd)
 	# init algorithm model
 	clf = LogisticRegression(solver='liblinear')
-	#train data
+	# train data
 	clf.fit(t_data, t_label)
-	#result
+	# result
 	result = clf.predict_proba(t_odd)
-	return result[0]
+	# team name
+	team_info = get_team_name(home, away, league)
+	team_info['result'] = result[0].tolist()
+	return team_info
 
 
 if __name__ == "__main__":
-	train_data(516, 554, 'zuqiu-4826', [[1.12,9.70,22.22]])
+	train_data(516, 554, 'zuqiu-4826', [[1.12, 9.70, 22.22]])

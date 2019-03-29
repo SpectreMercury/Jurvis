@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 import json
 import os, sys
-from webcrew import request_match_data
-from webcrew import request_team_data
+from backend.webcrew import request_match_data
+from backend.webcrew import request_team_data
 
 
 def combine_useful_data(data):
@@ -42,7 +42,7 @@ def data_reactification(team_code, data):
 
 def read_local_file(code):
 	file_path = os.path.dirname(os.getcwd()) + \
-							"/data/base_data/" + str(code) + '.json'
+							"/Jurvis/backend/data/base_data/" + str(code) + '.json'
 	if os.path.exists(file_path):
 		return {}
 	file_content = json.loads(open(file_path).read())

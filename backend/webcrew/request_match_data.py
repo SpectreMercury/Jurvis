@@ -21,7 +21,7 @@ def request_match_data(team_code):
   return last_data
   
 def save_league_type(data):
-  file_path = os.path.dirname(os.getcwd()) + "/data/base_data/league.json"
+  file_path = os.path.dirname(os.getcwd()) + "/Jurvis/backend/data/base_data/league.json"
   save_action(data, file_path)
 
 
@@ -49,7 +49,7 @@ def extract_userful_data(data, team_code):
 
 def save_match_data(data, team_code):
   file_path = os.path.dirname(os.getcwd()) + \
-      "/data/base_data/" + str(team_code) + '.json'
+      "/Jurvis/backend/data/base_data/" + str(team_code) + '.json'
   save_action(data, file_path)
 
 
@@ -65,7 +65,7 @@ def save_action(data, file_path):
 
 def get_last_data(team_code):
   file_path = os.path.dirname(os.getcwd()) + \
-      "/data/base_data/" + str(team_code) + '.json'
+      "/Jurvis/backend/data/base_data/" + str(team_code) + '.json'
   data = json.loads(open(file_path).read())
   return data
 

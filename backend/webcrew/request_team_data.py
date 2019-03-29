@@ -35,7 +35,7 @@ def generate_league_data(rows):
 
 
 def update_league_data_file(league_name, data):
-  root_dir = os.path.dirname(os.getcwd()) + "/data/base_data/"
+  root_dir = os.path.dirname(os.getcwd()) + "/Jurvis/backend/data/base_data/"
   file_name = league_name + ".json"
   file_name = os.path.join(root_dir, file_name)
   mode = 'w+'
