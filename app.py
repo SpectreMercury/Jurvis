@@ -3,11 +3,12 @@ from flask_cors import CORS
 from backend.api import get_data
 
 # configuration
-DEBUG = True
+
 
 # instantiate the app
 app = Flask(__name__)
 app.config.from_object(__name__)
+app.debug = True
 
 # enable CORS
 CORS(app)
@@ -32,14 +33,17 @@ def get_team_data():
 	h = request.args.get('home')
 	a = request.args.get('away')
 	l = request.args.get("league")
-	o = request.args.get('odd')
-	if not h or not a or not l or not o:
+	win = request.args.get('win')
+	draw = request.args.get('draw')
+	lost = request.args.get('lost')
+
+	if not h or not a or not l or not win or not draw or not lost: 
 		rlt = {
 			'errno': 403,
 			'errmsg': 'missing value'
 		}
 		return jsonify(rlt)
-	team_data = get_data.get_predict_result(h, a, l, o)
+	team_data = get_data.get_predict_result(h, a, l, win, draw, lost)
 	return jsonify(team_data)
 
 

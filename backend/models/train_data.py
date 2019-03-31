@@ -42,9 +42,8 @@ def get_team_name(home, away, league):
 """
 
 
-def train_data(home, away, league, odd):
-	if type(odd) != 'list':
-		odd = [odd.split(',')]
+def train_data(home, away, league, win, draw, lost):
+	odd = [[win, draw, lost]]
 	origin_data = get_train_data.get_match_train_data(home)
 	base_train_data, base_train_label = create_label_arry(origin_data)
 	t_data, t_label, t_odd = transfer_arr2_numpyarr(base_train_data, base_train_label, odd)
