@@ -1,4 +1,5 @@
 #!/bin/sh
-sudo pip install flask
-sudo pip install flask_cors
-sudo pip install requests
+sudo pip3 install flask
+sudo pip3 install flask_cors
+sudo pip3 install requests
+sudo pip3 install beautifulsoup4
