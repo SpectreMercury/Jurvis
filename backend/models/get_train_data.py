@@ -21,6 +21,7 @@ def combine_useful_data(data):
 			useful_data['draw'].append(single_match_item)
 		elif v['lpl_on'] < 0:
 			useful_data['lost'].append(single_match_item)
+		#useful_data['num'] = 1
 	return useful_data
 
 
@@ -64,7 +65,8 @@ def get_match_train_data(team_code, company=0, mode=0):
 	else:
 		origin_data = read_local_file(team_code)
 		if origin_data == {}:
-			origin_data = read_local_file(team_code)
+			origin_data = request_match_data.get_team_data(team_code, company)
+
 	origin_data = data_reactification(team_code, origin_data)
 	final_data = combine_useful_data(origin_data)
 	return final_data

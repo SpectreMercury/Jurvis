@@ -46,13 +46,13 @@
             class="bet-company-item default"
             data-company="default"
             :class="[betCompany == 'default' ? 'active': '']"
-            v-on:click="onClickChangeBetCompany('default', '0')"
+            v-on:click="onClickChangeBetCompany('default', '0', '平均欧赔')"
           >Default</div>
           <div
             class="bet-company-item bet365"
             data-company="bet365"
             :class="[betCompany == 'bet365' ? 'active': '']"
-            v-on:click="onClickChangeBetCompany('bet365', '3')"
+            v-on:click="onClickChangeBetCompany('bet365', '3', 'BET365')"
           >
             BET
             <span>365</span>
@@ -61,7 +61,7 @@
             class="bet-company-item william-hill"
             data-company="williamHill"
             :class="[betCompany == 'williamHill' ? 'active': '']"
-            v-on:click="onClickChangeBetCompany('williamHill', '293')"
+            v-on:click="onClickChangeBetCompany('williamHill', 'William Hill')"
           >
             William
             <span>Hill</span>
@@ -70,7 +70,7 @@
             class="bet-company-item bet-victor"
             data-company="betVictor"
             :class="[betCompany == 'betVictor' ? 'active': '']"
-            v-on:click="onClickChangeBetCompany('betVictor', '6')"
+            v-on:click="onClickChangeBetCompany('betVictor', '6', '伟德')"
           >
             BET
             <span>Vector</span>
@@ -118,6 +118,7 @@
         <Row type="flex" justify="center" class="info-grid">
           <Row class="prediction">
             <div v-if="predicStatus">
+              <p>根据{{cnBetName}}赔率下{{prediction.home}}最近的{{prediction.match_num}}场比赛赔率分析</p>
               <p>{{prediction.home}} 与 {{prediction.away}} 的比赛预测结果如下</p>
               <p>{{prediction.home}} 获胜的概率: {{prediction.result[0]}}</p>
               <p>{{prediction.home}} 战平的概率: {{prediction.result[1]}}</p>
@@ -150,6 +151,7 @@ export default {
         away: '客队',
       },
       betCompany: 'default',
+      cnBetName: '平均欧赔',
       betCompanyCode: '0',
       predicStatus: false,
       prediction: {

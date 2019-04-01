@@ -31,21 +31,25 @@ def request_base_data(team_code, company=0):
 	})
 	origin_data = request_url_data(base_request_params)
 	save_league_type(origin_data['legs'])
-	userful_data, match_ids = extract_userful_data(origin_data['list'], team_code)
+	userful_data, match_ids = extract_userful_data(origin_data['list'], team_code, company)
 	if company == 0:
 		last_data = get_last_data(team_code)
 	else:
+		# print(company)
+		print(match_ids)
 		company_params = copy.deepcopy(base_params)
 		company_params.update({
 			'fids': match_ids,
 			'cid': company,
 			'a': 'ajax_pl',
 		})
-		origin_data = request_url_data(base_request_params)
-		extract_userful_data(origin_data['list'], team_code)
+		company_data = request_url_data(company_params)
+		# print(origin_data)
+		extract_company_data(userful_data, company_data['list'], team_code, company)
 		last_data = get_last_data(team_code, company)
 
 	return last_data
+
 
 def save_league_type(data):
 	global league_file_path
@@ -77,11 +81,24 @@ def extract_userful_data(data, team_code, company=0):
 	return userful_data, match_ids
 
 
+def extract_company_data(useful_data, company_data, team_code, company=0):
+	t = {}
+	u = useful_data
+	c = company_data
+	for v in c:
+		if v['FIXTUREID'] in u.keys():
+			u[v['FIXTUREID']]['WIN'] = v['WIN']
+			u[v['FIXTUREID']]['LOST'] = v['LOST']
+			u[v['FIXTUREID']]['DRAW'] = v['DRAW']
+			t[v['FIXTUREID']] = u[v['FIXTUREID']]
+	save_match_data(t, team_code, company)
+
 def save_match_data(data, team_code, company):
 	global base_file_path
+	# print(company)
 	file_name = str(team_code)
 	if company != 0:
-		file_name = file_name + '_' + company
+		file_name = file_name + '_' + str(company)
 	file_path = base_file_path + "/Jurvis/backend/data/base_data/" + file_name + '.json'
 	save_action(data, file_path)
 
@@ -100,8 +117,7 @@ def get_last_data(team_code, company=0):
 	file_name = str(team_code);
 	if company != 0:
 		file_name = file_name + '_' + str(company)
-	file_path = os.path.dirname(os.getcwd()) + \
-							"/Jurvis/backend/data/base_data/" + file_name + '.json'
+	file_path = base_file_path + "/Jurvis/backend/data/base_data/" + file_name + '.json'
 	data = json.loads(open(file_path).read())
 	return data
 
@@ -113,4 +129,4 @@ def get_team_data(team_code, company=0):
 
 if __name__ == "__main__":
 	print('==>')
-	get_last_data(516)
+	get_team_data(516, 3)
