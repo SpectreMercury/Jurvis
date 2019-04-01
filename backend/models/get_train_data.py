@@ -51,16 +51,16 @@ def read_local_file(code):
 
 """
 @:param mode 
-0: get local data
-1: get the lastest data
+0: get the lastest data
+1: get the local data
 @:param: team_code
 team_code: team code
 """
 
 
-def get_match_train_data(team_code, mode=0):
+def get_match_train_data(team_code, company=0, mode=0):
 	if mode == 0:
-		origin_data = request_match_data.get_team_data(team_code)
+		origin_data = request_match_data.get_team_data(team_code, company)
 	else:
 		origin_data = read_local_file(team_code)
 		if origin_data == {}:

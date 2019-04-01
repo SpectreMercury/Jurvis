@@ -16,8 +16,8 @@ def format_result_data(data):
 	return rlt
 
 
-def get_predict_result(home, away, league, win, draw, lost):
-	result = train_data.train_data(home, away, league, win, draw, lost)
+def get_predict_result(home, away, league, win, draw, lost, company=0):
+	result = train_data.train_data(home, away, league, win, draw, lost, company)
 	return format_result_data(result)
 
 

@@ -3,76 +3,119 @@
     <Layout>
       <BaseHeader></BaseHeader>
       <Row class="jurvis-main-container">
-        <Row type="flex"
-             justify="space-around"
-             class="info-grid">
-          <div class="league-item"
-               v-for="item in leagues"
-               :key="item.cn"
-               :class="[activeInfo.league == item.league_code ? 'active': '']"
-               @click="getTeamData(item.league_code)">
+        <div>联赛选择</div>
+        <Divider/>
+        <Row type="flex" justify="space-around" class="info-grid">
+          <div
+            class="league-item"
+            v-for="item in leagues"
+            :key="item.cn"
+            :class="[activeInfo.league == item.league_code ? 'active': '']"
+            @click="getTeamData(item.league_code)"
+          >
             <img :src="item.logo">
             <p>{{item.name}}</p>
             <p>{{item.cn}}</p>
           </div>
         </Row>
-        <Row type="flex"
-             justify="space-around"
-             class="info-grid">
-          <div class="empty-team"
-               v-if="teams.length == 0">暂无数据</div>
-          <div v-else
-               class="team-item"
-               :class="[activeInfo.home == key || activeInfo.away == key ? 'active':'']"
-               v-for="(item, key, index) in teams"
-               :key="index">
+        <div>主客场球队选择</div>
+        <Divider/>
+        <Row type="flex" justify="space-around" class="info-grid">
+          <div class="empty-team" v-if="teams.length == 0">暂无数据</div>
+          <div
+            v-else
+            class="team-item"
+            :class="[activeInfo.home == key || activeInfo.away == key ? 'active':'']"
+            v-for="(item, key, index) in teams"
+            :key="index"
+          >
             <div class="team-choice">
-              <div class="choice"
-                   @click="getReusltData(key, 0)">主队</div>
-              <div class="choice"
-                   @click="getReusltData(key, 1)">客队</div>
+              <div class="choice" @click="getReusltData(key, 0)">主队</div>
+              <div class="choice" @click="getReusltData(key, 1)">客队</div>
             </div>
-            <img :src="'http://liansai.500.com/static/soccerdata/images/TeamPic/teamsignnew_'+ key + '.png'">
+            <img
+              :src="'http://liansai.500.com/static/soccerdata/images/TeamPic/teamsignnew_'+ key + '.png'"
+            >
             <p>{{item}}</p>
           </div>
         </Row>
-        <Row type="flex"
-             justify="space-around"
-             class="info-grid">
+        <div>博彩数据选择</div>
+        <Divider/>
+        <Row type="flex" justify="start" class="info-grid">
+          <div
+            class="bet-company-item default"
+            data-company="default"
+            :class="[betCompany == 'default' ? 'active': '']"
+            v-on:click="onClickChangeBetCompany('default', '0')"
+          >Default</div>
+          <div
+            class="bet-company-item bet365"
+            data-company="bet365"
+            :class="[betCompany == 'bet365' ? 'active': '']"
+            v-on:click="onClickChangeBetCompany('bet365', '3')"
+          >
+            BET
+            <span>365</span>
+          </div>
+          <div
+            class="bet-company-item william-hill"
+            data-company="williamHill"
+            :class="[betCompany == 'williamHill' ? 'active': '']"
+            v-on:click="onClickChangeBetCompany('williamHill', '293')"
+          >
+            William
+            <span>Hill</span>
+          </div>
+          <div
+            class="bet-company-item bet-victor"
+            data-company="betVictor"
+            :class="[betCompany == 'betVictor' ? 'active': '']"
+            v-on:click="onClickChangeBetCompany('betVictor', '6')"
+          >
+            BET
+            <span>Vector</span>
+          </div>
+        </Row>
+        <div>输入当前比赛赔率</div>
+        <Divider/>
+        <Row type="flex" justify="space-around" class="info-grid">
           <div>
             <Poptip trigger="focus">
-              <Input prefix="ios-trending-up"
-                     v-model="odds.home"
-                     :placeholder="activeInfo.home + '主队获胜赔率'"
-                     style="width: 120px" />
+              <Input
+                prefix="ios-trending-up"
+                v-model="odds.home"
+                :placeholder="activeInfo.home + '主队获胜赔率'"
+                style="width: 120px"
+              />
               <div slot="content">主队获胜赔率</div>
             </Poptip>
             <Poptip trigger="focus">
-              <Input prefix="ios-trending-up"
-                     v-model="odds.draw"
-                     :placeholder="activeInfo.home + '主队平球赔率'"
-                     style="width: 120px" />
+              <Input
+                prefix="ios-trending-up"
+                v-model="odds.draw"
+                :placeholder="activeInfo.home + '主队平球赔率'"
+                style="width: 120px"
+              />
               <div slot="content">{{activeInfo.home}}平球赔率</div>
             </Poptip>
             <Poptip trigger="focus">
-              <Input prefix="ios-trending-up"
-                     v-model="odds.away"
-                     :placeholder="activeInfo.home + '主队输球赔率'"
-                     style="width: 120px" />
+              <Input
+                prefix="ios-trending-up"
+                v-model="odds.away"
+                :placeholder="activeInfo.home + '主队输球赔率'"
+                style="width: 120px"
+              />
               <div slot="content">{{activeInfo.home}}输球赔率</div>
             </Poptip>
-            <Button type="primary"
-                    :loading="loading"
-                    v-on:click="predictResult"
-                    icon="ios-power">
+            <Button type="primary" :loading="loading" v-on:click="predictResult" icon="ios-power">
               <span v-if="!loading">Predict!</span>
               <span v-else>Loading...</span>
             </Button>
           </div>
         </Row>
-        <Row type="flex"
-             justify="center"
-             class="info-grid">
+        <div>输入当前比赛赔率</div>
+        <Divider/>
+        <Row type="flex" justify="center" class="info-grid">
           <Row class="prediction">
             <div v-if="predicStatus">
               <p>{{prediction.home}} 与 {{prediction.away}} 的比赛预测结果如下</p>
@@ -106,6 +149,8 @@ export default {
         home: '主队',
         away: '客队',
       },
+      betCompany: 'default',
+      betCompanyCode: '0',
       predicStatus: false,
       prediction: {
         home: '',
@@ -113,9 +158,9 @@ export default {
         result: [],
       },
       odds: {
-        home: 0.00,
-        away: 0.00,
-        draw: 0.00,
+        home: 0.0,
+        away: 0.0,
+        draw: 0.0,
       },
       loading: false,
       leagues: [
@@ -209,23 +254,32 @@ export default {
       const lost = self.odds.away;
       const draw = self.odds.draw;
       const l = self.activeInfo.league;
+      const c = self.betCompanyCode;
       if (!h || !a || !win || !draw || !lost || !l) {
         return;
       }
-      self.axios({
-        methods: 'GET',
-        url: 'http://127.0.0.1:5000/get_predict',
-        params: {
-          home: h,
-          away: a,
-          win,
-          lost,
-          draw,
-          league: l,
-        },
-      }).then((res) => {
-        self.requestHandler(res, self.updatePredictResult);
-      });
+      self
+        .axios({
+          methods: 'GET',
+          url: 'http://127.0.0.1:5000/get_predict',
+          params: {
+            home: h,
+            away: a,
+            win,
+            lost,
+            draw,
+            league: l,
+            c,
+          },
+        })
+        .then((res) => {
+          self.requestHandler(res, self.updatePredictResult);
+        });
+    },
+    onClickChangeBetCompany(company, code) {
+      const self = this;
+      self.betCompany = company;
+      self.betCompanyCode = code;
     },
     requestHandler(res, func) {
       if (res.status === 200 && res.data.errno === 0) {
@@ -301,6 +355,53 @@ export default {
       &:hover {
         color: #2db7f5;
       }
+    }
+  }
+}
+.bet-company-item {
+  //width: 100px;
+  height: 50px;
+  background-repeat: no-repeat;
+  background-size: contain;
+  padding: 0 20px;
+  margin: 0 10px;
+  opacity: 0.6;
+  font-size: 20px;
+  line-height: 50px;
+  text-align: center;
+  &:hover {
+    cursor: pointer;
+  }
+  &.active {
+    opacity: 1;
+  }
+  &.default {
+    font-weight: 900;
+    background-color: #2db7f5;
+    color: #01143b;
+  }
+  &.bet365 {
+    font-weight: 900;
+    background-color: #017a5b;
+    color: #f2f2f2;
+    span {
+      color: #f9dc1b;
+    }
+  }
+  &.william-hill {
+    background-color: #01143b;
+    font-weight: lighter;
+    color: #f2f2f2;
+    span {
+      font-weight: 900;
+      color: #f9dc1b;
+    }
+  }
+  &.bet-victor {
+    background-color: #262d35;
+    color: #2a718e;
+    span {
+      color: #f2f2f2;
     }
   }
 }
