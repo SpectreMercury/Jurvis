@@ -45,10 +45,10 @@ def get_team_name(home, away, league):
 """
 
 
-def train_data(home, away, league, win, draw, lost, company=0):
+def train_data(home, away, league, win, draw, lost, company):
 	odd = [[win, draw, lost]]
 	logging.info(company)
-	origin_data = get_train_data.get_match_train_data(home, company)
+	origin_data = get_train_data.get_match_train_data(home, company, 0)
 	base_train_data, base_train_label, match_num = create_label_arry(origin_data)
 	t_data, t_label, t_odd = transfer_arr2_numpyarr(base_train_data, base_train_label, odd)
 	# init algorithm model

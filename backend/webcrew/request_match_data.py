@@ -16,7 +16,7 @@ def request_url_data(params):
 	return origin_data
 
 
-def request_base_data(team_code, company=0):
+def request_base_data(team_code, company):
 	base_params = {
 		'c': 'teams',
 		'records': '100',
@@ -122,11 +122,11 @@ def get_last_data(team_code, company=0):
 	return data
 
 
-def get_team_data(team_code, company=0):
+def get_team_data(team_code, company):
 	last_data = request_base_data(team_code, company)
 	return last_data
 
 
 if __name__ == "__main__":
 	print('==>')
-	get_team_data(516, 3)
+	get_team_data(1072, 293)
