@@ -1,5 +1,0 @@
-{
-  "python.linting.pylintEnabled": false,
-  "python.formatting.provider": "black",
-  "python.pythonPath": "venv/bin/python3.7"
-}
