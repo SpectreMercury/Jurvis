@@ -16,7 +16,7 @@ OS:
 
 #### Get Start
 
-#####Install
+#### Install
 ```
 //In home path yourpath:/Jurvis
 sh install.sh

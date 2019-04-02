@@ -61,7 +61,7 @@
             class="bet-company-item william-hill"
             data-company="williamHill"
             :class="[betCompany == 'williamHill' ? 'active': '']"
-            v-on:click="onClickChangeBetCompany('williamHill', 'William Hill')"
+            v-on:click="onClickChangeBetCompany('williamHill','293', 'William Hill')"
           >
             William
             <span>Hill</span>
@@ -271,7 +271,7 @@ export default {
             lost,
             draw,
             league: l,
-            c,
+            company: c,
           },
         })
         .then((res) => {
