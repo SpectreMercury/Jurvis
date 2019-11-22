@@ -114,7 +114,7 @@ def save_action(data, file_path):
 
 
 def get_last_data(team_code, company=0):
-	file_name = str(team_code);
+	file_name = str(team_code)
 	if company != 0:
 		file_name = file_name + '_' + str(company)
 	file_path = base_file_path + "/Jurvis/backend/data/base_data/" + file_name + '.json'
@@ -129,4 +129,4 @@ def get_team_data(team_code, company):
 
 if __name__ == "__main__":
 	print('==>')
-	get_team_data(1072, 293)
+	#get_team_data(1072, 293)

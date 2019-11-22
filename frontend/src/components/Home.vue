@@ -170,25 +170,25 @@ export default {
           name: 'Premier League',
           cn: '英超',
           logo: require('../assets/image/Premier_League.png'), // eslint-disable-line global-require
-          league_code: 'zuqiu-4826',
+          league_code: 'zuqiu-5283',
         },
         {
           name: 'Li Liga',
           cn: '西甲',
           logo: require('../assets/image/La_Liga.png'), // eslint-disable-line global-require
-          league_code: 'zuqiu-4913',
+          league_code: 'zuqiu-5389',
         },
         {
           name: 'Serie_A',
           cn: '意甲',
           logo: require('../assets/image/Serie_A.png'), // eslint-disable-line global-require
-          league_code: 'zuqiu-4919',
+          league_code: 'zuqiu-5494',
         },
         {
           name: 'Bundesliga',
           cn: '德甲',
           logo: require('../assets/image/Bundesliga.png'), // eslint-disable-line global-require
-          league_code: 'zuqiu-4852',
+          league_code: 'zuqiu-5363',
         },
         {
           name: 'Ligue_1',
@@ -246,7 +246,16 @@ export default {
     updatePredictResult(data) {
       const self = this;
       self.prediction = data.data;
-      self.predicStatus = !self.predicStatus;
+      self.predicStatus = true;
+      self.$Notice.success({
+        top: 50,
+        title: '预测结果',
+        desc: `
+        ${data.data.home} 获胜概率: ${parseFloat(data.data.result[0]).toFixed(4) * 100}% <br/>
+        ${data.data.away} 平局概率: ${parseFloat(data.data.result[1]).toFixed(4) * 100}% <br/>
+        ${data.data.home} 失败概率: ${parseFloat(data.data.result[2]).toFixed(4) * 100}% <br/>
+        `,
+      });
     },
     predictResult() {
       const self = this;
