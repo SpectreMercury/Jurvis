@@ -4,7 +4,7 @@
       <BaseHeader></BaseHeader>
       <Row class="jurvis-main-container">
         <div>联赛选择</div>
-        <Divider/>
+        <Divider />
         <Row type="flex" justify="space-around" class="info-grid">
           <div
             class="league-item"
@@ -13,13 +13,13 @@
             :class="[activeInfo.league == item.league_code ? 'active': '']"
             @click="getTeamData(item.league_code)"
           >
-            <img :src="item.logo">
+            <img :src="item.logo" />
             <p>{{item.name}}</p>
             <p>{{item.cn}}</p>
           </div>
         </Row>
         <div>主客场球队选择</div>
-        <Divider/>
+        <Divider />
         <Row type="flex" justify="space-around" class="info-grid">
           <div class="empty-team" v-if="teams.length == 0">暂无数据</div>
           <div
@@ -35,12 +35,12 @@
             </div>
             <img
               :src="'http://liansai.500.com/static/soccerdata/images/TeamPic/teamsignnew_'+ key + '.png'"
-            >
+            />
             <p>{{item}}</p>
           </div>
         </Row>
         <div>博彩数据选择</div>
-        <Divider/>
+        <Divider />
         <Row type="flex" justify="start" class="info-grid">
           <div
             class="bet-company-item default"
@@ -77,7 +77,7 @@
           </div>
         </Row>
         <div>输入当前比赛赔率</div>
-        <Divider/>
+        <Divider />
         <Row type="flex" justify="space-around" class="info-grid">
           <div>
             <Poptip trigger="focus">
@@ -114,7 +114,7 @@
           </div>
         </Row>
         <div>输入当前比赛赔率</div>
-        <Divider/>
+        <Divider />
         <Row type="flex" justify="center" class="info-grid">
           <Row class="prediction">
             <div v-if="predicStatus">
@@ -135,81 +135,81 @@
 </template>
 
 <script>
-import BaseHeader from '@/components/base/BaseHeader';
+import BaseHeader from "@/components/base/BaseHeader";
 
 export default {
-  name: 'Home',
+  name: "Home",
   components: {
-    BaseHeader,
+    BaseHeader
   },
   data() {
     return {
-      msg: 'Welcome to Your Vue.js App',
+      msg: "Welcome to Your Vue.js App",
       activeInfo: {
-        league: 'zuqiu-4826',
-        home: '主队',
-        away: '客队',
+        league: "zuqiu-4826",
+        home: "主队",
+        away: "客队"
       },
-      betCompany: 'default',
-      cnBetName: '平均欧赔',
-      betCompanyCode: '0',
+      betCompany: "default",
+      cnBetName: "平均欧赔",
+      betCompanyCode: "0",
       predicStatus: false,
       prediction: {
-        home: '',
-        away: '',
-        result: [],
+        home: "",
+        away: "",
+        result: []
       },
       odds: {
         home: 0.0,
         away: 0.0,
-        draw: 0.0,
+        draw: 0.0
       },
       loading: false,
       leagues: [
         {
-          name: 'Premier League',
-          cn: '英超',
-          logo: require('../assets/image/Premier_League.png'), // eslint-disable-line global-require
-          league_code: 'zuqiu-5283',
+          name: "Premier League",
+          cn: "英超",
+          logo: require("../assets/image/Premier_League.png"), // eslint-disable-line global-require
+          league_code: "zuqiu-5283"
         },
         {
-          name: 'Li Liga',
-          cn: '西甲',
-          logo: require('../assets/image/La_Liga.png'), // eslint-disable-line global-require
-          league_code: 'zuqiu-5389',
+          name: "Li Liga",
+          cn: "西甲",
+          logo: require("../assets/image/La_Liga.png"), // eslint-disable-line global-require
+          league_code: "zuqiu-5389"
         },
         {
-          name: 'Serie_A',
-          cn: '意甲',
-          logo: require('../assets/image/Serie_A.png'), // eslint-disable-line global-require
-          league_code: 'zuqiu-5494',
+          name: "Serie_A",
+          cn: "意甲",
+          logo: require("../assets/image/Serie_A.png"), // eslint-disable-line global-require
+          league_code: "zuqiu-5494"
         },
         {
-          name: 'Bundesliga',
-          cn: '德甲',
-          logo: require('../assets/image/Bundesliga.png'), // eslint-disable-line global-require
-          league_code: 'zuqiu-5363',
+          name: "Bundesliga",
+          cn: "德甲",
+          logo: require("../assets/image/Bundesliga.png"), // eslint-disable-line global-require
+          league_code: "zuqiu-5363"
         },
         {
-          name: 'Ligue_1',
-          cn: '法甲',
-          logo: require('../assets/image/Ligue_1.png'), // eslint-disable-line global-require
-          league_code: 'zuqiu-4820',
+          name: "Ligue_1",
+          cn: "法甲",
+          logo: require("../assets/image/Ligue_1.png"), // eslint-disable-line global-require
+          league_code: "zuqiu-4820"
         },
         {
-          name: 'Champions_League',
-          cn: '欧冠',
-          logo: require('../assets/image/Champions_League.png'), // eslint-disable-line global-require
-          league_code: 'zuqiu-4838',
+          name: "Champions_League",
+          cn: "欧冠",
+          logo: require("../assets/image/Champions_League.png"), // eslint-disable-line global-require
+          league_code: "zuqiu-5281"
         },
         {
-          name: 'Chinese_Super_League',
-          cn: '中超',
-          logo: require('../assets/image/Chinese_Super_League.png'), // eslint-disable-line global-require
-          league_code: 'zuqiu-5114',
-        },
+          name: "Chinese_Super_League",
+          cn: "中超",
+          logo: require("../assets/image/Chinese_Super_League.png"), // eslint-disable-line global-require
+          league_code: "zuqiu-5114"
+        }
       ],
-      teams: [],
+      teams: []
     };
   },
   mounted() {
@@ -218,16 +218,16 @@ export default {
   methods: {
     getTeamData(data) {
       const self = this;
-      const paramsData = data || 'zuqiu-4826';
+      const paramsData = data || "zuqiu-4826";
       self.activeInfo.league = paramsData;
       this.axios({
-        method: 'GET',
-        url: 'http://127.0.0.1:5000/get_team_data',
+        method: "GET",
+        url: "http://127.0.0.1:5000/get_team_data",
         params: {
           league: paramsData,
-          mode: 1,
-        },
-      }).then((res) => {
+          mode: 1
+        }
+      }).then(res => {
         self.requestHandler(res, self.renderTeamData);
       });
     },
@@ -249,12 +249,18 @@ export default {
       self.predicStatus = true;
       self.$Notice.success({
         top: 50,
-        title: '预测结果',
+        title: "预测结果",
         desc: `
-        ${data.data.home} 获胜概率: ${parseFloat(data.data.result[0]).toFixed(4) * 100}% <br/>
-        ${data.data.away} 平局概率: ${parseFloat(data.data.result[1]).toFixed(4) * 100}% <br/>
-        ${data.data.home} 失败概率: ${parseFloat(data.data.result[2]).toFixed(4) * 100}% <br/>
-        `,
+        ${data.data.home} 获胜概率: ${parseFloat(data.data.result[0]).toFixed(
+          4
+        ) * 100}% <br/>
+        ${data.data.away} 平局概率: ${parseFloat(data.data.result[1]).toFixed(
+          4
+        ) * 100}% <br/>
+        ${data.data.home} 失败概率: ${parseFloat(data.data.result[2]).toFixed(
+          4
+        ) * 100}% <br/>
+        `
       });
     },
     predictResult() {
@@ -271,8 +277,8 @@ export default {
       }
       self
         .axios({
-          methods: 'GET',
-          url: 'http://127.0.0.1:5000/get_predict',
+          methods: "GET",
+          url: "http://127.0.0.1:5000/get_predict",
           params: {
             home: h,
             away: a,
@@ -280,10 +286,10 @@ export default {
             lost,
             draw,
             league: l,
-            company: c,
-          },
+            company: c
+          }
         })
-        .then((res) => {
+        .then(res => {
           self.requestHandler(res, self.updatePredictResult);
         });
     },
@@ -296,8 +302,8 @@ export default {
       if (res.status === 200 && res.data.errno === 0) {
         func(res.data);
       }
-    },
-  },
+    }
+  }
 };
 </script>
 
