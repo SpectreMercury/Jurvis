@@ -51,12 +51,20 @@ let output = URL(fileURLWithPath: CommandLine.arguments.count > 1 ? CommandLine.
     if let project = snapshot.projects.first {
         await capture("drama-detail", NavigationStack { ProjectDetailView(projectID: project.id) }.environmentObject(store))
     }
-    if let code = snapshot.jobs.first(where: { $0.kind == "code" && $0.status == "succeeded" }) {
-        await capture("code-review", size: CGSize(width: 920, height: 720), CodeReviewView(jobID: code.id).environmentObject(store))
+    if let code = snapshot.jobs.first(where: { $0.kind == "code" && $0.status == "succeeded" && ($0.result["change_count"].number ?? 0) > 0 }) {
+        await capture("code-change", size: CGSize(width: 820, height: 640), ScrollView { ChangeSetCard(jobID: code.id).padding(20) }.environmentObject(store))
     }
-    // Narrow window: layout must not break at the minimum size.
-    store.section = .coding
-    await capture("coding-narrow", size: CGSize(width: 920, height: 620), root)
+    // A conversation bound to a code project, and the home screen with a project picked.
+    if let session = snapshot.sessions.first(where: { $0.code_project_id != nil }) {
+        await store.selectSession(session.id)
+        await capture("chat-code-session", root)
+    }
+    await store.loadCodeProjects()
+    await store.newChat(project: store.codeProjects.first?.id)
+    await capture("home-with-project", root)
+    await store.newChat()
+    await capture("home-narrow", size: CGSize(width: 820, height: 600), root)
+    await capture("home-dark", dark: true, root)
     print("done \(output.path)")
     exit(0)
 }

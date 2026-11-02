@@ -13,7 +13,7 @@ from typing import Callable, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
-from .coding import Coding, CodeTask
+from .coding import Coding, CodeEdit, CodeTask
 from .schemas import ImageRequest, ProjectCreate, VideoRequest
 from .store import dumps, new_id
 
@@ -43,6 +43,14 @@ def calculate(expression):
             raise ValueError("结果超出范围")
         return result
     return visit(tree.body)
+
+
+def tidy(value):
+    """Hides float noise such as 399.50000000000006 without losing real precision."""
+    if isinstance(value, float):
+        value = float(f"{value:.12g}")
+        return int(value) if value.is_integer() and abs(value) < 1e15 else value
+    return value
 
 
 # ---- argument models (what the model is allowed to send) ----
@@ -112,6 +120,12 @@ class CodeSearchArgs(BaseModel):
     query: str = Field(description="Literal text to find, case-insensitive")
 
 
+class EditCodeArgs(BaseModel):
+    project_id: str
+    summary: str = Field(max_length=2000, description="One or two sentences on what changes and why, in the user's language")
+    edits: list[CodeEdit] = Field(min_length=1, max_length=20, description="All replacements for this change; several files allowed")
+
+
 class CodeProposeArgs(BaseModel):
     project_id: str
     instruction: str = Field(description="What to change and why, in detail")
@@ -133,9 +147,17 @@ class Tool:
 
     def schema(self):
         params = self.args.model_json_schema()
-        params.pop("title", None)
-        for prop in params.get("properties", {}).values():
-            prop.pop("title", None)
+        defs = params.pop("$defs", {})
+
+        def inline(node):  # local models handle flat schemas better than $ref
+            if isinstance(node, dict):
+                if "$ref" in node:
+                    return inline(dict(defs[node["$ref"].rsplit("/", 1)[-1]]))
+                return {k: inline(v) for k, v in node.items() if k != "title"}
+            if isinstance(node, list):
+                return [inline(v) for v in node]
+            return node
+        params = inline(params)
         params.setdefault("properties", {})
         return {"type": "function", "function": {"name": self.name, "description": self.description, "parameters": params}}
 
@@ -160,15 +182,15 @@ class ToolRegistry:
     def build(self):
         T = Tool
         return [
-            T("calculate", "计算", "Evaluate arithmetic exactly. Use for any non-trivial math.", CalculateArgs,
-              lambda a: {"value": calculate(a.expression)}),
+            T("calculate", "计算", "Evaluate an arithmetic expression exactly. Use only when the user's request needs a numeric result.", CalculateArgs,
+              lambda a: {"value": tidy(calculate(a.expression))}),
             T("list_files", "查看工作区文件", "List text documents in the user's assistant workspace.", NoArgs,
               lambda a: self.list_files()),
             T("read_file", "读取文件", "Read a text document from the assistant workspace.", FileName,
               lambda a: self.read_file(a.name)),
-            T("save_file", "保存文件", "Save writing the user asked to keep as a workspace document.", SaveFileArgs,
+            T("save_file", "保存文件", "Save writing the user asked to keep as a new workspace document. Existing files are never modified: if the name is taken, a new name is used and returned.", SaveFileArgs,
               lambda a: self.save_file(a.name, a.content), "write"),
-            T("recall", "查找记忆", "Search memories the user saved and names of media assets.", RecallArgs,
+            T("recall", "查找记忆", "Search saved memories and uploaded or generated media assets by keywords (any keyword may match). An empty query lists the most recent ones.", RecallArgs,
               lambda a: self.recall(a.query)),
             T("remember", "保存记忆", "Save a memory. ONLY when the user explicitly asks you to remember something.", RememberArgs,
               lambda a: self.remember(a.title, a.content), "write"),
@@ -188,12 +210,13 @@ class ToolRegistry:
               lambda a: {"path": a.path, "content": self.coding.read(a.project_id, a.path)}),
             T("code_search", "搜索源码", "Search literal text across a connected project.", CodeSearchArgs,
               lambda a: self.coding.search(a.project_id, a.query)),
-            T("code_propose", "准备代码修改", "Queue a code change proposal. The user reviews the diff and applies it in Coding; it is never applied or tested automatically.",
-              CodeProposeArgs, self.code_propose, "job"),
+            T("edit_code", "修改代码", "Change code in a connected project with exact text replacements. Read the file with code_read first and copy old_text exactly. "
+              "Put every edit for one change in a single call. The result is shown to the user as a diff to apply; it is not applied or tested yet.",
+              EditCodeArgs, self.edit_code, "write"),
         ]
 
-    def schemas(self):
-        return [t.schema() for t in self.tools.values()]
+    def schemas(self, names=None):
+        return [t.schema() for t in self.tools.values() if names is None or t.name in names]
 
     # ---- harness entry point: validates, never raises ----
     def invoke(self, name, arguments):
@@ -232,6 +255,7 @@ class ToolRegistry:
         if name == "recall": return f"{len(r['memories'])} 条记忆，{len(r['assets'])} 个素材"
         if name == "remember": return f"已记住「{r['title']}」"
         if name in ("create_image", "create_video", "code_propose"): return "已加入任务队列"
+        if name == "edit_code": return "待应用 · " + "，".join(f"{f['path']} +{f['added']} −{f['removed']}" for f in r["files"])
         if name == "create_drama": return "项目已创建，正在编写分镜"
         if name == "job_status": return r.get("status_label", r["status"])
         if name == "code_projects": return f"{len(r['projects'])} 个项目"
@@ -267,16 +291,25 @@ class ToolRegistry:
         if len(content.encode()) > 100000:
             raise ValueError("文件超过 100 KB")
         # Never silently replace an existing document.
-        if path.exists():
+        renamed = path.exists()
+        if renamed:
             path = path.with_name(f"{path.stem}-{new_id()[:8]}{path.suffix}")
         with path.open("x") as f:
             f.write(content)
-        return {"saved": path.name, "bytes": path.stat().st_size}
+        result = {"saved": path.name, "bytes": path.stat().st_size}
+        if renamed:
+            result["note"] = f"{name} already exists and was NOT changed. The new text was saved as {path.name}; tell the user this exact name."
+        return result
 
     def recall(self, query):
-        like = "%" + query[:200] + "%"
-        return {"memories": self.store.all("SELECT id,title,content FROM memories WHERE enabled=1 AND (title LIKE ? OR content LIKE ?) LIMIT 20", (like, like)),
-                "assets": self.store.all("SELECT id,name,kind FROM assets WHERE name LIKE ? LIMIT 20", (like,))}
+        # Any keyword may match, so "红色圆形 图片" still finds 红色圆形.png.
+        terms = [t for t in query[:200].replace("，", " ").replace(",", " ").split() if t][:8]
+        likes = ["%" + t + "%" for t in terms]
+        memory_where = " OR ".join("title LIKE ? OR content LIKE ?" for _ in likes) or "1"
+        asset_where = " OR ".join("name LIKE ? OR kind LIKE ?" for _ in likes) or "1"
+        pairs = [x for like in likes for x in (like, like)]
+        return {"memories": self.store.all(f"SELECT id,title,content FROM memories WHERE enabled=1 AND ({memory_where}) ORDER BY updated_at DESC LIMIT 20", pairs),
+                "assets": self.store.all(f"SELECT id,name,kind,mime,created_at FROM assets WHERE {asset_where} ORDER BY created_at DESC LIMIT 20", pairs)}
 
     def remember(self, title, content):
         ident, now = new_id(), time.time()
@@ -321,6 +354,15 @@ class ToolRegistry:
         labels = {"queued": "排队中", "running": "进行中", "succeeded": "已完成", "failed": "失败", "cancelled": "已取消", "interrupted": "已中断"}
         return {"job_id": ident, "kind": job["kind"], "status": job["status"], "status_label": labels.get(job["status"], job["status"]),
                 "phase": job["phase"], "error": job["error"], "asset_ids": job["result"].get("asset_ids", [])}
+
+    def edit_code(self, a):
+        result = self.coding.edit(a.project_id, a.summary, a.edits)
+        job = self.store.record_job("code", {"code_project_id": a.project_id, "instruction": a.summary, "source": "chat"}, result)
+        def count(diff, sign):
+            return sum(1 for line in diff.splitlines() if line.startswith(sign) and not line.startswith(sign * 3 + " "))
+        files = [{"path": c["path"], "added": count(c["diff"], "+"), "removed": count(c["diff"], "-")} for c in result["changes"]]
+        return {"job_id": job["id"], "files": files, "status": "awaiting_review",
+                "note": "Shown to the user as a diff with an Apply button. Not applied or tested yet."}
 
     def code_propose(self, a):
         self.coding.project(a.project_id)

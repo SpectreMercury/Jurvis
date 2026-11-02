@@ -31,6 +31,7 @@ class CodeTask(BaseModel):
 
 class CodeCommand(BaseModel):
     command_id: str = Field(min_length=1, max_length=30)
+    change_id: str | None = Field(default=None, max_length=64, description="Change set this run checks, shown together in the conversation")
 
 
 class ProposedFile(BaseModel):
@@ -38,9 +39,21 @@ class ProposedFile(BaseModel):
     content: str = Field(max_length=50000)
 
 
+class CodeEdit(BaseModel):
+    path: str = Field(min_length=1, max_length=300, description="Relative path from code_files")
+    old_text: str = Field(default="", max_length=20000, description="Exact text copied from code_read, unique in the file. Empty only when creating a new file.")
+    new_text: str = Field(max_length=50000, description="Replacement text (the whole content for a new file)")
+
+
 class CodeAnswer(BaseModel):
     summary: str = Field(min_length=1, max_length=6000)
     changes: list[ProposedFile] = Field(default_factory=list, max_length=8)
+
+
+def unified(path, before, after):
+    """Line-based diff that stays readable when a file has no trailing newline."""
+    lines = difflib.unified_diff((before or "").splitlines(), after.splitlines(), fromfile="a/" + path, tofile="b/" + path, lineterm="")
+    return "\n".join(lines) + "\n"
 
 
 def digest(text):
@@ -154,10 +167,44 @@ class Coding:
             if path.exists() and change.path not in context: raise ValueError("模型尝试修改未阅读的文件，请选中该文件后重试")
             before = context.get(change.path)
             if before == change.content: continue
-            diff = "".join(difflib.unified_diff((before or "").splitlines(keepends=True), change.content.splitlines(keepends=True), fromfile="a/"+change.path, tofile="b/"+change.path))
+            diff = unified(change.path, before, change.content)
             changes.append({"path":change.path, "before":before, "after":change.content, "base_hash":digest(before), "diff":diff})
         if sum(len(x["after"].encode()) for x in changes)>200000: raise ValueError("修改内容过大，请拆分任务")
         return {"summary":answer.summary, "changes":changes, "code_project_id":ident, "applied_at":None, "reverted_at":None}
+
+    def edit(self, ident, summary, edits):
+        """Turns exact text replacements into a reviewable change set (nothing is written yet)."""
+        project = self.project(ident); before, after = {}, {}
+        for e in edits:
+            path = self.file(project, e.path)
+            if e.path not in after:
+                before[e.path] = self.read(ident, e.path) if path.exists() else None
+                after[e.path] = before[e.path]
+            current = after[e.path]
+            if not e.old_text:
+                if current:
+                    raise ValueError(f"{e.path} 已存在：修改现有文件时 old_text 必须是从 code_read 复制的原文")
+                after[e.path] = e.new_text
+                continue
+            if current is None:
+                raise ValueError(f"{e.path} 不存在；新建文件时 old_text 留空")
+            count = current.count(e.old_text)
+            if count == 0:
+                raise ValueError(f"在 {e.path} 中找不到 old_text，请重新 code_read 并逐字复制要替换的原文（含缩进）")
+            if count > 1:
+                raise ValueError(f"old_text 在 {e.path} 中出现了 {count} 次，请包含更多上下文使其唯一")
+            after[e.path] = current.replace(e.old_text, e.new_text, 1)
+        changes = []
+        for name, text in after.items():
+            if text == before[name]:
+                continue
+            diff = unified(name, before[name], text)
+            changes.append({"path": name, "before": before[name], "after": text, "base_hash": digest(before[name]), "diff": diff})
+        if not changes:
+            raise ValueError("这些替换没有改变任何内容")
+        if sum(len(x["after"].encode()) for x in changes) > 200000:
+            raise ValueError("修改内容过大，请拆分")
+        return {"summary": summary, "changes": changes, "change_count": len(changes), "code_project_id": ident, "applied_at": None, "reverted_at": None}
 
     def apply(self, job_id, revert=False):
         job=self.store.get_job(job_id)

@@ -249,14 +249,22 @@ def _():
     state["code_project"] = pid
 
 
-@check("chat → code tools (list projects, read, propose)")
+@check("coding conversation: read, edit inline, apply, test, revert")
 def _():
-    session = ok(api.post("/api/sessions", json={}))["id"]
-    message, calls = chat(session, "看看我连接的代码项目里 calc.py 的内容，然后提交一个修复 total 函数的修改建议。")
+    pid = state["code_project"]
+    session = ok(api.post("/api/sessions", json={"code_project_id": pid}))["id"]
+    message, calls = chat(session, "total 函数应该返回两数之和，帮我修一下。")
     names = [c["name"] for c in calls]
-    assert "code_read" in names and "code_propose" in names, names
-    propose = next(c for c in calls if c["name"] == "code_propose")
-    succeeded(propose["job_id"], 900)
+    assert "code_read" in names and "edit_code" in names, names
+    edit = next(c for c in calls if c["name"] == "edit_code" and c["status"] == "ok")
+    root = SCRATCH / "e2e-code"
+    assert "a * b" in (root / "calc.py").read_text(), "edit must wait for the user"
+    ok(api.post(f"/api/code/jobs/{edit['job_id']}/apply"))
+    assert "a + b" in (root / "calc.py").read_text()
+    run = succeeded(ok(api.post(f"/api/code/projects/{pid}/run", json={"command_id": "pytest", "change_id": edit["job_id"]}))["id"])
+    assert run["result"]["passed"] and run["payload"]["change_id"] == edit["job_id"]
+    ok(api.post(f"/api/code/jobs/{edit['job_id']}/revert"))
+    assert "a * b" in (root / "calc.py").read_text()
     return " → ".join(names)
 
 

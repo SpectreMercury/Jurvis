@@ -46,8 +46,8 @@ enum JSONValue: Codable, Hashable {
     }
 }
 
-struct Session: Codable, Identifiable, Hashable { var id: String; var title: String; var created_at: Double; var updated_at: Double }
-struct Message: Codable, Identifiable {
+struct Session: Codable, Identifiable, Hashable { var id: String; var title: String; var created_at: Double; var updated_at: Double; var code_project_id: String? }
+struct Message: Codable, Identifiable, Equatable {
     var id: String; var session_id: String; var role: String; var content: String; var status: String
     var created_at: Double; var metadata: JSONValue
     var isUser: Bool { role == "user" }
@@ -71,7 +71,7 @@ struct ToolCall: Codable, Hashable, Identifiable {
     var isRunning: Bool { status == "running" }
     var failed: Bool { status == "error" }
 }
-struct Job: Codable, Identifiable {
+struct Job: Codable, Identifiable, Equatable {
     var id: String; var kind: String; var status: String; var phase: String; var progress: Double
     var payload: JSONValue; var result: JSONValue; var error: String?; var created_at: Double; var updated_at: Double
     var isActive: Bool { ["queued", "running"].contains(status) }
@@ -104,15 +104,21 @@ struct DramaDocument: Codable, Hashable {
         shots = try c.decodeIfPresent([Shot].self, forKey: .shots) ?? []
     }
 }
-struct Project: Codable, Identifiable {
+struct Project: Codable, Identifiable, Equatable {
     var id: String; var title: String; var brief: String; var document: DramaDocument
     var created_at: Double; var updated_at: Double
 }
-struct Memory: Codable, Identifiable {
+struct Memory: Codable, Identifiable, Equatable {
     var id: String; var title: String; var content: String; var enabled: Int; var created_at: Double; var updated_at: Double
 }
-struct RuntimeInfo: Codable { var active: String?; var memory_used_gib: Double; var memory_total_gib: Double }
-struct Snapshot: Codable {
+struct RuntimeInfo: Codable, Equatable {
+    var active: String?; var memory_used_gib: Double; var memory_total_gib: Double
+    /// Memory readings jitter on every poll; only a visible change counts.
+    static func == (a: Self, b: Self) -> Bool {
+        a.active == b.active && abs(a.memory_used_gib - b.memory_used_gib) < 1 && a.memory_total_gib == b.memory_total_gib
+    }
+}
+struct Snapshot: Codable, Equatable {
     var version: String; var sessions: [Session]; var jobs: [Job]; var assets: [Asset]; var projects: [Project]; var memories: [Memory]
     var runtime: RuntimeInfo; var last_event: Int
 }
@@ -130,13 +136,11 @@ struct WorkspaceFile: Codable, Identifiable { var name: String; var bytes: Int; 
 struct WorkspaceContent: Codable, Identifiable { var name: String; var content: String; var id: String { name } }
 
 enum Section: String, CaseIterable, Identifiable {
-    case assistant = "助理", coding = "Coding", studio = "创作", drama = "短剧", library = "素材", tasks = "任务", memory = "记忆", files = "文件", settings = "设置"
+    case assistant = "对话", drama = "短剧", library = "素材", tasks = "任务", memory = "记忆", files = "文件", settings = "设置"
     var id: String { rawValue }
     var icon: String {
         switch self {
         case .assistant: return "sparkle"
-        case .coding: return "chevron.left.forwardslash.chevron.right"
-        case .studio: return "paintbrush.pointed"
         case .drama: return "film.stack"
         case .library: return "square.grid.2x2"
         case .tasks: return "checklist"

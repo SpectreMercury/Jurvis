@@ -4,12 +4,14 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 class SessionCreate(BaseModel):
     title: str = Field(default="新对话", min_length=1, max_length=100)
+    code_project_id: str | None = Field(default=None, max_length=64)
 
 
 class ChatCreate(BaseModel):
     content: str = Field(min_length=1, max_length=16000)
     asset_ids: list[str] = Field(default_factory=list, max_length=4)
     request_id: str = Field(min_length=8, max_length=80)
+    mode: Literal["image", "video", "drama"] | None = None
 
     @field_validator("content")
     @classmethod

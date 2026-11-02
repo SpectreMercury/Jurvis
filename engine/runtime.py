@@ -21,6 +21,12 @@ class Completion:
 _XML_CALL = re.compile(r"<tool_call>\s*<function=([^>\s]+)>(.*?)</function>\s*</tool_call>", re.S)
 _XML_PARAM = re.compile(r"<parameter=([^>\s]+)>\n?(.*?)\n?</parameter>", re.S)
 _JSON_CALL = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.S)
+_UNCLOSED = re.compile(r"<tool_call>.*\Z", re.S)
+
+
+def strip_markup(text):
+    """Text safe to show: drops tool-call markup, including a cut-off trailing block."""
+    return _UNCLOSED.sub("", _JSON_CALL.sub("", _XML_CALL.sub("", text))).strip()
 
 
 def extract_text_tool_calls(text):
@@ -43,9 +49,7 @@ def extract_text_tool_calls(text):
         if isinstance(name, str):
             calls.append({"id": "call_" + secrets.token_hex(6), "name": name,
                           "arguments": json.dumps(obj.get("arguments") or {}, ensure_ascii=False)})
-    if calls:
-        text = _JSON_CALL.sub("", _XML_CALL.sub("", text))
-    return text.strip(), calls
+    return strip_markup(text), calls
 
 
 class Runtime:
@@ -175,8 +179,10 @@ class Runtime:
                         finish = choice["finish_reason"]
         tool_calls = [{"id": c["id"] or "call_" + secrets.token_hex(6), "name": c["name"], "arguments": c["arguments"] or "{}"}
                       for _, c in sorted(calls.items()) if c["name"]]
-        if not tool_calls and tools:
+        if not tool_calls:
             text, tool_calls = extract_text_tool_calls(text)
+            if not tools:
+                tool_calls = []  # tools were withheld: drop the markup, keep any prose
         return Completion(text.strip(), tool_calls, finish)
 
     def image_block(self, path, mime="image/png"):

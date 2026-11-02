@@ -77,8 +77,9 @@ def create_app(settings=None, *, run_worker=True):
 
     @app.post("/api/sessions")
     async def new_session(body:SessionCreate):
+        if body.code_project_id:worker.coding.project(body.code_project_id)
         ident,now=new_id(),time.time()
-        store.execute("INSERT INTO sessions VALUES(?,?,?,?)",(ident,body.title,now,now))
+        store.execute("INSERT INTO sessions(id,title,created_at,updated_at,code_project_id) VALUES(?,?,?,?,?)",(ident,body.title,now,now,body.code_project_id))
         return store.one("SELECT * FROM sessions WHERE id=?",(ident,))
 
     @app.get("/api/sessions/{ident}/messages")
@@ -109,7 +110,7 @@ def create_app(settings=None, *, run_worker=True):
         now=time.time();user_id,message_id,job_id=new_id(),new_id(),new_id()
         payload={"session_id":ident,"message_id":message_id,"input":body.model_dump()}
         with store.connection() as db:
-            db.execute("INSERT INTO messages(id,session_id,role,content,status,created_at,metadata) VALUES(?,?,'user',?,'complete',?,?)",(user_id,ident,body.content,now,dumps({"asset_ids":body.asset_ids})))
+            db.execute("INSERT INTO messages(id,session_id,role,content,status,created_at,metadata) VALUES(?,?,'user',?,'complete',?,?)",(user_id,ident,body.content,now,dumps({"asset_ids":body.asset_ids,"mode":body.mode})))
             db.execute("INSERT INTO messages(id,session_id,role,content,status,created_at) VALUES(?,?,'assistant','','queued',?)",(message_id,ident,now+.0001))
             db.execute("INSERT INTO jobs(id,kind,status,payload,created_at,updated_at,idempotency_key) VALUES(?,'chat','queued',?,?,?,?)",(job_id,dumps(payload),now,now,key))
             db.execute("UPDATE sessions SET title=CASE WHEN title='新对话' THEN ? ELSE title END,updated_at=? WHERE id=?",(body.content[:40],now,ident))
@@ -309,7 +310,7 @@ def create_app(settings=None, *, run_worker=True):
     @app.post("/api/code/projects/{ident}/run")
     async def code_run(ident:str,body:CodeCommand,request:Request):
         if body.command_id not in [c['id'] for c in worker.coding.commands(ident)]:raise HTTPException(400,'该命令不属于项目的构建和测试预设')
-        return store.create_job('code_test',{'code_project_id':ident,'command_id':body.command_id},request.headers.get('x-idempotency-key'))
+        return store.create_job('code_test',{'code_project_id':ident,'command_id':body.command_id,'change_id':body.change_id},request.headers.get('x-idempotency-key'))
 
     @app.post("/api/pairing")
     async def invitation(request:Request):

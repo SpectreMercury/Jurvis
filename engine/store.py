@@ -55,6 +55,9 @@ class Store:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,entity TEXT NOT NULL,entity_id TEXT NOT NULL,
                     created_at REAL NOT NULL);
             """)
+            # Coding conversations are ordinary sessions bound to a connected code project.
+            if "code_project_id" not in [r[1] for r in db.execute("PRAGMA table_info(sessions)")]:
+                db.execute("ALTER TABLE sessions ADD COLUMN code_project_id TEXT")
 
     @contextmanager
     def connection(self):
@@ -98,6 +101,14 @@ class Store:
 
     def get_job(self, job_id):
         return self.one("SELECT * FROM jobs WHERE id=?", (job_id,))
+
+    def record_job(self, kind, payload, result):
+        """A job that is already finished when created, e.g. a change set the assistant wrote inline."""
+        ident, now = new_id(), time.time()
+        self.execute("INSERT INTO jobs(id,kind,status,progress,phase,payload,result,created_at,updated_at) VALUES(?,?,'succeeded',1,'已完成',?,?,?,?)",
+                     (ident, kind, dumps(payload), dumps(result), now, now))
+        self.event("jobs", ident)
+        return self.get_job(ident)
 
     def create_job(self, kind, payload, key=None):
         ident, now = new_id(), time.time()

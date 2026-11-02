@@ -5,13 +5,12 @@ import SwiftUI
 extension Color {
     static var jurvisAccent: Color { dynamic(light: (0.13, 0.45, 0.39), dark: (0.38, 0.78, 0.67)) }
     static var warning: Color { .orange }
-    static var canvas: Color {
-        #if os(macOS)
-        Color(nsColor: .windowBackgroundColor)
-        #else
-        Color(uiColor: .systemGroupedBackground)
-        #endif
-    }
+    /// Conversation surface: plain paper white / near-black, like a chat app.
+    static var canvas: Color { dynamic(light: (1, 1, 1), dark: (0.09, 0.09, 0.1)) }
+    /// Quiet fills for the composer, user bubbles and chips.
+    static var bubble: Color { dynamic(light: (0.95, 0.95, 0.96), dark: (0.17, 0.17, 0.18)) }
+    static var ink: Color { dynamic(light: (0.08, 0.08, 0.09), dark: (0.96, 0.96, 0.97)) }
+    static var inkReversed: Color { dynamic(light: (1, 1, 1), dark: (0.08, 0.08, 0.09)) }
     static var card: Color {
         #if os(macOS)
         Color(nsColor: .controlBackgroundColor)

@@ -10,6 +10,9 @@ import ImageIO
     @Published var section: Section? = .assistant
     @Published var selectedSession: String?
     @Published var selectedProject: String?
+    /// Code project the next new conversation is bound to (picked in the composer).
+    @Published var codeProjectID: String?
+    @Published var codeProjects: [CodeProject] = []
     @Published var error: String?
     @Published var connected = false
     @Published var connecting = false
@@ -80,6 +83,7 @@ import ImageIO
     #endif
     func beginPolling() async {
         await refresh()
+        await loadCodeProjects()
         polling?.cancel()
         polling = Task { [weak self] in
             var tick = 0
@@ -93,22 +97,30 @@ import ImageIO
             }
         }
     }
+    func loadCodeProjects() async {
+        guard let api, let list: [CodeProject] = try? await api.request("/api/code/projects") else { return }
+        if list != codeProjects { codeProjects = list }
+    }
     func refresh() async {
         guard let api else { return }
         do {
             let state: Snapshot = try await api.request("/api/state")
-            snapshot = state; connected = true; connectionStatus = "Mac 已连接"
+            // Publishing re-renders every screen; skip it when nothing changed so typing and IME input are never disturbed.
+            if state != snapshot { snapshot = state }
+            if !connected { connected = true }
+            if connectionStatus != "Mac 已连接" { connectionStatus = "Mac 已连接" }
             await refreshMessages()
         } catch {
-            connected = false; connectionStatus = "连接已断开，正在重试"
+            if connected { connected = false }
+            if connectionStatus != "连接已断开，正在重试" { connectionStatus = "连接已断开，正在重试" }
         }
     }
     func refreshMessages() async {
         guard let api, let id = selectedSession else { return }
         if let list: [Message] = try? await api.request("/api/sessions/\(id)/messages"), selectedSession == id {
-            messages = list
+            if list != messages { messages = list }
             // Pick up job/state changes (new images, finished jobs) when the reply completes.
-            if !(list.last?.isLive ?? false) && chatBusy { if let state: Snapshot = try? await api.request("/api/state") { snapshot = state } }
+            if !(list.last?.isLive ?? false) && chatBusy { if let state: Snapshot = try? await api.request("/api/state"), state != snapshot { snapshot = state } }
         }
     }
     /// Show an error to the user, except cancellations caused by leaving a screen.
@@ -120,15 +132,25 @@ import ImageIO
         do { try await action(); await refresh() } catch { self.report(error) }
     }
     /// A new conversation is created on the engine when its first message is sent.
-    func newChat() async { selectedSession = nil; messages = []; section = .assistant }
+    func newChat(project: String? = nil) async { selectedSession = nil; messages = []; codeProjectID = project; section = .assistant }
+    var currentSession: Session? { snapshot?.sessions.first { $0.id == selectedSession } }
+    /// The code project of the open conversation, or the one picked for the next new conversation.
+    var activeProject: CodeProject? {
+        let id = selectedSession == nil ? codeProjectID : currentSession?.code_project_id
+        return codeProjects.first { $0.id == id }
+    }
     func selectSession(_ id: String) async { selectedSession = id; messages = []; section = .assistant; await refresh() }
-    func send(_ text: String, assets: [String]) async throws {
+    func send(_ text: String, assets: [String], mode: String? = nil) async throws {
         guard let api else { throw APIError.message("请先连接 Mac") }
         if selectedSession == nil {
-            let session: Session = try await api.request("/api/sessions",method:"POST",body:["title":"新对话"])
+            var body: [String: Any] = ["title": "新对话"]
+            if let project = codeProjectID { body["code_project_id"] = project }
+            let session: Session = try await api.request("/api/sessions",method:"POST",body:body)
             selectedSession = session.id
         }
-        let _: Job = try await api.request("/api/sessions/\(selectedSession!)/messages",method:"POST",body:["content":text,"asset_ids":assets,"request_id":UUID().uuidString])
+        var body: [String: Any] = ["content": text, "asset_ids": assets, "request_id": UUID().uuidString]
+        if let mode { body["mode"] = mode }
+        let _: Job = try await api.request("/api/sessions/\(selectedSession!)/messages",method:"POST",body:body)
         await refresh()
     }
     func submit(_ path: String, body: [String: Any]) async throws -> Job {
