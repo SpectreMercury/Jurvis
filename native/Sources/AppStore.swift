@@ -161,9 +161,13 @@ import ImageIO
     func uploadImage(_ url: URL) async throws -> Asset {
         guard let api else { throw APIError.message("请先连接 Mac") }
         let granted = url.startAccessingSecurityScopedResource(); defer { if granted { url.stopAccessingSecurityScopedResource() } }
-        let data = try Data(contentsOf:url)
+        return try await uploadImage(Data(contentsOf:url), name:url.lastPathComponent)
+    }
+    /// Uploads image bytes that have no file behind them, such as a pasted screenshot.
+    func uploadImage(_ data: Data, name: String) async throws -> Asset {
+        guard let api else { throw APIError.message("请先连接 Mac") }
         guard data.count <= 32*1024*1024 else { throw APIError.message("图片不能超过32MB") }
-        let asset: Asset = try await api.upload("/api/assets",data:data,name:url.lastPathComponent,mime:"application/octet-stream")
+        let asset: Asset = try await api.upload("/api/assets",data:data,name:name,mime:"application/octet-stream")
         await refresh(); return asset
     }
     func mediaURL(_ asset: Asset) async throws -> URL {

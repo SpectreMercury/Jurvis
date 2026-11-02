@@ -118,7 +118,33 @@ func views<T: NSView>(_ type: T.Type, in root: NSView) -> [T] {
     await pause(2.5)
     let text = (window.firstResponder as? NSTextView)?.string ?? "(focus lost)"
     expect(text == "fix calc 修复 bug", "composer text is intact: \(text.debugDescription)")
-    print(failures == 0 ? "done: typing works" : "done: \(failures) failure(s)")
+
+    // ⌘V with a screenshot on the clipboard attaches it; with text on the clipboard it is left to the field.
+    let board = NSPasteboard.general
+    let saved = board.pasteboardItems?.map { item in item.types.compactMap { type in item.data(forType: type).map { (type, $0) } } } ?? []
+    let shot = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 8, pixelsHigh: 8, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                                isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+    let before = store.snapshot?.assets.count ?? 0
+    func commandV() {
+        if let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: ProcessInfo.processInfo.systemUptime,
+                                        windowNumber: window.windowNumber, context: nil, characters: "v", charactersIgnoringModifiers: "v",
+                                        isARepeat: false, keyCode: 9) { NSApp.sendEvent(event) }
+    }
+    board.clearContents(); board.setString("just text", forType: .string)
+    commandV(); await pause(2)
+    expect((store.snapshot?.assets.count ?? 0) == before, "text on the clipboard is not uploaded as an image")
+    board.clearContents(); board.setData(shot.representation(using: .png, properties: [:]), forType: .png)
+    commandV()
+    var pasted = false
+    for _ in 0..<20 where !pasted { await pause(0.5); pasted = store.snapshot?.assets.contains { $0.name == "粘贴的图片.png" } ?? false }
+    expect(pasted, "⌘V with an image on the clipboard uploads it as an attachment")
+    expect((window.firstResponder as? NSTextView)?.string == "fix calc 修复 bug", "pasting an image leaves the typed text alone")
+    let thumbs = views(NSView.self, in: host).contains { $0.accessibilityLabel()?.hasPrefix("移除 ") ?? false }
+    if !thumbs { print("     (attachment thumbnail not found in the view tree; checked via the engine instead)") }
+    board.clearContents()
+    for item in saved { let restored = NSPasteboardItem(); for (type, data) in item { restored.setData(data, forType: type) }; board.writeObjects([restored]) }
+
+    print(failures == 0 ? "done: typing and pasting work" : "done: \(failures) failure(s)")
     exit(failures == 0 ? 0 : 1)
 }
 

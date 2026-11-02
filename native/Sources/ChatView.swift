@@ -21,6 +21,9 @@ struct ChatView: View {
     @State private var mode: ComposerMode?
     @State private var preview: Asset?
     @FocusState private var focused: Bool
+    #if os(macOS)
+    @State private var pasteMonitor: Any?
+    #endif
 
     var body: some View {
         Group {
@@ -53,6 +56,24 @@ struct ChatView: View {
         #endif
         // A draft belongs to the conversation it was typed in.
         .onChange(of: store.selectedSession) { _, _ in input = ""; attachments = [] }
+        #if os(macOS)
+        // ⌘V with an image on the clipboard attaches it; plain text still pastes into the field.
+        .onAppear { pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command, event.charactersIgnoringModifiers == "v",
+                  focused, let images = ClipboardImages.read(), !images.isEmpty else { return event }
+            attach(images); return nil
+        } }
+        .onDisappear { if let pasteMonitor { NSEvent.removeMonitor(pasteMonitor) }; pasteMonitor = nil }
+        #endif
+    }
+
+    /// Uploads pasted or dropped images as attachments, up to four per message.
+    func attach(_ images: [(Data, String)]) {
+        Task { await store.perform {
+            for (data, name) in images.prefix(max(0, 4 - attachments.count)) {
+                attachments.append(try await store.uploadImage(data, name: name))
+            }
+        } }
     }
 
     var home: some View {
@@ -109,6 +130,29 @@ struct ChatView: View {
         return "问 Jurvis 任何事"
     }
 
+    var addLabel: some View {
+        Image(systemName: "plus").font(.body.weight(.medium)).frame(width: 30, height: 30)
+            .background(Color.canvas.opacity(0.6), in: Circle()).overlay(Circle().strokeBorder(Color.hairline))
+            .contentShape(Circle())
+    }
+
+    @ViewBuilder var addButton: some View {
+        #if os(iOS)
+        // iOS text fields can't take an image paste, so pasting lives here.
+        Menu {
+            Button { importing = true } label: { Label("选择图片", systemImage: "photo.on.rectangle") }
+            Button { if let images = ClipboardImages.read(), !images.isEmpty { attach(images) } else { store.error = "剪贴板里没有图片" } } label: {
+                Label("粘贴图片", systemImage: "doc.on.clipboard")
+            }
+        } label: { addLabel }
+        .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden)
+        .accessibilityLabel("添加图片")
+        #else
+        Button { importing = true } label: { addLabel }
+            .buttonStyle(.plain).help("添加图片（最多 4 张），也可以直接粘贴或拖进来").accessibilityLabel("添加图片")
+        #endif
+    }
+
     var composer: some View {
         VStack(alignment: .leading, spacing: 12) {
             if !attachments.isEmpty {
@@ -131,9 +175,7 @@ struct ChatView: View {
                 .onSubmit { if canSend { Task { await send() } } }
                 .accessibilityLabel("消息输入框")
             HStack(spacing: 8) {
-                Button { importing = true } label: { Image(systemName: "plus").font(.body.weight(.medium)).frame(width: 30, height: 30) }
-                    .buttonStyle(.plain).background(Color.canvas.opacity(0.6), in: Circle()).overlay(Circle().strokeBorder(Color.hairline))
-                    .help("添加图片（最多 4 张）").accessibilityLabel("添加图片").disabled(attachments.count >= 4)
+                addButton.disabled(attachments.count >= 4)
                 // Labels when they fit, icons only on narrow screens.
                 ViewThatFits(in: .horizontal) {
                     chips(compact: false)
@@ -146,6 +188,17 @@ struct ChatView: View {
         .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 10)
         .background(Color.bubble, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 26, style: .continuous).strokeBorder(focused ? Color.primary.opacity(0.18) : Color.hairline))
+        .onDrop(of: [.image], isTargeted: nil) { providers in
+            // Images dragged in from Finder, Photos or a browser.
+            Task {
+                var images: [(Data, String)] = []
+                for provider in providers {
+                    if let data = try? await provider.loadImageData() { images.append((data, provider.suggestedName.map { $0 + ".png" } ?? "拖入的图片.png")) }
+                }
+                if !images.isEmpty { attach(images) }
+            }
+            return true
+        }
     }
 
     func chips(compact: Bool) -> some View {
@@ -578,5 +631,38 @@ struct CodeBlock: View {
         }
         .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.hairline))
+    }
+}
+
+/// Images on the clipboard as upload-ready bytes: copied image files first, then raw image data.
+/// Returns nil when the clipboard holds text, so a normal text paste is left alone.
+enum ClipboardImages {
+    static func read() -> [(Data, String)]? {
+        #if os(macOS)
+        let board = NSPasteboard.general
+        if let urls = board.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] {
+            let images = urls.filter { (UTType(filenameExtension: $0.pathExtension)?.conforms(to: .image)) ?? false }
+            if !images.isEmpty { return images.compactMap { url in (try? Data(contentsOf: url)).map { ($0, url.lastPathComponent) } } }
+        }
+        if board.string(forType: .string) != nil { return nil }
+        if let png = board.data(forType: .png) { return [(png, "粘贴的图片.png")] }
+        guard let image = NSImage(pasteboard: board), let tiff = image.tiffRepresentation,
+              let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) else { return nil }
+        return [(png, "粘贴的图片.png")]
+        #else
+        let board = UIPasteboard.general
+        guard board.hasImages else { return nil }
+        return (board.images ?? []).compactMap { $0.pngData() }.map { ($0, "粘贴的图片.png") }
+        #endif
+    }
+}
+
+extension NSItemProvider {
+    func loadImageData() async throws -> Data {
+        try await withCheckedThrowingContinuation { done in
+            _ = loadDataRepresentation(for: .image) { data, error in
+                if let data { done.resume(returning: data) } else { done.resume(throwing: error ?? CocoaError(.fileReadUnknown)) }
+            }
+        }
     }
 }
