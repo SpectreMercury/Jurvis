@@ -1,0 +1,20 @@
+[project]
+name = "jurvis-engine"
+version = "0.1.0"
+description = "Local assistant engine for the Jurvis native Apple apps"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+  "fastapi==0.162.0", "uvicorn[standard]==0.54.0", "httpx==0.28.1",
+  "pydantic-settings==2.16.2", "python-multipart==0.0.33", "pillow==13.0.0",
+  "psutil==7.2.2", "cryptography==50.0.2",
+]
+
+[project.optional-dependencies]
+inference = ["mlx-vlm==0.7.11", "mlx-lm==0.32.2"]
+test = ["pytest==9.2.0", "pytest-asyncio==1.4.1.post1"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+

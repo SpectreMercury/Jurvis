@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "components": [
+    {
+      "id": "h3_convrot_int8",
+      "title": "H3 FL2VA · INT8 ConvRot",
+      "kind": "checkpoint",
+      "filename": "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+      "directory": "models/minimax-h3",
+      "bytes": 20970379616,
+      "sha256": "e889202c41dafb67b10d67b97f0d8541508036a6090af23425a5c2615d03c47a",
+      "source": "https://civitai.com/models/2830065?modelVersionId=3193337",
+      "download_url": "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/912b6e38b2092ec4d2e86d24183e0d59ea059d48/diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors"
+    },
+    {
+      "id": "h3_motion_fos",
+      "title": "Motion Speed · FoS v1.0",
+      "kind": "motion",
+      "filename": "H3_speed_slider_1.1.safetensors",
+      "directory": "models/minimax-h3",
+      "bytes": 10093356,
+      "sha256": "593b074e8eb17bf9f858c3586fc12f53038dbfdd9634e146fe34a17e2661ca40",
+      "source": "https://civitai.com/models/2951265?modelVersionId=3342524",
+      "download_url": "https://huggingface.co/RunningHubAI/rh-h3-speed-slider-1.1-lora/resolve/e1af402c4483fbf3c03894364a2403cbe316a584/H3_speed_slider_1.1.safetensors"
+    },
+    {
+      "id": "h3_turbo_v2",
+      "title": "Turbo · multistep v2",
+      "kind": "turbo",
+      "filename": "minimax_h3_hyperflow_EMA600_pruned_r128_fro0995_turbo_lora.safetensors",
+      "directory": "models/minimax-h3",
+      "bytes": 906499912,
+      "sha256": "c27839218f19cf444f0d2eafca38c1b64a48fc30ce02aeef94ca5804cea6ecb7",
+      "source": "https://civitai.com/models/2929860?modelVersionId=3357658",
+      "download_url": "https://civitai.com/api/download/models/3357658?fileId=3245274"
+    },
+    {
+      "id": "dasiwa_v33",
+      "title": "DaSiWa · C-MMH3 v3.3",
+      "kind": "workflow",
+      "filename": "DasiwaMinimaxH3WorkflowsT2VA_cMMH3V33.json",
+      "directory": "config/workflows",
+      "bytes": 174383,
+      "sha256": "cba462ef659ebb9c61d6a62f954164ece0b4b293220e5cdbad747b5ba79a1502",
+      "source": "https://civitai.com/models/2831978?modelVersionId=3195699",
+      "download_url": "https://raw.githubusercontent.com/darksidewalker/dasiwa-comfyui-workflows/5267cd244440747ddad6075b9807a428aa448b9b/C-MMH3/DaSiWa%20MiniMaxH3%20MythicAlchemy%20C-MMH3-33.json"
+    }
+  ]
+}

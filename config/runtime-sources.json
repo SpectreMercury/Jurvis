@@ -1,0 +1,18 @@
+{
+  "ComfyUI": {
+    "url": "https://github.com/Comfy-Org/ComfyUI.git",
+    "revision": "426f5eea52a7ece1dd599fff4cb6cd1f352ddd24"
+  },
+  "ComfyUI-GGUF": {
+    "url": "https://github.com/city96/ComfyUI-GGUF.git",
+    "revision": "6ea2651e7df66d7585f6ffee804b20e92fb38b8a"
+  },
+  "ComfyUI-AppleSilicon-FP8": {
+    "url": "https://github.com/pawel-mazurkiewicz/ComfyUI-AppleSilicon-FP8.git",
+    "revision": "303b40798f4debf8d832af1ee26c88192b54361d"
+  },
+  "ComfyUI-PlagueKind-Nodes": {
+    "url": "https://github.com/PlagueKind/ComfyUI-PlagueKind-Nodes.git",
+    "revision": "aaec055cd642b3292df18e69824c012d345ebfe8"
+  }
+}

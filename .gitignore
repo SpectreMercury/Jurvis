@@ -1,0 +1,17 @@
+models/
+.venv/
+.runtime/
+data/
+build/
+.build/
+__pycache__/
+.pytest_cache/
+*.pyc
+.DS_Store
+*.xcuserstate
+xcuserdata/
+.env
+build-*.log
+config/comfy-models.yaml
+config/workflows/*.json
+
