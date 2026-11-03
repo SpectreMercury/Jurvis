@@ -11,7 +11,7 @@ class ChatCreate(BaseModel):
     content: str = Field(min_length=1, max_length=16000)
     asset_ids: list[str] = Field(default_factory=list, max_length=4)
     request_id: str = Field(min_length=8, max_length=80)
-    mode: Literal["image", "video", "drama"] | None = None
+    mode: Literal["image", "video", "drama", "goal"] | None = None
 
     @field_validator("content")
     @classmethod
@@ -119,3 +119,11 @@ class MemoryCreate(BaseModel):
 class PairRequest(BaseModel):
     code: str = Field(min_length=16, max_length=128)
     name: str = Field(min_length=1, max_length=80)
+
+
+class CommandDecision(BaseModel):
+    decision: Literal["run", "deny", "always"]
+
+
+class SessionUpdate(BaseModel):
+    allow_commands: bool

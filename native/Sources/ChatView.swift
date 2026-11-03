@@ -3,11 +3,13 @@ import UniformTypeIdentifiers
 
 /// What the next message should make; picked with the chips under the composer.
 enum ComposerMode: String, CaseIterable, Identifiable {
-    case image, video, drama
+    case goal, image, video, drama
     var id: String { rawValue }
-    var title: String { ["image": "图片", "video": "视频", "drama": "短剧"][rawValue]! }
-    var icon: String { ["image": "photo", "video": "film", "drama": "theatermasks"][rawValue]! }
-    var placeholder: String { ["image": "描述你想要的画面", "video": "描述镜头、动作和声音", "drama": "说说故事、时长和风格"][rawValue]! }
+    var title: String { ["goal": "目标", "image": "图片", "video": "视频", "drama": "短剧"][rawValue]! }
+    var icon: String { ["goal": "scope", "image": "photo", "video": "film", "drama": "theatermasks"][rawValue]! }
+    var placeholder: String {
+        ["goal": "给一个要做到完成的目标，例如：装好 xx 插件并确认能用", "image": "描述你想要的画面", "video": "描述镜头、动作和声音", "drama": "说说故事、时长和风格"][rawValue]!
+    }
 }
 
 /// The whole app is this conversation: an empty chat is a centred composer, like a chat app.
@@ -113,6 +115,14 @@ struct ChatView: View {
                 .onChange(of: store.messages.last?.steps.flatMap(\.calls).count) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
                 .onChange(of: store.messages.count) { _, _ in withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("bottom", anchor: .bottom) } }
                 .onAppear { proxy.scrollTo("bottom", anchor: .bottom) }
+            }
+            if store.currentSession?.allow_commands == 1, let id = store.selectedSession {
+                HStack(spacing: 6) {
+                    Image(systemName: "terminal")
+                    Text("这段对话里的命令会直接运行")
+                    Button("改为每次确认") { Task { await store.setAllowCommands(id, false) } }.buttonStyle(.borderless)
+                }
+                .font(.caption).foregroundStyle(.secondary).padding(.top, 6)
             }
             composer
                 .frame(maxWidth: Metrics.readable)
@@ -322,12 +332,13 @@ struct AssistantMessage: View {
     var body: some View {
         let steps = message.steps
         VStack(alignment: .leading, spacing: 12) {
+            if case .object = message.metadata["goal"] { GoalStatus(goal: message.metadata["goal"], live: message.isLive) }
             if steps.isEmpty {
                 if !message.content.isEmpty { MarkdownText(text: message.content) }
             } else {
                 ForEach(Array(steps.enumerated()), id: \.offset) { _, step in
                     if !step.text.isEmpty { MarkdownText(text: step.text) }
-                    if !step.calls.isEmpty { ToolTrace(calls: step.calls, open: open) }
+                    if !step.calls.isEmpty { ToolTrace(messageID: message.id, calls: step.calls, open: open) }
                 }
             }
             footer(hasContent: !message.content.isEmpty || !steps.isEmpty)
@@ -377,18 +388,32 @@ struct AssistantMessage: View {
 /// What a tool produced for the user (images, videos, code changes) always shows in full below it.
 struct ToolTrace: View {
     @EnvironmentObject var store: AppStore
+    var messageID: String
     var calls: [ToolCall]
     var open: (Asset) -> Void
     @State private var expanded = false
 
-    var running: ToolCall? { calls.first(where: \.isRunning) }
-    var failed: Bool { calls.contains(where: \.failed) }
+    /// Commands are shown as their own cards, since the user approves them and reads their output.
+    var quiet: [ToolCall] { calls.filter { $0.name != "run_command" } }
+    var running: ToolCall? { quiet.first(where: \.isRunning) }
+    var failed: Bool { quiet.contains(where: \.failed) }
     var title: String {
         if let running { return "正在" + running.label + "…" }
-        return Array(NSOrderedSet(array: calls.map(\.label))).compactMap { $0 as? String }.joined(separator: " · ")
+        return Array(NSOrderedSet(array: quiet.map(\.label))).compactMap { $0 as? String }.joined(separator: " · ")
     }
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if !quiet.isEmpty { fold }
+            ForEach(calls) { call in
+                if call.name == "run_command" { CommandCard(messageID: messageID, call: call) }
+                else if call.name == "edit_code", let id = call.job_id { ChangeSetCard(jobID: id) }
+                else if let id = call.job_id, let job = store.job(id) { JobInline(job: job, open: open) }
+            }
+        }
+    }
+
+    var fold: some View {
         VStack(alignment: .leading, spacing: 10) {
             Button { withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() } } label: {
                 HStack(spacing: 7) {
@@ -404,15 +429,121 @@ struct ToolTrace: View {
 
             if expanded {
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(calls) { call in ToolCallRow(call: call, open: open) }
+                    ForEach(quiet) { call in ToolCallRow(call: call, open: open) }
                 }
                 .padding(.leading, 4)
                 .overlay(alignment: .leading) { Rectangle().fill(Color.hairline).frame(width: 2) }
             }
-            ForEach(calls) { call in
-                if call.name == "edit_code", let id = call.job_id { ChangeSetCard(jobID: id) }
-                else if let id = call.job_id, let job = store.job(id) { JobInline(job: job, open: open) }
+        }
+    }
+}
+
+/// A shell command the assistant wants to run: the user sees why and exactly what, approves it, then watches the output.
+struct CommandCard: View {
+    @EnvironmentObject var store: AppStore
+    var messageID: String
+    var call: ToolCall
+    @State private var showOutput = false
+    @State private var deciding = false
+
+    var lines: [Substring] { (call.console ?? "").split(separator: "\n", omittingEmptySubsequences: false) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "terminal").foregroundStyle(.secondary)
+                Text(call.reason?.isEmpty == false ? call.reason! : "运行命令").font(.callout.weight(.medium)).lineLimit(2)
+                Spacer(minLength: 6)
+                status
             }
+            Text(call.command ?? "").font(.system(.callout, design: .monospaced)).textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(10).background(Color.canvas, in: RoundedRectangle(cornerRadius: 8))
+            if let cwd = call.cwd { Text("在 " + cwd).font(.caption2).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle) }
+            if call.awaiting { approval }
+            if call.isRunning, !(call.console ?? "").isEmpty { console(lines.suffix(8).joined(separator: "\n")) }
+            if !call.isRunning, !call.awaiting, !(call.console ?? "").isEmpty {
+                Button { withAnimation(.easeOut(duration: 0.15)) { showOutput.toggle() } } label: {
+                    Label(showOutput ? "收起输出" : "查看输出（\(lines.count) 行）", systemImage: "chevron.right")
+                        .labelStyle(.titleAndIcon).font(.caption)
+                }
+                .buttonStyle(.borderless).foregroundStyle(.secondary)
+                if showOutput { console(call.console ?? "") }
+            }
+        }
+        .padding(14)
+        .background(Color.bubble.opacity(0.6), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(call.awaiting ? Color.primary.opacity(0.35) : Color.hairline))
+    }
+
+    @ViewBuilder var status: some View {
+        if call.awaiting { Text("等你确认").font(.caption.weight(.semibold)) }
+        else if call.isRunning { HStack(spacing: 5) { ProgressView().controlSize(.mini); Text("运行中").font(.caption).foregroundStyle(.secondary) } }
+        else if let summary = call.summary {
+            let problem = call.failed || call.status == "skipped"
+            Label(summary, systemImage: problem ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
+                .font(.caption).foregroundStyle(problem ? Color.warning : .secondary).lineLimit(1)
+        }
+    }
+
+    var approval: some View {
+        HStack(spacing: 8) {
+            Button { decide("run") } label: { Text("运行").padding(.horizontal, 6) }.buttonStyle(.borderedProminent).tint(Color.ink)
+            Button { decide("deny") } label: { Text("拒绝") }.buttonStyle(.bordered)
+            Spacer(minLength: 4)
+            Button { decide("always") } label: { Text("本对话都允许").font(.caption) }.buttonStyle(.borderless)
+                .help("之后这段对话里的命令直接运行；删除、sudo、git push 等仍会询问")
+        }
+        .disabled(deciding)
+        .controlSize(.small)
+    }
+
+    func console(_ text: String) -> some View {
+        ScrollView([.horizontal, .vertical]) {
+            Text(text).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading).padding(10)
+        }
+        .frame(maxHeight: 260)
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    func decide(_ decision: String) {
+        deciding = true
+        Task { await store.decideCommand(message: messageID, call: call.id, decision); deciding = false }
+    }
+}
+
+/// Where a goal stands: running, done (checked by a separate review), waiting for the user, or stopped.
+struct GoalStatus: View {
+    var goal: JSONValue
+    var live: Bool
+
+    var body: some View {
+        let status = goal["status"].string
+        HStack(spacing: 8) {
+            Image(systemName: icon(status)).foregroundStyle(status == "done" ? Color.jurvisAccent : status == "running" ? .secondary : Color.warning)
+            Text("目标").font(.caption.weight(.semibold))
+            Text(label(status)).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background(Color.bubble, in: Capsule())
+    }
+
+    func icon(_ status: String) -> String {
+        ["done": "checkmark.seal.fill", "blocked": "hand.raised.fill", "unverified": "questionmark.circle", "incomplete": "pause.circle"][status] ?? "scope"
+    }
+
+    func label(_ status: String) -> String {
+        let steps = Int(goal["steps"].number ?? 0)
+        let missing = goal["missing"].string
+        switch status {
+        case "done": return "已完成 · 已复核"
+        case "blocked": return "需要你回复"
+        case "unverified": return "已结束 · 未能确认完成" + (missing.isEmpty ? "" : "：" + missing)
+        case "incomplete": return "未完成 · 用了 \(steps) 步"
+        default:
+            let base = live ? "进行中 · 第 \(steps) 步" : "已中断"
+            return missing.isEmpty ? base : base + " · 复核：" + missing
         }
     }
 }

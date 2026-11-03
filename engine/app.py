@@ -13,7 +13,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from . import __version__
 from .config import Settings
 from .runtime import Runtime
-from .schemas import ChatCreate,SessionCreate,ImageRequest,VideoRequest,ProjectCreate,ProjectUpdate,MemoryCreate,PairRequest
+from .schemas import ChatCreate,CommandDecision,SessionCreate,SessionUpdate,ImageRequest,VideoRequest,ProjectCreate,ProjectUpdate,MemoryCreate,PairRequest
 from .security import Security,lan_addresses
 from .store import Store,dumps,new_id
 from .worker import Worker
@@ -86,6 +86,17 @@ def create_app(settings=None, *, run_worker=True):
     async def messages(ident:str):
         if not store.one("SELECT id FROM sessions WHERE id=?",(ident,)):raise HTTPException(404,"对话不存在")
         return store.all("SELECT * FROM messages WHERE session_id=? ORDER BY created_at",(ident,))
+
+    @app.patch("/api/sessions/{ident}")
+    async def update_session(ident:str,body:SessionUpdate):
+        if not store.execute("UPDATE sessions SET allow_commands=? WHERE id=?",(int(body.allow_commands),ident)):raise HTTPException(404,"对话不存在")
+        store.event("sessions",ident)
+        return store.one("SELECT * FROM sessions WHERE id=?",(ident,))
+
+    @app.post("/api/messages/{message_id}/commands/{call_id}")
+    async def decide_command(message_id:str,call_id:str,body:CommandDecision):
+        worker.shell.decide(message_id,call_id,body.decision)
+        return {"ok":True}
 
     @app.delete("/api/sessions/{ident}")
     async def delete_session(ident:str):

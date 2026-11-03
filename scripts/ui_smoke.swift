@@ -59,6 +59,20 @@ let output = URL(fileURLWithPath: CommandLine.arguments.count > 1 ? CommandLine.
         await store.selectSession(session.id)
         await capture("chat-code-session", root)
     }
+    // Commands waiting for approval and finished, inside a goal.
+    let sample = #"""
+    [{"id":"m1","session_id":"s","role":"assistant","content":"","status":"streaming","created_at":0,"metadata":{"goal":{"status":"running","steps":3,"reviews":0},"steps":[
+      {"text":"先把插件克隆下来。","calls":[{"id":"a","name":"run_command","label":"运行命令","status":"ok","summary":"完成 · 1.2 秒","command":"git clone https://github.com/example/demo-nodes.git","reason":"克隆插件仓库","cwd":"/Users/me/jurvis/.runtime/ComfyUI/custom_nodes","console":"Cloning into 'demo-nodes'...\ndone.","exit_code":0}]},
+      {"text":"","calls":[{"id":"b","name":"run_command","label":"运行命令","status":"awaiting","command":"/Users/me/jurvis/.venv/bin/python -m pip install -r demo-nodes/requirements.txt","reason":"安装插件依赖","cwd":"/Users/me/jurvis/.runtime/ComfyUI/custom_nodes"}]}]}},
+     {"id":"m2","session_id":"s","role":"assistant","content":"测试已全部通过。","status":"complete","created_at":1,"metadata":{"goal":{"status":"done","steps":6,"reviews":1},"steps":[
+      {"text":"","calls":[{"id":"c","name":"code_read","label":"阅读源码","status":"ok","summary":"calc.py · 6 行"},{"id":"d","name":"run_command","label":"运行命令","status":"error","summary":"失败 · 退出码 1","command":"python3 -m unittest discover -s tests","reason":"运行测试","cwd":"/tmp/goal-code","console":"F..\nFAIL: test_total\nAssertionError: 6 != 5","exit_code":1}]},
+      {"text":"测试已全部通过。","calls":[]}]}}]
+    """#
+    if let messages = try? JSONDecoder().decode([Message].self, from: Data(sample.utf8)) {
+        await capture("goal-commands", size: CGSize(width: 820, height: 900), ScrollView {
+            VStack(alignment: .leading, spacing: 30) { ForEach(messages) { AssistantMessage(message: $0, open: { _ in }) } }.padding(24)
+        }.background(Color.canvas).environmentObject(store))
+    } else { print("FAIL goal sample did not decode") }
     await store.loadCodeProjects()
     await store.newChat(project: store.codeProjects.first?.id)
     await capture("home-with-project", root)

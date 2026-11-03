@@ -126,6 +126,19 @@ class EditCodeArgs(BaseModel):
     edits: list[CodeEdit] = Field(min_length=1, max_length=20, description="All replacements for this change; several files allowed")
 
 
+class RunCommandArgs(BaseModel):
+    command: str = Field(max_length=4000, description="zsh command line, non-interactive (use -y / --yes style flags; there is no stdin)")
+    reason: str = Field(max_length=300, description="One short sentence in the user's language: why this command, shown to the user when they approve it")
+    cwd: str = Field(default="", description="Working directory (absolute, or ~/...). Empty: the default directory")
+    timeout: int = Field(default=300, ge=5, le=1800, description="Seconds before the command is stopped; installs may need 900")
+
+
+class FinishGoalArgs(BaseModel):
+    status: Literal["done", "blocked"] = Field(description="done: the goal is achieved and you verified it. blocked: you cannot continue without the user")
+    summary: str = Field(max_length=3000, description="For the user, in their language: what was done (done) or what you need from them (blocked)")
+    evidence: str = Field(default="", max_length=2000, description="For done: the tool results that prove the goal is met, e.g. the test run that passed")
+
+
 class CodeProposeArgs(BaseModel):
     project_id: str
     instruction: str = Field(description="What to change and why, in detail")
@@ -143,7 +156,7 @@ class Tool:
     description: str
     args: type[BaseModel]
     run: Callable
-    effect: Literal["read", "write", "job"] = "read"
+    effect: Literal["read", "write", "job", "command", "goal"] = "read"  # command and goal are run by the agent loop
 
     def schema(self):
         params = self.args.model_json_schema()
@@ -169,7 +182,10 @@ class Outcome:
     summary: str          # one line for the user, in Chinese
 
     def for_model(self, limit=8000):
-        text = dumps(self.result if self.ok else {"error": self.result.get("error", "失败")})
+        failure = {"error": self.result.get("error", "失败")}
+        if "output" in self.result:  # a failed command's output is what the model needs to fix it
+            failure.update({k: self.result[k] for k in ("exit_code", "timed_out", "output") if k in self.result})
+        text = dumps(self.result if self.ok else failure)
         return text if len(text) <= limit else text[:limit] + "…(truncated)"
 
 
@@ -213,21 +229,28 @@ class ToolRegistry:
             T("edit_code", "修改代码", "Change code in a connected project with exact text replacements. Read the file with code_read first and copy old_text exactly. "
               "Put every edit for one change in a single call. The result is shown to the user as a diff to apply; it is not applied or tested yet.",
               EditCodeArgs, self.edit_code, "write"),
+            T("run_command", "运行命令", "Run a shell command on the user's Mac (zsh login shell): install packages or plugins, run scripts and tests, use git, inspect the system. "
+              "The user sees the command and approves it before it runs. Returns exit_code and output. Run one step at a time and read the output before the next.",
+              RunCommandArgs, None, "command"),
+            T("finish_goal", "结束目标", "Goal mode only: end the goal. Call it with status done only after a tool result proves the goal is met; "
+              "with status blocked when you need the user (missing information, a permission, or the goal is impossible).",
+              FinishGoalArgs, None, "goal"),
         ]
 
     def schemas(self, names=None):
-        return [t.schema() for t in self.tools.values() if names is None or t.name in names]
+        names = names or {n for n in self.tools if n != "finish_goal"}
+        return [t.schema() for t in self.tools.values() if t.name in names]
 
     # ---- harness entry point: validates, never raises ----
     def invoke(self, name, arguments):
         tool = self.tools.get(name)
-        if not tool:
+        if not tool or tool.run is None:
             return Outcome(False, {"error": f"没有名为 {name} 的工具"}, f"未知工具 {name}")
         if isinstance(arguments, str):
             try:
                 arguments = json.loads(arguments or "{}")
             except json.JSONDecodeError:
-                return Outcome(False, {"error": "参数不是有效的 JSON"}, "参数格式错误")
+                return Outcome(False, {"error": "参数不是有效的 JSON object：" + arguments[:200]}, "参数格式错误")
         try:
             args = tool.args.model_validate(arguments or {})
         except ValidationError as exc:
@@ -242,7 +265,7 @@ class ToolRegistry:
     # ---- direct use by HTTP endpoints: raises ValueError like before ----
     def execute(self, name, arguments):
         tool = self.tools.get(name)
-        if not tool:
+        if not tool or tool.run is None:
             raise ValueError(f"没有名为 {name} 的工具")
         return tool.run(tool.args.model_validate(arguments))
 

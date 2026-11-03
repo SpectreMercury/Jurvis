@@ -56,8 +56,12 @@ class Store:
                     created_at REAL NOT NULL);
             """)
             # Coding conversations are ordinary sessions bound to a connected code project.
-            if "code_project_id" not in [r[1] for r in db.execute("PRAGMA table_info(sessions)")]:
+            columns = [r[1] for r in db.execute("PRAGMA table_info(sessions)")]
+            if "code_project_id" not in columns:
                 db.execute("ALTER TABLE sessions ADD COLUMN code_project_id TEXT")
+            # The user allowed the assistant to run commands in this conversation without asking each time.
+            if "allow_commands" not in columns:
+                db.execute("ALTER TABLE sessions ADD COLUMN allow_commands INTEGER NOT NULL DEFAULT 0")
 
     @contextmanager
     def connection(self):

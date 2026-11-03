@@ -12,6 +12,7 @@ from .agent import Agent
 from .workflows import video_frames
 from .catalog import MediaCatalog
 from .coding import Coding
+from .shell import Shell
 
 log=logging.getLogger("jurvis.worker")
 
@@ -30,7 +31,8 @@ class Worker:
         self.tools=ToolRegistry(settings,store)
         self.catalog=MediaCatalog(settings)
         self.coding=Coding(settings,store)
-        self.agent=Agent(settings,store,runtime,self.tools,self.media)
+        self.shell=Shell(settings,store)
+        self.agent=Agent(settings,store,runtime,self.tools,self.media,self.shell)
         self.task=None
         self.active=None
         self.active_id=None

@@ -245,6 +245,16 @@ import ImageIO
         }
         await retry(job)
     }
+    /// The user's answer to a command the assistant wants to run: "run", "deny" or "always" (allow the whole conversation).
+    func decideCommand(message: String, call: String, _ decision: String) async {
+        await perform {
+            let _: JSONValue = try await self.requireAPI().request("/api/messages/\(message)/commands/\(call)", method: "POST", body: ["decision": decision])
+            await self.refreshMessages()
+        }
+    }
+    func setAllowCommands(_ session: String, _ allow: Bool) async {
+        await perform { let _: Session = try await self.requireAPI().request("/api/sessions/\(session)", method: "PATCH", body: ["allow_commands": allow]) }
+    }
     func deleteSession(_ id: String) async {
         await perform {
             let _: JSONValue = try await self.requireAPI().request("/api/sessions/\(id)", method: "DELETE")

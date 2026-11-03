@@ -46,7 +46,7 @@ enum JSONValue: Codable, Hashable {
     }
 }
 
-struct Session: Codable, Identifiable, Hashable { var id: String; var title: String; var created_at: Double; var updated_at: Double; var code_project_id: String? }
+struct Session: Codable, Identifiable, Hashable { var id: String; var title: String; var created_at: Double; var updated_at: Double; var code_project_id: String?; var allow_commands: Int? }
 struct Message: Codable, Identifiable, Equatable {
     var id: String; var session_id: String; var role: String; var content: String; var status: String
     var created_at: Double; var metadata: JSONValue
@@ -68,7 +68,10 @@ struct ToolCall: Codable, Hashable, Identifiable {
     var id: String; var name: String; var label: String; var status: String
     var summary: String?; var output: String?; var arguments: JSONValue?
     var job_id: String?; var project_id: String?; var duration: Double?
+    // run_command
+    var command: String?; var reason: String?; var cwd: String?; var console: String?; var exit_code: Int?
     var isRunning: Bool { status == "running" }
+    var awaiting: Bool { status == "awaiting" }
     var failed: Bool { status == "error" }
 }
 struct Job: Codable, Identifiable, Equatable {
