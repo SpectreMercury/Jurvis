@@ -10,10 +10,10 @@ import psutil
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse, JSONResponse
 from PIL import Image, ImageOps, UnidentifiedImageError
-from . import __version__
+from . import __version__,drama
 from .config import Settings
 from .runtime import Runtime
-from .schemas import ChatCreate,CommandDecision,SessionCreate,SessionUpdate,ImageRequest,VideoRequest,ProjectCreate,ProjectUpdate,MemoryCreate,PairRequest
+from .schemas import ChatCreate,CommandDecision,SessionCreate,SessionUpdate,ImageRequest,VideoRequest,ProjectCreate,ProjectProduce,ProjectUpdate,MemoryCreate,PairRequest
 from .security import Security,lan_addresses
 from .store import Store,dumps,new_id
 from .worker import Worker
@@ -131,12 +131,14 @@ def create_app(settings=None, *, run_worker=True):
     @app.post("/api/images")
     async def image(body:ImageRequest,request:Request):
         for ident in body.reference_assets:worker.media.asset(ident)
+        worker.directed(body.model_dump())
         return store.create_job("image",body.model_dump(),request.headers.get("x-idempotency-key"))
 
     @app.post("/api/videos")
     async def video(body:VideoRequest,request:Request):
         validate_video(body)
         worker.catalog.validate_video(body.model_dump())
+        worker.directed(body.model_dump())
         return store.create_job("video",body.model_dump(),request.headers.get("x-idempotency-key"))
 
     def validate_video(body):
@@ -187,6 +189,12 @@ def create_app(settings=None, *, run_worker=True):
                 if asset:worker.media.asset(asset)
         for char in body.document.characters:
             if char.reference_asset:worker.media.asset(char.reference_asset)
+        project=store.one("SELECT document FROM projects WHERE id=?",(ident,))
+        stored={x["id"]:x for x in project["document"].get("shots",[])} if project else {}
+        for shot in body.document.shots:
+            # A frame the user picked by hand counts as approved for the current cast.
+            if shot.first_frame and shot.first_frame!=stored.get(shot.id,{}).get("first_frame"):
+                shot.frame_references=drama.references(body.document.model_dump(),shot.model_dump())
         changed=store.execute("UPDATE projects SET document=?,updated_at=? WHERE id=? AND updated_at=?",(body.document.model_dump_json(),time.time(),ident,body.expected_updated_at))
         if not changed:raise HTTPException(409,"项目已在另一台设备更新，请重新载入后编辑")
         return store.one("SELECT * FROM projects WHERE id=?",(ident,))
@@ -195,6 +203,14 @@ def create_app(settings=None, *, run_worker=True):
     async def replan(ident:str):
         if not store.one("SELECT id FROM projects WHERE id=?",(ident,)):raise HTTPException(404,"项目不存在")
         return store.create_job("plan",{"project_id":ident})
+
+    @app.post("/api/projects/{ident}/produce")
+    async def produce(ident:str,body:ProjectProduce):
+        project=store.one("SELECT * FROM projects WHERE id=?",(ident,))
+        if not project:raise HTTPException(404,"项目不存在")
+        if not project["document"].get("shots"):raise HTTPException(409,"请先生成分镜")
+        if body.stage=="video":worker.catalog.validate_video(body.model_dump())
+        return store.create_job("produce",{**body.model_dump(),"project_id":ident})
 
     @app.post("/api/projects/{ident}/export")
     async def export(ident:str):

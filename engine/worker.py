@@ -4,6 +4,7 @@ import logging
 import re
 import time
 from pathlib import Path
+from . import drama
 from .media import Media
 from .schemas import DramaDocument
 from .store import dumps
@@ -117,7 +118,7 @@ class Worker:
             revision=project["updated_at"]
             self.store.update_job(ident,phase="正在编写角色和分镜",progress=.1)
             schema=DramaDocument.model_json_schema()
-            prompt="你是短剧编剧和导演。根据用户创意生成可拍摄的短剧计划，所有说明用中文，image_prompt/video_prompt可用英文，中文对白保持原文。角色外貌、服装、声音、道具必须在各镜头保持一致。每个镜头1到15秒，合理分配动作和对白，默认4到6个镜头，不超过12个。镜头需包含明确的景别、动作、运镜、环境音、对白。每个镜头写出首帧生图提示词image_prompt和视频提示词video_prompt。只输出符合下面JSON Schema的JSON，不要Markdown。ID用c1/c2、s1/s2等。所有reference_asset、first_frame、last_frame、video_asset为null，versions为空。\n"+dumps(schema)
+            prompt="你是短剧编剧和导演。根据用户创意生成可拍摄的短剧计划，所有说明用中文，image_prompt/video_prompt可用英文，中文对白保持原文。每个角色写appearance：用英文写死可见外貌，含年龄、脸型、发型发色、瞳色、体型、服装及配色，这是全片唯一的外貌来源。角色image_prompt留空。镜头的image_prompt和video_prompt只写景别、场景、动作、表情，用角色名称呼人物，不要重复外貌。character_ids必须列全该镜头出场的角色，每镜不超过4人。每个镜头1到15秒，合理分配动作和对白，默认4到6个镜头，不超过12个。镜头需包含明确的景别、动作、运镜、环境音、对白。每个镜头写出首帧生图提示词image_prompt和视频提示词video_prompt。只输出符合下面JSON Schema的JSON，不要Markdown。ID用c1/c2、s1/s2等。所有reference_asset、first_frame、last_frame、video_asset为null，versions为空。\n"+dumps(schema)
             result=await self.runtime.complete([{"role":"system","content":prompt},{"role":"user","content":project["brief"]}],max_tokens=6000,temperature=.5)
             document=DramaDocument.model_validate(parse_json(result)).model_dump()
             if not document["shots"]:
@@ -128,17 +129,14 @@ class Worker:
             self.store.event("projects",project["id"])
             return {"project_id":project["id"],"shots":len(document["shots"])}
         if kind in ("video","rewrite"):
-            if kind=="video":self.catalog.validate_video(p)
-            prompt=await self.rewrite(p,ident) if p.get("enhance",True) or kind=="rewrite" else p["prompt"]
+            p=self.directed(p)
             if kind=="rewrite":
-                return {"prompt":prompt}
-            result=await self.media.run("video",p,ident,prompt)
-            self.attach_result(p,result,"video")
-            return result
+                return {"prompt":await self.rewrite(p,ident)}
+            return await self.render_video(p,ident)
         if kind=="image":
-            result=await self.media.run("image",p,ident)
-            self.attach_result(p,result,"image")
-            return result
+            return await self.render_image(self.directed(p),ident)
+        if kind=="produce":
+            return await self.produce(p,ident)
         if kind=="export":
             project=self.store.one("SELECT * FROM projects WHERE id=?",(p["project_id"],))
             if not project:
@@ -149,6 +147,64 @@ class Worker:
             self.store.update_job(ident,phase='正在提取首尾帧')
             return await self.media.frames(p['asset_id'],ident)
         raise ValueError("不支持的任务类型")
+
+    def directed(self,p):
+        """Project media always follows the production order, whichever client asked for it."""
+        project=self.store.one("SELECT * FROM projects WHERE id=?",(p["project_id"],)) if p.get("project_id") else None
+        if not project:
+            return p
+        doc=project["document"]
+        char=drama.find(doc.get("characters",[]),p.get("character_id"))
+        if char:
+            return {**p,**drama.character_request(doc,char)}
+        shot=drama.find(doc.get("shots",[]),p.get("shot_id"))
+        if not shot:
+            return p
+        if "duration" not in p:
+            return {**p,**drama.frame_request(doc,shot)} if drama.cast(doc,shot) else p
+        drama.require_cast(doc,shot)
+        if drama.cast(doc,shot) and not p.get("first_frame"):
+            raise ValueError(f"「{shot['title']}」有角色出场，请先生成首帧")
+        return {**p,"prompt":drama.locked_prompt(doc,shot,p["prompt"])}
+
+    async def render_image(self,p,ident,phase=None):
+        result=await self.media.run("image",p,ident,phase=phase)
+        self.attach_result(p,result,"image")
+        return result
+
+    async def render_video(self,p,ident,phase=None):
+        self.catalog.validate_video(p)
+        prompt=await self.rewrite(p,ident) if p.get("enhance",True) else p["prompt"]
+        result=await self.media.run("video",p,ident,prompt,phase=phase)
+        self.attach_result(p,result,"video")
+        return result
+
+    async def produce(self,p,ident):
+        pid=p["project_id"]
+        def document():
+            project=self.store.one("SELECT * FROM projects WHERE id=?",(pid,))
+            if not project:
+                raise ValueError("项目不存在")
+            return project["document"]
+        counts={"characters":0,"frames":0,"videos":0}
+        for char in document().get("characters",[]):
+            if not char.get("reference_asset"):
+                await self.render_image({**drama.character_request(document(),char),"project_id":pid},ident,f"正在定妆：{char['name']}")
+                counts["characters"]+=1
+        for item in document().get("shots",[]):
+            doc=document();shot=drama.find(doc["shots"],item["id"])
+            if shot and drama.frame_stale(doc,shot):
+                await self.render_image({**drama.frame_request(doc,shot),"project_id":pid},ident,f"正在生成首帧：{shot['title']}")
+                counts["frames"]+=1
+        if p.get("stage")=="video":
+            settings={k:v for k,v in p.items() if k not in ("stage","project_id")}
+            for item in document().get("shots",[]):
+                doc=document();shot=drama.find(doc["shots"],item["id"])
+                if shot and not shot.get("video_asset"):
+                    request=self.directed({**drama.video_request(doc,shot,settings),"project_id":pid})
+                    await self.render_video(request,ident,f"正在生成镜头：{shot['title']}")
+                    counts["videos"]+=1
+        return {"project_id":pid,**counts}
 
     async def chat(self,job):
         return await self.agent.run(job)
@@ -189,6 +245,8 @@ class Worker:
                     if char["id"]==p["character_id"]:char["reference_asset"]=result["asset_ids"][0]
             elif p.get("shot_id"):
                 for shot in doc.get("shots",[]):
-                    if shot["id"]==p["shot_id"]:shot["first_frame"]=result["asset_ids"][0]
+                    if shot["id"]==p["shot_id"]:
+                        # A new keyframe invalidates the shot's take; earlier takes stay in versions.
+                        shot.update(first_frame=result["asset_ids"][0],frame_references=p.get("reference_assets",[]),video_asset=None)
             db.execute("UPDATE projects SET document=?,updated_at=? WHERE id=?",(dumps(doc),time.time(),p["project_id"]))
         self.store.event("projects",p["project_id"])

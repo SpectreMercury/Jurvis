@@ -46,7 +46,7 @@ class Media:
         obj=response.json()
         return (obj.get("subfolder","")+"/"+obj["name"]).lstrip("/")
 
-    async def run(self,kind,p,job_id,prompt=None):
+    async def run(self,kind,p,job_id,prompt=None,phase=None):
         await self.runtime.ensure("comfy")
         base=f"http://127.0.0.1:{self.settings.comfy_port}"
         async with httpx.AsyncClient(base_url=base,timeout=60,trust_env=False) as client:
@@ -62,7 +62,7 @@ class Media:
             if response.status_code!=200:
                 raise RuntimeError("创作工作流校验失败："+response.text[:1200])
             prompt_id=response.json()["prompt_id"]
-            self.store.update_job(job_id,phase="正在生成" if kind=="image" else "正在生成画面与声音",progress=0.2,
+            self.store.update_job(job_id,phase=phase or ("正在生成" if kind=="image" else "正在生成画面与声音"),progress=0.2,
                                   result={"prompt_id":prompt_id,"workflow":graph,"enhanced_prompt":prompt})
             started=time.monotonic()
             while time.monotonic()-started<self.settings.media_timeout:

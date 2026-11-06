@@ -87,13 +87,13 @@ struct Asset: Codable, Identifiable, Hashable {
     var isVideo: Bool { mime.hasPrefix("video/") }
 }
 struct Character: Codable, Identifiable, Hashable {
-    var id: String; var name: String; var description: String; var image_prompt: String
+    var id: String; var name: String; var description: String; var appearance: String?; var image_prompt: String
     var reference_asset: String?
 }
 struct Shot: Codable, Identifiable, Hashable {
     var id: String; var title: String; var description: String; var dialogue: String; var duration: Double
     var image_prompt: String; var video_prompt: String; var character_ids: [String]
-    var first_frame: String?; var last_frame: String?; var video_asset: String?; var versions: [String]
+    var first_frame: String?; var frame_references: [String]?; var last_frame: String?; var video_asset: String?; var versions: [String]
 }
 struct DramaDocument: Codable, Hashable {
     var logline: String = ""; var style: String = ""; var characters: [Character] = []; var shots: [Shot] = []

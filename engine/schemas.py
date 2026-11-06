@@ -64,6 +64,7 @@ class Character(BaseModel):
     id: str = Field(min_length=1, max_length=64)
     name: str = Field(min_length=1, max_length=80)
     description: str = Field(max_length=3000)
+    appearance: str = Field(default="", max_length=2000)
     image_prompt: str = Field(default="", max_length=4000)
     reference_asset: str | None = None
 
@@ -78,6 +79,7 @@ class Shot(BaseModel):
     video_prompt: str = Field(default="", max_length=16000)
     character_ids: list[str] = Field(default_factory=list, max_length=10)
     first_frame: str | None = None
+    frame_references: list[str] = Field(default_factory=list, max_length=4)
     last_frame: str | None = None
     video_asset: str | None = None
     versions: list[str] = Field(default_factory=list, max_length=100)
@@ -103,6 +105,17 @@ class DramaDocument(BaseModel):
 class ProjectCreate(BaseModel):
     title: str = Field(min_length=1, max_length=100)
     brief: str = Field(min_length=1, max_length=6000)
+
+
+class ProjectProduce(BaseModel):
+    stage: Literal["frames", "video"] = "video"
+    width: int = Field(default=352, ge=256, le=1024)
+    height: int = Field(default=608, ge=256, le=1024)
+    enhance: bool = True
+    model_profile: Literal["gguf_q5", "convrot_int8"] = "gguf_q5"
+    sampling_profile: Literal["balanced", "turbo_v2", "dasiwa_v33"] = "balanced"
+    turbo_steps: Literal[4, 6, 8] = 6
+    motion_strength: float = Field(default=0, ge=-8, le=8, allow_inf_nan=False)
 
 
 class ProjectUpdate(BaseModel):

@@ -96,12 +96,13 @@ struct ProjectDetailView: View {
                         ForEach(Array(project.document.shots.enumerated()),id:\.element.id) { index,shot in shotCard(shot,index:index,project:project) }
                         Card {
                             HStack {
-                                Button("生成所有未完成镜头") { Task { await renderAll() } }.buttonStyle(.bordered).disabled(busy || !relatedJobs.isEmpty || dirty)
+                                Button("定妆并生成首帧") { Task { await produce("frames") } }.buttonStyle(.bordered).disabled(busy || !relatedJobs.isEmpty || dirty)
+                                Button("生成所有未完成镜头") { Task { await produce("video") } }.buttonStyle(.bordered).disabled(busy || !relatedJobs.isEmpty || dirty)
                                 Spacer()
                                 Button { Task { await store.perform { _ = try await store.submit("/api/projects/\(projectID)/export",body:[:]) } } } label: { Label("导出成片",systemImage:"square.and.arrow.up") }
                                     .buttonStyle(.borderedProminent).disabled(project.document.shots.contains{$0.video_asset==nil} || dirty)
                             }
-                            Hint(text:"角色参考图用于生成一致的首帧，首尾帧约束视频画面。角色一致性和对白效果需要逐镜审片。")
+                            Hint(text:"按定妆、首帧、视频的顺序制作：每个首帧都带角色定妆图，视频从首帧开始。先审定妆和首帧，满意后再生成镜头；更换定妆图后，相关首帧和镜头会重新生成。")
                             let films = (store.snapshot?.assets ?? []).filter{$0.kind=="film" && $0.metadata["project_id"].string==projectID}
                             ForEach(films) { asset in Button { selected = asset } label: { Label("\(asset.name) · \(asset.created_at.relativeDate)",systemImage:"play.rectangle.fill") }.buttonStyle(.borderless) }
                         }
@@ -124,7 +125,7 @@ struct ProjectDetailView: View {
                         if let asset = store.snapshot?.assets.first(where:{$0.id==character.reference_asset}) { MediaThumb(asset:asset).frame(height:150) }
                         HStack { Text(character.name).font(.headline); Spacer(); Button { editingCharacter = character } label: { Image(systemName:"pencil") }.buttonStyle(.borderless) }
                         Text(character.description).font(.caption).foregroundStyle(.secondary).lineLimit(5)
-                        Button(character.reference_asset==nil ? "生成角色参考图" : "重新生成参考图") { Task { await characterImage(character) } }.buttonStyle(.bordered).disabled(busy || dirty)
+                        Button(character.reference_asset==nil ? "生成定妆图" : "重新定妆") { Task { await characterImage(character) } }.buttonStyle(.bordered).disabled(busy || dirty)
                     }.padding(14).background(Color.card,in:RoundedRectangle(cornerRadius:Metrics.radius)).overlay(RoundedRectangle(cornerRadius:Metrics.radius).strokeBorder(Color.hairline))
                 }
             }
@@ -148,8 +149,8 @@ struct ProjectDetailView: View {
     }
     @ViewBuilder func shotActions(_ shot:Shot,index:Int)->some View {
         HStack(spacing:10) {
-            Button("生成首帧") { Task { await shotImage(shot) } }.buttonStyle(.bordered).disabled(busy || dirty)
-            Button(shot.video_asset==nil ? "生成镜头" : "重新生成") { Task { await render(shot) } }.buttonStyle(.borderedProminent).disabled(busy || dirty)
+            Button("生成首帧") { Task { await shotImage(shot) } }.buttonStyle(.bordered).disabled(busy || dirty || !castReady(shot))
+            Button(shot.video_asset==nil ? "生成镜头" : "重新生成") { Task { await render(shot) } }.buttonStyle(.borderedProminent).disabled(busy || dirty || !castReady(shot) || (!shot.character_ids.isEmpty && shot.first_frame==nil))
             if let asset = store.snapshot?.assets.first(where:{$0.id==shot.video_asset}) { Button { selected = asset } label: { Label("审片",systemImage:"play.fill") }.buttonStyle(.bordered) }
         }
         Spacer(minLength:4)
@@ -160,12 +161,11 @@ struct ProjectDetailView: View {
     }
     func save() async { guard let draft else{return}; await store.perform { try await store.saveProject(draft); self.draft = current; dirty = false } }
     func characterImage(_ character:Character) async {
-        await store.perform { _ = try await store.submit("/api/images",body:["prompt":character.image_prompt.isEmpty ? character.description : character.image_prompt,"width":768,"height":1024,"steps":25,"seed":42,"project_id":projectID,"character_id":character.id]) }
+        await store.perform { _ = try await store.submit("/api/images",body:["prompt":character.description,"width":704,"height":1216,"steps":25,"project_id":projectID,"character_id":character.id]) }
     }
     func shotImage(_ shot:Shot) async {
-        let refs = (draft?.document.characters ?? []).filter{shot.character_ids.contains($0.id)}.compactMap(\.reference_asset)
-        let prompt = "\(draft?.document.style ?? ""). \(shot.image_prompt.isEmpty ? shot.description : shot.image_prompt). Preserve character identity, costume and facial features from reference images."
-        await store.perform { _ = try await store.submit("/api/images",body:["prompt":prompt,"width":768,"height":1024,"steps":25,"seed":42,"project_id":projectID,"shot_id":shot.id,"reference_assets":Array(refs.prefix(4))]) }
+        let prompt = "\(draft?.document.style ?? ""). \(shot.image_prompt.isEmpty ? shot.description : shot.image_prompt)"
+        await store.perform { _ = try await store.submit("/api/images",body:["prompt":prompt,"width":704,"height":1216,"steps":25,"project_id":projectID,"shot_id":shot.id]) }
     }
     func render(_ shot:Shot) async {
         var p:[String:Any] = ["prompt":"\(draft?.document.style ?? ""). \(shot.video_prompt.isEmpty ? shot.description : shot.video_prompt)\nExact dialogue: \(shot.dialogue)","duration":shot.duration,"width":352,"height":608,"seed":42,"enhance":true,"project_id":projectID,"shot_id":shot.id]
@@ -173,7 +173,13 @@ struct ProjectDetailView: View {
         p.merge(generation.payload){_,new in new}
         await store.perform { _ = try await store.submit("/api/videos",body:p) }
     }
-    func renderAll() async { busy = true; defer {busy=false}; for shot in draft?.document.shots.filter({$0.video_asset==nil}) ?? [] { await render(shot) } }
+    func castReady(_ shot:Shot)->Bool { (draft?.document.characters ?? []).filter{shot.character_ids.contains($0.id)}.allSatisfy{$0.reference_asset != nil} }
+    func produce(_ stage:String) async {
+        busy = true; defer {busy=false}
+        var p:[String:Any] = ["stage":stage]
+        p.merge(generation.payload){_,new in new}
+        await store.perform { _ = try await store.submit("/api/projects/\(projectID)/produce",body:p) }
+    }
 }
 
 struct ShotEditor: View {
@@ -216,7 +222,8 @@ struct CharacterEditor: View {
             Form {
                 TextField("角色名",text:$character.name)
                 SwiftUI.Section("外貌、服装、声音与性格") { TextEditor(text:$character.description).frame(minHeight:180) }
-                SwiftUI.Section("角色参考图提示词") { TextEditor(text:$character.image_prompt).frame(minHeight:150) }
+                SwiftUI.Section("固定外貌（每个镜头都会带上）") { TextEditor(text:Binding(get:{character.appearance ?? ""},set:{character.appearance=$0})).frame(minHeight:110) }
+                SwiftUI.Section("定妆图提示词（留空时使用固定外貌）") { TextEditor(text:$character.image_prompt).frame(minHeight:110) }
                 Picker("参考图片",selection:Binding(get:{character.reference_asset ?? ""},set:{character.reference_asset=$0.isEmpty ? nil:$0})) { Text("未选择").tag("");ForEach(store.images){Text($0.name).tag($0.id)} }
             }.formStyle(.grouped).navigationTitle("角色设定")
             .toolbar { ToolbarItem(placement:.cancellationAction){Button("取消"){dismiss()}};ToolbarItem(placement:.confirmationAction){Button("应用"){onSave(character);dismiss()}.disabled(character.name.isEmpty)} }

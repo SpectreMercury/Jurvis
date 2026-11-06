@@ -205,9 +205,7 @@ def _():
     stale = api.put(f"/api/projects/{project['id']}", json={"document": doc, "expected_updated_at": project["updated_at"] - 1})
     assert stale.status_code == 409
     project = ok(api.put(f"/api/projects/{project['id']}", json={"document": doc, "expected_updated_at": project["updated_at"]}))
-    first = project["document"]["shots"][0]
-    succeeded(ok(api.post("/api/images", json={"prompt": first["image_prompt"] or first["description"], "width": 256, "height": 256, "steps": 8,
-                                                 "project_id": project["id"], "shot_id": first["id"]}))["id"])
+    succeeded(ok(api.post(f"/api/projects/{project['id']}/produce", json={"stage": "frames"}))["id"], 1800)
     for shot in project["document"]["shots"]:
         current = next(p for p in ok(api.get("/api/state"))["projects"] if p["id"] == project["id"])
         shot = next(s for s in current["document"]["shots"] if s["id"] == shot["id"])
