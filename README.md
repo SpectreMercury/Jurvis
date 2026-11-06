@@ -51,6 +51,7 @@ Mac 驱动的原生 Apple 个人助理，以对话为中心：聊天、读图、
 | Mac 本地 App | `build/release/Build/Products/Release/Jurvis.app` |
 | iPhone / iPad 模拟器 | `build/mobile-release/Build/Products/Release-iphonesimulator/Jurvis.app` |
 | 真机工程 | Xcode 中选 `JurvisMobile`，配置自己的开发团队与签名 |
+| TestFlight | 在 `.env` 设置 `JURVIS_TEAM_ID`，在 App Store Connect 建好 App 记录后运行 `./scripts/testflight.sh` |
 
 Mac App 当前依赖此工作目录内的引擎、运行时和模型。它还不是可独立移到任意机器运行的安装包。项目移动后需重新运行安装和构建脚本；Mac 分发公证、iOS 签名和 App Store 发布均未执行。
 

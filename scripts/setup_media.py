@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Install the pinned Apple Silicon media runtime without downloading model weights."""
+import hashlib
 import json
 import subprocess
+import urllib.request
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parent.parent
@@ -16,7 +18,21 @@ SOURCES={
 def run(*args,cwd=ROOT):
     subprocess.run(list(map(str,args)),cwd=cwd,check=True)
 
+def fetch_prompts():
+    # Third-party prompt guides are not redistributed with Jurvis; fetch the pinned files and verify them.
+    folder=ROOT/"engine/prompts"
+    for name,source in json.loads((folder/"sources.json").read_text()).items():
+        dest=folder/name
+        if dest.exists() and hashlib.sha256(dest.read_bytes()).hexdigest()==source["sha256"]:
+            continue
+        with urllib.request.urlopen(source["url"],timeout=60) as response:
+            data=response.read()
+        if hashlib.sha256(data).hexdigest()!=source["sha256"]:
+            raise RuntimeError(f"{name} 校验失败，停止安装")
+        dest.write_bytes(data)
+
 def main():
+    fetch_prompts()
     for name,(url,revision) in SOURCES.items():
         dest=COMFY if name=="ComfyUI" else COMFY/"custom_nodes"/name
         dest.parent.mkdir(parents=True,exist_ok=True)

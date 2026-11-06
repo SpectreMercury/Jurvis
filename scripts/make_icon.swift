@@ -4,13 +4,13 @@
 // Usage:
 //   swift scripts/make_icon.swift <project root> [design]            write the asset catalog
 //   swift scripts/make_icon.swift <project root> <design> --preview <out.png>
-// Designs: swirl (default, the shipped icon), loop, flow, ribbon, aurora, spark, neural, orbj, wave.
+// Designs: jot (default, the shipped icon), jotdark, swirl, loop, flow, ribbon, aurora, spark, neural, orbj, wave.
 import AppKit
 import Foundation
 
 let args = CommandLine.arguments
 let root = URL(fileURLWithPath: args[1])
-let design = args.count > 2 && !args[2].hasPrefix("-") ? args[2] : "swirl"
+let design = args.count > 2 && !args[2].hasPrefix("-") ? args[2] : "jot"
 let previewPath = args.firstIndex(of: "--preview").map { args[$0 + 1] }
 
 let space = CGColorSpace(name: CGColorSpace.sRGB)!
@@ -278,6 +278,19 @@ func glyphJ(_ k: Canvas, size: CGFloat, glow: CGColor) {
     ctx.restoreGState()
 }
 
+/// A geometric lowercase "j": one even stroke with a single accent dot. No glow, no rainbow.
+func jot(_ k: Canvas, ink: CGColor, accent: CGColor) {
+    let ctx = k.ctx, s = k.s
+    let width: CGFloat = k.detailed ? 128 : 168, stem: CGFloat = 604, bend: CGFloat = 380, r: CGFloat = 136
+    let path = CGMutablePath()
+    path.move(to: k.p(stem, 600))
+    path.addLine(to: k.p(stem, bend))
+    path.addArc(center: k.p(stem - r, bend), radius: r * s, startAngle: 0, endAngle: -.pi * 0.95, clockwise: true)
+    ctx.addPath(path.copy(strokingWithWidth: width * s, lineCap: .round, lineJoin: .round, miterLimit: 10))
+    ctx.setFillColor(ink); ctx.fillPath()
+    ctx.setFillColor(accent); ctx.fillEllipse(in: k.circle(k.p(stem, 772), width * 0.56))
+}
+
 /// Angular gradient drawn as thin wedges (CoreGraphics has no public conic gradient in Swift).
 func conic(_ ctx: CGContext, center: CGPoint, radius: CGFloat, stops: [(CGFloat, CGColor)], rotation: CGFloat) {
     let steps = 360
@@ -315,9 +328,13 @@ func artwork(_ ctx: CGContext, tile: CGRect, rounded: Bool, detailed: Bool) {
     } else {
         ctx.clip(to: tile)
     }
-    ctx.drawLinearGradient(gradient([rgb(0.07, 0.07, 0.16), rgb(0.01, 0.01, 0.05)]), start: CGPoint(x: tile.midX, y: tile.maxY), end: CGPoint(x: tile.midX, y: tile.minY), options: [])
+    let paper = rgb(0.957, 0.945, 0.918), ink = rgb(0.075, 0.075, 0.082), ember = rgb(1, 0.36, 0.13)
+    let background = design == "jot" ? [rgb(0.985, 0.975, 0.955), paper] : design == "jotdark" ? [rgb(0.13, 0.13, 0.14), ink] : [rgb(0.07, 0.07, 0.16), rgb(0.01, 0.01, 0.05)]
+    ctx.drawLinearGradient(gradient(background), start: CGPoint(x: tile.midX, y: tile.maxY), end: CGPoint(x: tile.midX, y: tile.minY), options: [])
     let canvas = Canvas(ctx: ctx, c: CGPoint(x: tile.midX, y: tile.midY), s: s, detailed: detailed)
     switch design {
+    case "jot": jot(canvas, ink: ink, accent: ember)
+    case "jotdark": jot(canvas, ink: paper, accent: ember)
     case "spark": spark(canvas)
     case "neural": neural(canvas)
     case "orbj": orbJ(canvas)

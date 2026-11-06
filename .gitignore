@@ -14,4 +14,5 @@ xcuserdata/
 build-*.log
 config/comfy-models.yaml
 config/workflows/*.json
+engine/prompts/*.txt
 
