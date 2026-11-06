@@ -2,6 +2,7 @@
 name = "jurvis-engine"
 version = "0.1.0"
 description = "Local assistant engine for the Jurvis native Apple apps"
+license = "Apache-2.0"
 requires-python = ">=3.12,<3.14"
 dependencies = [
   "fastapi==0.162.0", "uvicorn[standard]==0.54.0", "httpx==0.28.1",
