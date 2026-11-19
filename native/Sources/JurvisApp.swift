@@ -380,13 +380,38 @@ struct PhoneRoot: View {
 
     var hub: Hub { (store.section ?? .assistant).hub }
 
+    /// A screen this wide (iPad, a phone on its side) can spare a strip on the right for the tabs, as icons, and leave the bottom to the content.
+    static let railWidth: CGFloat = 560
+
     var body: some View {
+        GeometryReader { size in
+            // iPhone Duo keeps the clock and status icons in a strip down the right edge, on both of its screens, which the system
+            // reports as a trailing safe area far wider than the leading one. The tabs go into that strip, under the status icons,
+            // instead of taking a row or a column of their own. The insets change as the phone folds, so this is read on every layout.
+            let insets = size.safeAreaInsets
+            let strip = insets.trailing - insets.leading >= 40 ? insets.trailing : 0
+            let rail = strip == 0 && size.size.width >= Self.railWidth
+            HStack(spacing: 0) {
+                pages(rail: rail || strip > 0)
+                if rail { TabRail() }
+            }
+            .overlay {
+                if strip > 0 {
+                    HStack(spacing: 0) { Spacer(minLength: 0); TabRail(width: strip) }.ignoresSafeArea(.container, edges: .trailing)
+                }
+            }
+        }
+        .background(Color.canvas)
+        .task { await openForUICheck() }
+    }
+
+    @ViewBuilder func pages(rail: Bool) -> some View {
         Group {
             switch hub {
             case .tasks:
                 NavigationStack(path: $path) {
                     PhoneTasksView(open: { path = ["run"] })
-                        .safeAreaInset(edge: .bottom, spacing: 0) { TabBar() }
+                        .safeAreaInset(edge: .bottom, spacing: 0) { if !rail { TabBar() } }
                         .navigationDestination(for: String.self) { _ in
                             TaskRunView().toolbar { ToolbarItem(placement: .topBarTrailing) { runMenu } }
                         }
@@ -394,14 +419,12 @@ struct PhoneRoot: View {
             default:
                 NavigationStack {
                     HubView(hub: hub)
-                        .safeAreaInset(edge: .bottom, spacing: 0) { TabBar() }
+                        .safeAreaInset(edge: .bottom, spacing: 0) { if !rail { TabBar() } }
                         .toolbar(.hidden, for: .navigationBar)
                 }
                 .id(hub)
             }
         }
-        .background(Color.canvas)
-        .task { await openForUICheck() }
     }
 
     /// For UI checks in the simulator, where nothing can tap: `SIMCTL_CHILD_JURVIS_UI_START=task|workspace|new|<section>`
@@ -451,6 +474,33 @@ struct TabBar: View {
         .padding(.horizontal, 8)
         .background(Color.canvas.ignoresSafeArea(edges: .bottom))
         .overlay(alignment: .top) { Rectangle().fill(Color.hairline).frame(height: 1) }
+    }
+}
+
+/// The same four tabs down the right edge, icons only, for a screen wide enough to give them a strip of their own.
+struct TabRail: View {
+    @EnvironmentObject var store: AppStore
+    var width: CGFloat = 64
+    var body: some View {
+        let current = (store.section ?? .assistant).hub
+        VStack(spacing: 8) {
+            ForEach(Hub.allCases) { hub in
+                let selected = hub == current
+                Button { if !selected { store.section = hub.first } } label: {
+                    Image(systemName: hub.icon).font(.system(size: 20, weight: selected ? .regular : .light))
+                        .foregroundStyle(selected ? Color.ink : .inkFaint)
+                        .frame(width: 44, height: 44)
+                        .background(selected ? Color.bubble : .clear, in: RoundedRectangle(cornerRadius: Metrics.controlRadius, style: .continuous))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(hub.rawValue).accessibilityAddTraits(selected ? .isSelected : [])
+            }
+        }
+        .frame(maxHeight: .infinity)
+        .frame(width: width)
+        .background(Color.canvas.ignoresSafeArea())
+        .overlay(alignment: .leading) { Rectangle().fill(Color.hairline).frame(width: 1).ignoresSafeArea() }
     }
 }
 
