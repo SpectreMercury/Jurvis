@@ -5,6 +5,9 @@ tool calls it made after that text; the final step carries the answer. The UI
 renders the steps as they stream, and later turns replay them as real
 assistant/tool messages so the model keeps the IDs and results it saw.
 """
+import asyncio
+import copy
+import difflib
 import json
 import re
 import time
@@ -18,13 +21,19 @@ from .shell import excerpt
 from .store import dumps
 from .tools import Outcome
 
-MAX_STEPS = 12
-GOAL_STEPS = 40              # goal mode keeps going until finish_goal, within these limits
+MAX_STEPS = 24
+CONTINUES = 4                # times a reply cut off by the output limit is continued
+CUTS = 3                     # tool calls cut off by the output limit before the model must answer in prose
+LOCAL_TOKENS, CLOUD_TOKENS = 6000, 12000   # output limit of one model call
+ARGUMENT_CHARS = 600         # long tool arguments (written documents) replayed from earlier turns are shortened to this
+GOAL_STEPS = 60              # goal mode keeps going until finish_goal, within these limits
 GOAL_SECONDS = 45 * 60
 GOAL_CONTEXT = 60000         # older tool results are shortened past this many characters
 GOAL_REVIEWS = 2             # times the reviewer may send a "done" claim back
 HISTORY_CHARS = 42000
 RESULT_CHARS = 8000          # tool output the model sees in this turn
+CLOUD_SCALE = 4              # cloud models have far larger context windows than the local one
+SUB_STEPS = 12               # tool rounds a delegated helper may take
 HISTORY_RESULT_CHARS = 1500  # tool output replayed from earlier turns
 
 SYSTEM = """You are Jurvis, the user's personal assistant running locally on their Mac. Always reply in the language of the user's latest message (including any sentence you write before a tool call), concisely and warmly.
@@ -34,11 +43,15 @@ How to work:
 - You may call several tools in one turn and keep going until the request is done. Before calling tools you may write one short sentence about what you are doing.
 - Never claim something happened without a tool result. If a tool fails, say what failed and suggest a next step.
 - You can only act through the tools you are given. With run_command you can run shell commands on this Mac; the user approves each one before it runs. When the user asks you to install something (packages, plugins, models), run a script, or check or change something on the Mac, do it with run_command instead of telling them what to type. Run one step at a time, read the output, and check the result (for example the installed version) before saying it worked.
-- You cannot send email or messages or look up real-time information (weather, news, prices). When asked, say so plainly and offer what you can do instead, such as drafting the text.
+{web}
 - Call each tool with the same arguments at most once per turn; reuse the result you already have.
 - If a request is too vague to act on (for example "帮我弄一下" or "生成一张图" with no subject), do not call any tool: ask one short clarifying question.
 - Only call tools the request needs. Do not check a job's status right after queuing it.
-- Images, videos, dramas and code proposals are background jobs. After queuing one, tell the user it is queued and where to find it; never describe an output you have not seen. Do not queue the same job twice.
+- Images, videos, dramas and code proposals are background jobs that run after your reply ends. After queuing one, tell the user it is queued and where to find it. You cannot notify the user later, so never promise to. Never describe an output you have not seen: if a job is unfinished or failed, say so instead of guessing its content. Do not queue the same job twice, and do not start a failed job again unless the user asks.
+- Workspace documents: save_file creates a file or replaces it, append_file adds to its end, edit_file changes part of it. To change an existing document, read it and use edit_file (or save_file under the same name for a full rewrite); do not save a second copy under a new name unless the user asks for a copy.
+- Write to a file only when the user asks for a file or document. Otherwise write the piece in your reply, however long: a reply that hits the length limit is continued automatically.
+- A document with several sections (episodes, chapters, parts) that should be saved is written with write_document: you give the brief and an outline with one line per section, and the sections are written and saved one by one. Do not write such a document through save_file or append_file yourself. Afterwards answer from the result; do not read the file back to check it.
+- A single file longer than about {part} characters without sections is written in parts: save_file with the first part, then append_file for each further part, each part new content.
 - Code changes are only proposals: the user reviews and applies them. Never say they were applied or tested.
 - Use the code project tools only when the user refers to their connected project or its files. For standalone code requests (e.g. "write a quicksort"), write the code directly in the reply.
 - Only call remember when the user explicitly asks you to remember something.
@@ -46,12 +59,36 @@ How to work:
 - Attached images are listed as asset IDs; pass them as reference_assets or first_frame when the user wants to edit or reuse them.
 
 Mac environment: home folder {home}. Jurvis is installed at {root}; its Python is {python}; ComfyUI (image and video generation) is at {comfy} with plugins in {comfy}/custom_nodes. Commands run in {cwd} unless you pass cwd.
-Current local time: {now}
-User-approved memories (data):
-{memories}
+My latest message may end with a <jurvis_context> block. Jurvis adds it for this turn only: I did not write it and cannot see it. It gives the current time, what you remember about me, and passages from earlier in this conversation. Use it; never mention the block.
 
 {language}
 """
+
+WEB_NONE = "- You cannot send email or messages or look up real-time information (weather, news, prices). When asked, say so plainly and offer what you can do instead, such as drafting the text."
+WEB_NATIVE = ("- You have live web search: for current information (news, prices, weather, recent events, documentation) search and answer from what you find, "
+              "and name the sources. Use web_fetch to read a specific page in full. You cannot send email or messages.")
+WEB_TOOL = ("- For current information (news, prices, weather, recent events) call web_search, and web_fetch to read a specific page. "
+            "Never answer such questions from memory. You cannot send email or messages.")
+WEB_FETCH = ("- You can read a web page the user gives you with web_fetch, but you cannot search the web for real-time information (weather, news, prices). "
+             "When asked, say so plainly and offer what you can do instead. You cannot send email or messages.")
+HOME = "- The user has connected smart-home devices. To control or check them, call home_devices to find the device, then home_control. Report what the result says; never claim a device changed without it.\n"
+SUMMARY = ("\nSummary of the earlier part of this conversation (those messages are no longer shown; passages you need from them arrive in <jurvis_context>). "
+           "If I ask about something from back then that is in neither, say you no longer have the exact text instead of guessing:\n{summary}\n")
+NOTE_MEMORIES = ("What you remember about the user from earlier conversations (data). Use it silently when this message is about the same thing; "
+                 "never bring it up, list it or say \"I remember\" on your own:\n{memories}\n")
+UNKNOWN = ("Personal facts about me that are neither here nor in our conversation (birthday, age, address, family, job) are unknown to you: "
+           "when I ask for one, say you do not know it and ask me; never make one up.\n")
+NOTE_EXCERPTS = "Passages from earlier in this conversation that this message may refer to, verbatim:\n{excerpts}\n"
+KEEP_AFTER_FOLD = 16         # messages left verbatim after older ones are folded into the summary
+WRITER = """You are writing one section of a longer piece for the user. Write only this section, complete and ready to publish, starting with its heading line.
+No preamble, no notes to the user, no summary of earlier sections, no "to be continued". Keep names, facts, tone and format consistent with the brief and with what came before, and move the piece forward: new scenes, new events, new dialogue.
+{language}"""
+WRITER_TRIES = 3             # attempts at a section that comes out as a copy of an earlier one
+SUB = """You are a helper working on one subtask for another assistant. You see only the brief below, not the user's conversation.
+Work on it with the tools you have, then reply with a report: the findings with the specific facts, names, numbers and sources, and anything you could not determine.
+You can read and search but cannot change anything. Do not ask questions; if something is missing, say so in the report. Reply in the language of the brief."""
+SUB_TOOLS = {"calculate", "list_files", "read_file", "recall", "web_fetch", "web_search", "load_skill", "home_devices", "code_projects", "code_files", "code_read", "code_search", "job_status",
+             "find_files", "search_files", "command_output", "browser_open", "browser_read", "browser_elements"}
 
 CODING = """
 Coding conversation: the user is working on the code project "{name}" (project_id {id}, folder {root}). Questions are about this project unless they say otherwise.
@@ -59,14 +96,17 @@ Coding conversation: the user is working on the code project "{name}" (project_i
 - To change code, call edit_code once with every replacement for the change. old_text must be copied exactly from code_read (including indentation) and be unique; leave it empty only for a new file. If edit_code reports an error, read the file again and retry.
 - The change is shown to the user as a diff with 「应用修改」(apply), 「撤销」(undo) and 「运行测试」(run tests) buttons; refer to them by these names. It is not applied or tested until they do that, so never say it was applied, run or tested.
 - After the edit, explain the change in a few sentences; do not paste the whole file.
+- Commands for this project (tests, builds) run in its folder {root}: leave cwd empty.
 Files in the project ({count}{more}):
 {files}
 """
-CODING_TOOLS = {"calculate", "recall", "remember", "code_files", "code_read", "code_search", "edit_code", "run_command"}
+CODING_TOOLS = {"calculate", "recall", "remember", "code_files", "code_read", "code_search", "find_files", "search_files", "edit_code", "run_command"}
+CODING_EXTRAS = {"load_skill", "find_tools", "command_output", "stop_command"}  # offered in a code project when set up; the set stays small on purpose
 
 GOAL = """
 Goal mode: the user's latest message is a goal to achieve. Work on it autonomously until it is done:
-- Make a short plan, then act step by step with tools. Do not stop to ask for confirmation or to report progress; keep going until the goal is met.
+- Act step by step with tools. Do not stop to ask for confirmation or to report progress; keep going until the goal is met.
+- Several written parts (episodes, chapters, one file each or all in one file) are one write_document call with the whole outline, not one save_file per part.
 - Check every result. When something fails, read the error and try a different fix; never repeat a failing step unchanged.
 - In goal mode edit_code applies the change right away (the user can still undo it), so run and test it with run_command.
 - Before finishing, prove the goal is met with a tool: run the tests or the program, check the installed version, read the file back.
@@ -75,14 +115,51 @@ Goal mode: the user's latest message is a goal to achieve. Work on it autonomous
 NUDGE = ("[Jurvis harness] Goal mode: you stopped without calling finish_goal. If the goal is achieved and verified, call finish_goal "
          "with status done and the evidence. If you need me, call finish_goal with status blocked. Otherwise continue with the next action now.")
 FINAL = "[Jurvis harness] Tool budget reached. Answer my request now using the results above, without calling tools."
+GOAL_PLAN = ("- When the goal has several deliverables (several files to write), first call update_plan with them, one per line, "
+             "and call it again with the finished numbers in done as you finish them.\n")
 FINAL_GOAL = ("[Jurvis harness] The time or step budget for this goal is used up. Do not call tools. Report to me: what is done, "
               "what is not done yet, and the next step.")
+CUT_CALL = ("[Jurvis harness] Your last tool call was cut off by the output limit before its arguments were complete, so it did NOT run and nothing from it was saved. "
+            "Do it again in smaller parts: at most about {part} characters of content per call. {state}")
+CUT_FRESH = "Use save_file for the first part, then one append_file call per further part."
+CUT_RESUME = ("What is already saved stays: {files}. Do not rewrite it; add the next part with append_file.")
+BAD_CALL = ("[Jurvis harness] Your last tool call could not be read, so it did NOT run: {detail}. Send the call again. "
+            "Text arguments are plain text; list or object arguments must be strict JSON (double quotes, quotes and line breaks inside strings escaped).")
+CONTINUE = ("[Jurvis harness] Your reply was cut off by the output limit. Continue exactly where it stopped: no preamble, no repetition, no summary of what came before.")
+SHORT = ("[Jurvis harness] That is about {have} characters, but I asked for about {want}. Do not start over and do not comment on this: "
+         "keep writing the same piece from where it stopped, adding new scenes and detail, until the whole piece reaches the length I asked for.")
+SAME_RESULT = "Different arguments, but exactly the same result as an earlier call in this turn. Searching again this way will not find more: use what you have or tell me what is missing."
+LENGTH = re.compile(r"(?<![每各])(\d{4,5})\s*(?:个)?字(?!节)")  # "写一篇 5000 字的…": a length the reply itself must reach
+UNSAVED = ("[Jurvis harness] The file was not changed: your last {tool} call failed ({error}) and nothing was written after it. "
+           "Make the change now with a tool call (append_file adds to the end of a file; edit_file replaces a passage), or tell me plainly that the file is unchanged.")
+ADMITS = re.compile(r"没能|未能|没有(?:改|保存|写|更新)|还没|失败|无法|not (?:changed|saved|written)|unchanged|could ?n[o']t|failed", re.I)
+FILE_WRITES = {"save_file", "append_file", "edit_file"}
+EMPTY = "[Jurvis harness] Your last reply was empty. Answer my request now, or call the tool it needs."
+DUPLICATE = ("This text is almost identical to what you already wrote to {other} in this turn, so nothing was saved. "
+             "Do not send it again. Sections already written: {sections}. Write the NEXT section: new events, new scenes, new dialogue that move the piece forward.")
+FACTS = "\nFor your answer, measured by the system — documents written in this turn:\n{documents}\nSay plainly what is finished and what is not; do not claim parts that are not in these documents."
+HEADING = re.compile(r"^\s*(?:#{1,4}\s*.+|第\s*[0-9一二三四五六七八九十百]+\s*[集章幕场节回][^\n]{0,30})$", re.M)
 HANDBACK = ("[Jurvis harness] I declined the command, so stop here and do not call tools. Reply to me briefly: "
             "what did not run, and what you need from me to continue.")
 QUESTION = re.compile(r"？|\?(\s|$)")  # a goal reply that asks the user something waits for their answer
 REVIEW = """You check whether an assistant really achieved the user's goal. Judge only from the tool calls and results shown, never from the assistant's claims.
 The goal is achieved only when a tool result proves it (tests passed with exit code 0, the package imports or shows its version, the file contains the change, and so on). Steps that failed, were skipped or were never verified mean it is not achieved.
+Check every number and name the goal states (how many files, their names, minimum lengths) against the "Documents written" facts, which are measured by the system. Near-identical documents mean the work was copied, not done.
 Reply with JSON only: {"achieved": true or false, "missing": "what is still missing or unproven, in the language of the goal; empty if achieved"}"""
+
+PLAN = """
+Plan mode: the user wants a plan before anything is changed. Look into the request with the read-only tools you have (read, search, browse), then:
+- Call update_plan with the steps you propose, one per line, concrete enough to act on (which file, which command, which page).
+- Reply with a short explanation of the approach, anything you are unsure about, and what you need decided.
+- Change nothing: no files written, no commands run, and no step is marked done. Do not try the steps to see if they work. The user will reply to approve or adjust the plan, and the work starts then.
+"""
+CHECKLIST = ("- For work with several distinct parts (three or more deliverables or stages), you may call update_plan first with the parts, "
+             "and again with the finished numbers as you go, so the user can follow. Skip it for anything simpler.\n")
+BROWSER = ("- You can drive a browser window on this Mac: browser_open a page, browser_read its text, browser_elements to get refs for "
+           "browser_click and browser_type. The user sees the window and approves clicks and typing. Never type passwords or payment details: "
+           "ask the user to do that step themselves in the window, then continue. For just reading a public page, web_fetch is faster.\n")
+BACKGROUND = ("- A command that keeps running (a dev server, a watcher) is started with run_command and background set; "
+              "check it with command_output and end it with stop_command when the work is done.\n")
 
 # Composer chips: the user picked what to make, so act on it instead of asking.
 MODES = {
@@ -98,7 +175,8 @@ def language_rule(text):
     """The model drifts into English before tool calls; state the reply language explicitly."""
     if CJK.search(text or ""):
         return "The user's latest message is in Chinese. Write everything in Simplified Chinese, including any short sentence before a tool call."
-    return "Reply in the same language as the user's latest message, including any short sentence before a tool call."
+    return ("Reply in the same language as the user's latest message, including any short sentence before a tool call. "
+            "Keep to that language even when memories or earlier turns are in another one.")
 
 
 def parse_arguments(raw):
@@ -116,54 +194,183 @@ def parse_arguments(raw):
     return value if isinstance(value, dict) else raw
 
 
+def similar(a, b):
+    """True when two pieces of writing are near copies of each other."""
+    a, b = a[:5000], b[:5000]
+    if min(len(a), len(b)) < 200 or min(len(a), len(b)) / max(len(a), len(b)) < .6:
+        return False
+    matcher = difflib.SequenceMatcher(None, a, b, autojunk=False)
+    return matcher.quick_ratio() >= .85 and matcher.ratio() >= .85
+
+
+def once(text):
+    """A section cut where its own heading comes round again: the model had begun writing the same section a second time."""
+    lines = text.strip().splitlines()
+    if not lines or not HEADING.match(lines[0]):
+        return text.strip()
+    mark = re.sub(r"[\s#*]", "", lines[0])
+    for n, line in enumerate(lines[1:], 1):
+        if re.sub(r"[\s#*]", "", line) == mark:
+            return "\n".join(lines[:n]).strip()
+    return text.strip()
+
+
+def shorten_arguments(arguments, limit=ARGUMENT_CHARS):
+    """Tool arguments for replay: a document the model wrote earlier is kept as its opening, since the file holds the rest."""
+    if not isinstance(arguments, dict):
+        return arguments
+    out = {}
+    for key, value in arguments.items():
+        if isinstance(value, str) and len(value) > limit:
+            out[key] = value[:limit] + f"…({len(value) - limit} more characters omitted from this replay; read the file for the full text)"
+        elif isinstance(value, list) and len(dumps(value)) > limit * 3:
+            out[key] = [shorten_arguments(v, limit // 2) if isinstance(v, dict) else v for v in value]
+        else:
+            out[key] = value
+    return out
+
+
+def message_size(message):
+    size = len(message["content"]) if isinstance(message.get("content"), str) else 2000
+    return size + sum(len(c["function"]["arguments"]) for c in message.get("tool_calls") or [])
+
+
 def clip(text, limit):
     return text if len(text) <= limit else text[:limit] + "…(truncated)"
 
 
 class Agent:
-    def __init__(self, settings, store, runtime, tools, media, shell):
+    def __init__(self, settings, store, runtime, tools, media, shell, llm=None, memory=None, skills=None):
         self.settings, self.store, self.runtime, self.tools, self.media, self.shell = settings, store, runtime, tools, media, shell
+        self.llm, self.memory, self.skills = llm, memory, skills
+        self.model = None
+
+    async def run(self, job):
+        # Each reply works on its own copy, so several conversations can run at once without sharing per-turn state.
+        return await copy.copy(self).turn(job)
+
+    @property
+    def cloud(self):
+        return bool(self.llm and not self.llm.is_local(self.model))
+
+    async def ask(self, messages, **options):
+        """One model call with this conversation's model. search=False keeps a cloud model from searching the web."""
+        search = options.pop("search", None)
+        if self.cloud:
+            return await self.llm.stream(messages, model=self.model, search=search, **options)
+        return await self.runtime.stream(messages, **options)
 
     # ---- context ----
-    def context(self, p):
-        rows = self.store.all("SELECT * FROM messages WHERE session_id=? AND id!=? ORDER BY created_at DESC LIMIT ?",
-                              (p["session_id"], p["message_id"], self.settings.history_messages))
-        memories = self.store.all("SELECT title,content FROM memories WHERE enabled=1 ORDER BY updated_at DESC LIMIT 10")
-        memories = [{"title": m["title"], "content": m["content"][:1200]} for m in memories]
-        turns, budget = [], HISTORY_CHARS
-        for row in rows:  # newest first; stop once the budget is spent
-            if row["role"] not in ("user", "assistant") or row["status"] != "complete":
-                continue
-            turn = self.replay(row)
-            size = sum(len(m["content"]) if isinstance(m["content"], str) else 2000 for m in turn)
-            if size > budget:
-                break
-            turns.append(turn); budget -= size
-        # Replayed history must open with a user turn.
-        messages = [m for turn in reversed(turns) for m in turn]
-        while messages and messages[0]["role"] != "user":
-            messages.pop(0)
+    async def context(self, p, job=None):
+        session = self.store.one("SELECT * FROM sessions WHERE id=?", (p["session_id"],)) or {}
+        self.model = self.llm.chat_model(session.get("model")) if self.llm else None
+        scale = CLOUD_SCALE if self.cloud else 1
+        self.tokens = CLOUD_TOKENS if self.cloud else LOCAL_TOKENS
+        self.part = self.tokens // 3  # characters of written content that safely fit one tool call (CJK text, JSON escaping)
+        self.incognito = bool(session.get("incognito"))
         latest = self.store.one("SELECT content,metadata FROM messages WHERE session_id=? AND role='user' ORDER BY created_at DESC LIMIT 1", (p["session_id"],))
         self.request = latest["content"] if latest else ""
         self.chinese = bool(CJK.search(self.request))
         self.mode = latest and latest["metadata"].get("mode")
-        session = self.store.one("SELECT code_project_id FROM sessions WHERE id=?", (p["session_id"],))
+        kept = self.window(p, session, scale)
+        # Messages that no longer fit are folded into the conversation summary before answering, so nothing silently drops out.
+        if self.memory and kept:
+            older = self.store.all("SELECT role,content,created_at FROM messages WHERE session_id=? AND status='complete' AND role IN ('user','assistant') "
+                                   "AND created_at>? AND created_at<? ORDER BY created_at", (p["session_id"], self.folded(session), kept[0][0]["created_at"]))
+            if older:
+                if job:
+                    self.store.update_job(job["id"], phase="正在整理较早的对话")
+                cut = max(0, len(kept) - KEEP_AFTER_FOLD)
+                while cut < len(kept) - 1 and kept[cut][0]["role"] != "user":
+                    cut += 1  # what stays verbatim opens with a user message, so no reply is left out of both
+                spare = kept[:cut]
+                try:
+                    done = await self.memory.fold(session, older + [row for row, _ in spare], self.ask)
+                except RuntimeError:
+                    done = False
+                if done:
+                    session = self.store.one("SELECT * FROM sessions WHERE id=?", (p["session_id"],))
+                    kept = kept[len(spare):]
+        # Replayed history must open with a user turn.
+        messages = [m for _, turn in kept for m in turn]
+        while messages and messages[0]["role"] != "user":
+            messages.pop(0)
+        if self.memory:
+            memories = await self.memory.for_turn(session, self.request, messages)
+            memories = [{"title": m["title"], "content": m["content"]} for m in memories]
+            excerpts = self.memory.excerpts(p["session_id"], self.folded(session), self.request)
+        else:
+            memories = self.store.all("SELECT title,content FROM memories WHERE enabled=1 ORDER BY updated_at DESC LIMIT 10")
+            memories = [{"title": m["title"], "content": m["content"][:1200]} for m in memories]
+            excerpts = []
+        # What changes from turn to turn goes at the end of the context, so the model server can reuse its cache of everything before it.
+        note = "\n\n<jurvis_context>\nThe clock right now (today's date and time, not a fact about me): " + datetime.now().strftime("%Y-%m-%d %H:%M %A") + "\n"
+        if memories:
+            note += NOTE_MEMORIES.format(memories=dumps(memories))
+        note += UNKNOWN
+        if excerpts:
+            note += NOTE_EXCERPTS.format(excerpts="\n---\n".join(f"User: {e['user']}\nAssistant: {e['assistant']}" for e in excerpts))
+        note += "</jurvis_context>"
+        if not messages or messages[-1]["role"] != "user":
+            messages.append({"role": "user", "content": self.request})
+        last = messages[-1]
+        if isinstance(last["content"], str):
+            messages[-1] = {**last, "content": last["content"] + note}
+        else:
+            messages[-1] = {**last, "content": [{**b, "text": b["text"] + note} if n == 0 and b.get("type") == "text" else b for n, b in enumerate(last["content"])]}
+        names = self.tool_names(p["session_id"], plan=self.mode == "plan")
+        web = (WEB_NATIVE if self.cloud and self.llm.searches(self.model) else WEB_TOOL if "web_search" in names
+               else WEB_FETCH if "web_fetch" in names else WEB_NONE)
         self.cwd = Path.home()
         coding = ""
-        if session and session["code_project_id"]:
+        if session and session.get("code_project_id"):
             coding = self.coding_context(session["code_project_id"])
             try:
                 self.cwd = Path(self.tools.coding.project(session["code_project_id"])["root"])
+                if self.skills:
+                    self.skills.use_project(self.cwd)
             except ValueError:
                 pass
-        system = SYSTEM.format(now=datetime.now().strftime("%Y-%m-%d %H:%M %A"), memories=dumps(memories) if memories else "(none)",
-                               language=language_rule(self.request), home=Path.home(), root=self.settings.root,
-                               python=self.settings.python, comfy=self.settings.comfy, cwd=self.cwd)
+        system = SYSTEM.format(language=language_rule(self.request), home=Path.home(), root=self.settings.root,
+                               python=self.settings.python, comfy=self.settings.comfy, cwd=self.cwd, web=web, part=self.part)
+        if "home_control" in names:
+            system += HOME
+        if "load_skill" in names:
+            system += self.skills.prompt()
+        if session.get("summary"):
+            system += SUMMARY.format(summary=session["summary"])
         if self.mode in MODES:
             system += "\n" + MODES[self.mode] + "\n"
+        if "browser_open" in names:
+            system += BROWSER
+        if "run_command" in names and "command_output" in names:
+            system += BACKGROUND
         if self.mode == "goal":
-            system += GOAL
+            system += GOAL + (GOAL_PLAN if "update_plan" in self.tool_names(p["session_id"], goal=True) else "")
+        elif self.mode == "plan":
+            system += PLAN
+        elif "update_plan" in names:
+            system += CHECKLIST
         return [{"role": "system", "content": system + coding}, *messages]
+
+    @staticmethod
+    def folded(session):
+        return (session.get("summary_upto") or 0) if session.get("summary") else 0
+
+    def window(self, p, session, scale):
+        """The newest finished messages that fit the history budget, oldest first, as (row, replayed messages)."""
+        rows = self.store.all("SELECT * FROM messages WHERE session_id=? AND id!=? AND created_at>? ORDER BY created_at DESC LIMIT ?",
+                              (p["session_id"], p["message_id"], self.folded(session), self.settings.history_messages * scale))
+        kept, budget = [], HISTORY_CHARS * scale
+        for row in rows:  # newest first; stop once the budget is spent
+            if row["role"] not in ("user", "assistant") or row["status"] != "complete":
+                continue
+            turn = self.replay(row)
+            size = sum(message_size(m) for m in turn)
+            if size > budget and kept:
+                break
+            kept.append((row, turn)); budget -= size
+        return kept[::-1]
 
     def coding_context(self, ident):
         try:
@@ -174,10 +381,24 @@ class Agent:
         return CODING.format(name=project["name"], id=ident, root=project["root"], count=len(paths),
                              more=", more not listed" if tree["truncated"] or len(paths) > 300 else "", files="\n".join(paths[:300]))
 
-    def tool_names(self, session_id, goal=False):
+    def tool_names(self, session_id, goal=False, plan=False):
         row = self.store.one("SELECT code_project_id FROM sessions WHERE id=?", (session_id,))
-        names = set(CODING_TOOLS) if row and row["code_project_id"] else {n for n in self.tools.tools if n != "finish_goal"}
-        return names | {"finish_goal"} if goal else names
+        coding = bool(row and row["code_project_id"])
+        if coding:
+            names = set(CODING_TOOLS) | (self.tools.available(self.model) & (self.tools.dynamic | CODING_EXTRAS))
+        else:
+            names = self.tools.default_names(self.model)
+        if getattr(self, "incognito", False):
+            names.discard("remember")
+        if plan:
+            # Plan mode looks and proposes; nothing that changes a file, runs a command or acts outside is offered.
+            return {n for n in names if self.tools.tools[n].effect == "read"} | {"update_plan"}
+        if goal:
+            # A plan helps with many deliverables; in a code project the loop is edit, run, read the error, and a plan only gets in its way.
+            names |= {"finish_goal"} if coding else {"finish_goal", "update_plan"}
+        elif self.cloud and not coding:
+            names.add("update_plan")  # a checklist for larger work; small local models call it for everything, so it stays with cloud models
+        return names
 
     def replay(self, row):
         if row["role"] == "user":
@@ -204,20 +425,31 @@ class Agent:
                     out.append({"role": "assistant", "content": step["text"]})
                 continue
             out.append({"role": "assistant", "content": step.get("text", ""), "tool_calls": [
-                {"id": c["id"], "type": "function", "function": {"name": c["name"], "arguments": dumps(c.get("arguments", {}))}} for c in calls]})
+                {"id": c["id"], "type": "function", "function": {"name": c["name"], "arguments": dumps(shorten_arguments(c.get("arguments", {})))}} for c in calls]})
             out.extend({"role": "tool", "tool_call_id": c["id"], "content": clip(c.get("output", ""), HISTORY_RESULT_CHARS)} for c in calls)
         return out
 
     # ---- loop ----
-    async def run(self, job):
+    async def turn(self, job):
         p = job["payload"]
         mid = p["message_id"]
-        messages = self.context(p)
+        self.tools.refresh()
+        messages = await self.context(p, job)
         goal = self.mode == "goal"
-        schemas = self.tools.schemas(self.tool_names(p["session_id"], goal))
+        tokens = self.tokens
+        self.written = []  # (file, tool, content) of documents written in this turn
+        plan = self.mode == "plan"
+        allowed = self.tool_names(p["session_id"], goal, plan)
+        schemas = self.tools.schemas(allowed)
         limit, deadline = (GOAL_STEPS, time.monotonic() + GOAL_SECONDS) if goal else (MAX_STEPS, None)
-        steps, done, repeats, nudges, failing, handback = [], {}, 0, 0, 0, False
+        steps, done, repeats, nudges, failing, handback, cuts, empties = [], {}, 0, 0, 0, False, 0, 0
+        unsaved = False
+        outputs, stretched, heat = set(), 0, None
+        wanted = LENGTH.search(self.request)
+        wanted = int(wanted.group(1)) if wanted and not goal else 0
         meta = {"steps": steps}
+        if self.cloud:
+            meta["model"] = self.model
         if goal:
             meta["goal"] = {"status": "running", "reviews": 0}
         last_save = 0.0
@@ -238,35 +470,93 @@ class Agent:
         for index in range(limit + 1):
             # Out of budget, or stuck repeating itself: the model must answer now.
             # A declined command hands control back to the user; a goal also stops after a long run of failed steps.
-            final = (index == limit or handback or repeats >= (5 if goal else 2) or (goal and failing >= 6)
+            final = (index == limit or handback or repeats >= (5 if goal else 2) or (goal and failing >= 6) or cuts >= CUTS
                      or bool(deadline and time.monotonic() > deadline))
             step = {"text": "", "calls": []}
             steps.append(step)
             if goal:
                 meta["goal"]["steps"] = index + 1
                 self.store.update_job(job["id"], phase=f"目标 · 第 {index + 1} 步", progress=min(.95, .05 + index / limit))
-                self.compact(messages)
             else:
-                self.store.update_job(job["id"], phase="正在思考" if index == 0 else "正在整理结果", progress=min(.9, .1 + index * .1))
+                self.store.update_job(job["id"], phase="正在思考" if index == 0 else "正在整理结果", progress=min(.9, .1 + index * .9 / limit))
+            self.compact(messages, GOAL_CONTEXT * (CLOUD_SCALE if self.cloud else 1))
+            carried = ""
 
             async def on_text(text, step=step):
-                step["text"] = strip_markup(text)
+                step["text"] = carried + strip_markup(text)
                 save()
             if final:
-                messages.append({"role": "user", "content": HANDBACK if handback else FINAL_GOAL if goal else FINAL})
-            reply = await self.runtime.stream(messages, tools=None if final else schemas, max_tokens=3000, on_text=on_text)
+                closing = HANDBACK if handback else FINAL_GOAL if goal else FINAL
+                messages.append({"role": "user", "content": closing + (FACTS.format(documents=self.documents()) if self.written and not handback else "")})
+            options = {"temperature": heat} if heat and not final else {}
+            heat = None
+            reply = await self.ask(messages, tools=None if final else schemas, max_tokens=tokens, on_text=on_text, **options)
             if final and not strip_markup(reply.text):
                 # Some models keep emitting tool markup after tools are withdrawn; ask once more for prose.
                 messages.append({"role": "user", "content": "[Jurvis harness] Reply in plain text only. Do not write <tool_call>."})
-                reply = await self.runtime.stream(messages, tools=None, max_tokens=3000, temperature=0.8, on_text=on_text)
+                reply = await self.ask(messages, tools=None, max_tokens=tokens, temperature=0.8, on_text=on_text)
             reply.text = strip_markup(reply.text)
+            # A reply that ran into the output limit is continued in place, so long writing arrives whole.
+            parts = 0
+            while reply.finish == "length" and not reply.tool_calls and not getattr(reply, "cut", False) and reply.text and parts < CONTINUES:
+                if carried and similar(reply.text, carried[-len(reply.text) - 200:]):
+                    reply.text, reply.finish = "", "stop"  # the model is going round in circles: keep what was new and stop
+                    break
+                parts += 1
+                carried += reply.text
+                self.store.update_job(job["id"], phase=f"正在续写 · 第 {parts + 1} 段")
+                messages.append({"role": "assistant", "content": reply.text})
+                messages.append({"role": "user", "content": CONTINUE})
+                reply = await self.ask(messages, tools=None, max_tokens=tokens, on_text=on_text)
+                reply.text = strip_markup(reply.text)
+                reply.tool_calls = []
+            # Local models stop long pieces early: when the user named a length and the reply is far short of it, the piece is extended in place.
+            while (wanted and not final and not reply.tool_calls and not any(s["calls"] for s in steps) and reply.finish != "length"
+                   and 400 < len(carried + reply.text) < wanted * .7 and stretched < 3 and not QUESTION.search(reply.text[-80:])):
+                stretched += 1
+                carried += reply.text + "\n\n"
+                self.store.update_job(job["id"], phase=f"正在续写 · 已写 {len(carried)} 字")
+                messages.append({"role": "assistant", "content": reply.text})
+                messages.append({"role": "user", "content": SHORT.format(have=len(carried), want=wanted)})
+                reply = await self.ask(messages, tools=None, max_tokens=tokens, on_text=on_text)
+                reply.text = strip_markup(reply.text)
+                reply.tool_calls = []
+            if carried and stretched:
+                reply.text = carried + reply.text
+            elif carried:
+                # Parts join without a seam; a part that opens a new block starts on its own line.
+                reply.text = carried + ("\n\n" if re.match(r"(#{1,6} |[-*] |\d+[.、] |\*\*|第.{1,4}[集章幕场])", reply.text) else "") + reply.text
+            # A tool call cut off mid-arguments must not run: tell the model to write in smaller parts.
+            cut = getattr(reply, "cut", False) and not final
+            if reply.finish == "length" and reply.tool_calls and not final:
+                last = reply.tool_calls[-1]
+                if cut or not isinstance(parse_arguments(last["arguments"]), dict):
+                    cut, reply.tool_calls = True, reply.tool_calls[:-1]
+            for source in getattr(reply, "citations", None) or []:
+                if source not in meta.setdefault("sources", []) and len(meta["sources"]) < 20:
+                    meta["sources"].append(source)
             if reply.tool_calls and self.chinese and reply.text and not CJK.search(reply.text):
                 reply.text = ""  # optional narration before a tool call, in the wrong language: the trace says enough
             step["text"] = reply.text
-            if reply.finish == "length":
+            if reply.finish == "length" and not cut:
                 meta["truncated"] = True
             if final:
                 reply.tool_calls = []  # tools were withheld; never act on stray calls
+            bad = getattr(reply, "bad", "") if not final else ""
+            if (cut or bad) and not reply.tool_calls:
+                cuts += 1
+                if not reply.text:
+                    steps.pop()  # nothing to show for this attempt
+                messages.append({"role": "assistant", "content": reply.text or "(my tool call did not go through)"})
+                messages.append({"role": "user", "content": BAD_CALL.format(detail=bad) if bad else self.cut_message()})
+                heat = .8 if bad else None
+                save(force=True)
+                continue
+            if not reply.tool_calls and not reply.text and not final and empties < 2:
+                empties += 1  # an empty turn is a model hiccup, not an answer
+                steps.pop()
+                messages.append({"role": "user", "content": EMPTY})
+                continue
             if not reply.tool_calls:
                 if goal and not final and QUESTION.search(reply.text):
                     return finish("blocked")  # it asked the user something: wait for the answer instead of pushing on
@@ -277,21 +567,48 @@ class Agent:
                     messages.append({"role": "user", "content": NUDGE})
                     save(force=True)
                     continue
+                writes = [c for s in steps for c in s["calls"] if c["name"] in FILE_WRITES | {"write_document"} and c["status"] in ("ok", "error")]
+                if writes and writes[-1]["status"] == "error" and writes[-1]["name"] in FILE_WRITES and not final and not unsaved and not plan and not ADMITS.search(reply.text):
+                    # Saying "done" after a failed write is the worst ending: one push to really make the change or admit it.
+                    unsaved = True
+                    messages.append({"role": "assistant", "content": reply.text})
+                    messages.append({"role": "user", "content": UNSAVED.format(tool=writes[-1]["name"], error=writes[-1]["summary"])})
+                    save(force=True)
+                    continue
                 if not any(s["text"] for s in steps):
-                    failed = [c for s in steps for c in s["calls"] if c["status"] == "error"]
-                    if not failed:
+                    calls = [c for s in steps for c in s["calls"]]
+                    failed = [c for c in calls if c["status"] == "error"]
+                    acted = [c for c in calls if c["status"] == "ok" and self.tools.tools.get(c["name"]) and self.tools.tools[c["name"]].effect != "read"]
+                    if not failed and not acted:
                         raise RuntimeError("模型没有返回可用内容")
-                    # Never end silently after tool errors: say what failed.
-                    step["text"] = "没能完成这个请求：" + "；".join(dict.fromkeys(c["summary"] for c in failed)) + "。"
+                    # Never end silently, and never lose work that was done: report from the trace what happened.
+                    step["text"] = "；".join(filter(None, [
+                        "已完成：" + "，".join(dict.fromkeys(f"{c['label']}（{c['summary']}）" for c in acted)) if acted else "",
+                        "没能完成：" + "，".join(dict.fromkeys(c["summary"] for c in failed)) if failed else ""])) + "。"
                 return finish(("blocked" if handback else "incomplete") if goal else None)
             nudges = 0
 
             messages.append({"role": "assistant", "content": reply.text, "tool_calls": [
                 {"id": c["id"], "type": "function", "function": {"name": c["name"], "arguments": c["arguments"]}} for c in reply.tool_calls]})
             ended = None
+            # Several helpers asked for in one step work side by side when a cloud model answers them; the local model takes one at a time.
+            helpers = {}
+            if self.cloud and sum(c["name"] == "delegate" for c in reply.tool_calls) > 1:
+                for call in reply.tool_calls:
+                    if call["name"] == "delegate":
+                        shared = {}
+                        helpers[call["id"]] = (shared, asyncio.create_task(self.delegate(job, shared, parse_arguments(call["arguments"]), save)))
             for call in reply.tool_calls:
+                if call["name"] not in self.tools.tools and call["name"].strip("_ .") in self.tools.tools:
+                    call["name"] = call["name"].strip("_ .")  # "_read_file": a slip of the model's, not another tool
                 tool = self.tools.tools.get(call["name"])
                 arguments = parse_arguments(call["arguments"])
+                if tool and isinstance(arguments, dict) and "" in arguments:
+                    # A value whose parameter name the model dropped: it belongs to the first parameter not given (required ones first).
+                    fields = tool.args.model_fields
+                    free = sorted((n for n in fields if n not in arguments), key=lambda n: not fields[n].is_required())
+                    if free:
+                        arguments[free[0]] = arguments.pop("")
                 entry = {"id": call["id"], "name": call["name"], "label": tool.label if tool else call["name"],
                          "arguments": arguments if isinstance(arguments, dict) else {}, "status": "running", "started_at": time.time()}
                 if not isinstance(arguments, dict):
@@ -315,17 +632,44 @@ class Agent:
                         output = dumps({"error": outcome.result.get("error"), "note": "This exact call already failed in this turn. Do not retry it unchanged."})
                     repeats += 1
                 else:
-                    if call["name"] == "finish_goal":
+                    copied = self.copied(call["name"], arguments)
+                    if copied:
+                        outcome, heat = copied, .9  # a fresh draw, not the same text again
+                    elif plan and call["name"] not in allowed:
+                        outcome = Outcome(False, {"error": f"{call['name']} is not available in plan mode: nothing is changed until I approve the plan."}, "计划模式下不可用")
+                    elif call["name"] == "update_plan":
+                        outcome = self.update_plan(arguments, meta, proposing=plan)
+                    elif call["name"] == "finish_goal":
                         outcome, ended = await self.finish_goal(arguments, goal, steps, meta)
                     elif tool and tool.effect == "command":
                         outcome = await self.command(job, p, entry, arguments, save)
                         handback = handback or bool(outcome.result.get("declined"))
+                    elif tool and tool.effect == "agent" and call["id"] in helpers:
+                        shared, helper = helpers.pop(call["id"])
+                        outcome = await helper
+                        entry.update(shared)
+                    elif tool and tool.effect == "agent":
+                        outcome = await self.delegate(job, entry, arguments, save)
+                    elif tool and tool.effect == "writer":
+                        outcome = await self.write_document(job, entry, arguments, save)
                     else:
-                        outcome = self.tools.invoke(call["name"], arguments)
+                        outcome = await self.tools.call(call["name"], arguments, self.approval(job, p, entry, save))
+                        handback = handback or bool(outcome.result.get("declined"))
                         if goal and outcome.ok and call["name"] == "edit_code":
                             outcome = self.apply_edit(outcome)
+                    if outcome.ok and call["name"] == "find_tools":
+                        # Tools it found are offered from the next step on.
+                        allowed |= {t["name"] for t in outcome.result["tools"]}
+                        schemas = self.tools.schemas(allowed)
+                    if outcome.ok and call["name"] in ("save_file", "append_file") and isinstance(arguments, dict) and isinstance(arguments.get("content"), str):
+                        self.written.append((outcome.result.get("saved") or arguments.get("name"), call["name"], arguments["content"]))
                     output = outcome.for_model(RESULT_CHARS)
-                    if tool and (tool.effect == "write" and outcome.ok or tool.effect == "command" and "exit_code" in outcome.result):
+                    if tool and tool.effect == "read" and (call["name"], output) in outputs and len(output) < 400:
+                        # Rewording a search that keeps coming back the same (usually empty) is a loop, not progress.
+                        repeats += 1
+                        output = dumps({**(outcome.result if outcome.ok else {"error": outcome.result.get("error")}), "note": SAME_RESULT})
+                    outputs.add((call["name"], outcome.for_model(RESULT_CHARS)))
+                    if tool and (tool.effect in ("write", "external") and outcome.ok or tool.effect == "command" and "exit_code" in outcome.result):
                         done.clear()  # files or the system changed, so earlier results may be stale and worth re-running
                     done[key] = outcome  # failures too: retrying the identical call cannot help
                 entry.update(status="ok" if outcome.ok else "error", summary=outcome.summary, output=output,
@@ -335,12 +679,235 @@ class Agent:
                         entry[link] = outcome.result[link]
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": output})
                 save(force=True)
+            for _, helper in helpers.values():  # a call that was skipped: its helper stops too
+                helper.cancel()
             failing = failing + 1 if step["calls"] and all(c["status"] == "error" for c in step["calls"]) else 0
+            self.shelve(messages)
+            if cut:
+                cuts += 1
+                messages.append({"role": "user", "content": self.cut_message()})
             if ended:
                 if not step["text"]:  # the model may already have said it in this step; do not say it twice
                     steps.append({"text": ended[1], "calls": []})
                 return finish(ended[0])
         raise RuntimeError("未能在步数上限内完成")
+
+    def copied(self, name, arguments):
+        """Refuses a document write that repeats what this turn already wrote elsewhere: a local model sometimes copies its last part."""
+        if name not in ("save_file", "append_file") or not isinstance(arguments, dict) or not isinstance(arguments.get("content"), str):
+            return None
+        for other, tool, content in self.written:
+            if other == arguments.get("name") and name == "save_file":
+                continue  # rewriting the same document is an update
+            if similar(arguments["content"], content):
+                sections = [h.strip().lstrip("# ") for _, _, text in self.written for h in HEADING.findall(text)][-30:]
+                return Outcome(False, {"error": DUPLICATE.format(other=other, sections="; ".join(sections) or "(none titled)")}, f"与 {other} 内容重复，未保存")
+        return None
+
+    def cut_message(self):
+        files = {}
+        for name, tool, content in self.written:
+            files[name] = (0 if tool == "save_file" else files.get(name, 0)) + len(content)
+        state = CUT_RESUME.format(files=", ".join(f"{n} ({size} characters)" for n, size in files.items())) if files else CUT_FRESH
+        return CUT_CALL.format(part=self.part, state=state)
+
+    @staticmethod
+    def shelve(messages):
+        """Once a document part is saved, the context keeps only its opening and its ending: the file holds the text.
+        A local model that still sees its whole previous part tends to write it again; the ending is what it needs to continue."""
+        for i in range(len(messages) - 1, -1, -1):
+            m = messages[i]
+            if m["role"] == "user":
+                break
+            for n, c in enumerate(m.get("tool_calls") or []):
+                if c["function"]["name"] not in ("save_file", "append_file") or len(c["function"]["arguments"]) < 800:
+                    continue
+                arguments = parse_arguments(c["function"]["arguments"])
+                content = arguments.get("content") if isinstance(arguments, dict) else None
+                if not isinstance(content, str) or len(content) < 700 or "saved in the file and not repeated" in content:
+                    continue
+                kept = content[:200] + f"\n…[{len(content) - 600} characters here are saved in the file and not repeated in this context]…\n" + content[-400:]
+                calls = list(m["tool_calls"])
+                calls[n] = {**c, "function": {**c["function"], "arguments": dumps({**arguments, "content": kept})}}
+                messages[i] = m = {**m, "tool_calls": calls}
+
+    def update_plan(self, arguments, meta, proposing=False):
+        try:
+            args = self.tools.tools["update_plan"].args.model_validate(arguments if isinstance(arguments, dict) else {})
+        except ValidationError as exc:
+            return Outcome(False, {"error": str(exc)[:500]}, "参数无效")
+        steps = [re.sub(r"^\s*(?:[-*•]|\d+[.、)）:：])\s*", "", line).strip()[:200] for line in args.steps.splitlines() if line.strip()][:30]
+        steps = steps or [i["step"] for i in meta.get("plan", [])]
+        if not steps:
+            return Outcome(False, {"error": "Give steps first: the parts of the work, one per line."}, "还没有计划")
+        # A plan that is only being proposed has nothing finished in it, whatever the model ticks.
+        finished = set() if proposing else {int(n) for n in re.findall(r"\d+", args.done)}
+        meta["plan"] = [{"step": step, "status": "done" if n in finished else "pending"} for n, step in enumerate(steps, 1)]
+        left = [f"{n}. {i['step']}" for n, i in enumerate(meta["plan"], 1) if i["status"] != "done"]
+        if proposing:
+            return Outcome(True, {"steps": len(steps), "note": "Plan recorded and shown to me. Nothing is done yet: do not mark steps done. Now explain the plan briefly and wait for my answer."},
+                           f"{len(steps)} 步计划")
+        return Outcome(True, {"steps": len(steps), "done": len(steps) - len(left), "remaining": left[:12]},
+                       f"{len(steps) - len(left)}/{len(steps)} 项完成")
+
+    def documents(self):
+        """Measured facts about what this turn wrote, for the reviewer: claims about files are checked against these."""
+        files = {}
+        for name, tool, content in self.written:
+            files[name] = content if tool == "save_file" else files.get(name, "") + "\n" + content
+        lines = []
+        for name, content in files.items():
+            twins = [other for other, text in files.items() if other != name and similar(content, text)]
+            lines.append(f"- {name}: {len(content)} characters" + (f"; NEAR-IDENTICAL to {', '.join(twins)}" if twins else ""))
+        return "\n".join(lines) or "(none)"
+
+    def approval(self, job, p, entry, save):
+        """For tools that act outside the Mac (smart-home devices, MCP servers): shows what will happen and waits for the user."""
+        async def approve(question):
+            key = (p["session_id"], entry["name"])
+            if key in self.shell.allowed and entry["name"] != "home_control":
+                return None
+            entry.update(status="awaiting", command=question, reason=entry["label"], cwd="")
+            self.store.update_job(job["id"], phase="等待你确认操作")
+            save(force=True)
+            decision = await self.shell.ask(p["message_id"], entry["id"])
+            if decision == "always":
+                self.shell.allowed.add(key)
+            if decision in ("run", "always"):
+                entry["status"] = "running"
+                save(force=True)
+                return None
+            entry.pop("status")
+            if decision == "deny":
+                return Outcome(False, {"error": "I declined this action, so it did not happen.", "declined": True}, "你拒绝了这个操作")
+            return Outcome(False, {"error": "I did not approve the action within 15 minutes, so it did not happen.", "declined": True}, "等待确认超时，未执行")
+        return approve
+
+    async def delegate(self, job, entry, arguments, save):
+        """A helper with its own context works on a brief and reports back; only the report enters this conversation."""
+        try:
+            args = self.tools.tools["delegate"].args.model_validate(arguments if isinstance(arguments, dict) else {})
+        except ValidationError as exc:
+            return Outcome(False, {"error": str(exc)[:500]}, "参数无效")
+        names = (SUB_TOOLS | {n for n in self.tools.dynamic if not self.tools.tools[n].confirm}) & (self.tools.default_names(self.model) | SUB_TOOLS) & set(self.tools.tools)
+        names -= {n for n in ("web_search", "load_skill", "home_devices", "command_output", "browser_open", "browser_read", "browser_elements") if n not in self.tools.available(self.model)}
+        schemas = self.tools.schemas(names)
+        messages = [{"role": "system", "content": SUB + "\n" + language_rule(args.task)}, {"role": "user", "content": args.task}]
+        trace, sources, report = [], [], ""
+        entry.update(title=args.title, steps=trace)
+        for index in range(SUB_STEPS + 1):
+            last = index == SUB_STEPS
+            self.store.update_job(job["id"], phase=f"子任务「{args.title}」· 第 {index + 1} 步")
+            if last:
+                messages.append({"role": "user", "content": "[Jurvis harness] Tool budget reached. Write the report now from what you have."})
+            reply = await self.ask(messages, tools=None if last else schemas, max_tokens=4000)
+            sources.extend(c for c in getattr(reply, "citations", None) or [] if c not in sources)
+            step = {"text": strip_markup(reply.text)[:2000], "calls": []}
+            trace.append(step)
+            if last or not reply.tool_calls:
+                report = strip_markup(reply.text)
+                break
+            messages.append({"role": "assistant", "content": reply.text, "tool_calls": [
+                {"id": c["id"], "type": "function", "function": {"name": c["name"], "arguments": c["arguments"]}} for c in reply.tool_calls]})
+            for call in reply.tool_calls:
+                tool = self.tools.tools.get(call["name"])
+                if call["name"] not in names:
+                    outcome = Outcome(False, {"error": f"{call['name']} is not available to the helper."}, "不可用")
+                else:
+                    outcome = await self.tools.call(call["name"], parse_arguments(call["arguments"]))
+                step["calls"].append({"name": call["name"], "label": tool.label if tool else call["name"], "status": "ok" if outcome.ok else "error", "summary": outcome.summary})
+                messages.append({"role": "tool", "tool_call_id": call["id"], "content": outcome.for_model(RESULT_CHARS)})
+            save(force=True)
+        save(force=True)
+        if not report:
+            return Outcome(False, {"error": "The helper returned no report."}, "子任务没有结果")
+        result = {"report": report[:RESULT_CHARS - 500]}
+        if sources:
+            result["sources"] = sources[:10]
+        return Outcome(True, result, f"完成 · {sum(len(s['calls']) for s in trace)} 次工具调用")
+
+    async def write_document(self, job, entry, arguments, save):
+        """Writes a sectioned document one section per model call, each in a small fresh context (brief, outline, how the last section ended).
+        Asked to write section after section in one context, a local model ends up copying its previous section; here it never sees one in full."""
+        try:
+            args = self.tools.tools["write_document"].args.model_validate(arguments if isinstance(arguments, dict) else {})
+            outline = [re.sub(r"^\s*(?:[-*•]|\d+[.、)）])\s*", "", line).strip() for line in args.outline.splitlines() if line.strip()][:40]
+            names = [line.strip() for line in args.files.splitlines() if line.strip()]
+            if len(outline) < 2:
+                raise ValueError("outline needs one line per section, at least two sections; write a short document with save_file")
+            if names and args.name.strip() and "." in args.name:
+                raise ValueError(f"both name ({args.name}) and files were given. One document in one file: send name only. Each section in its own file: send files only")
+            if not names and not args.name.strip():
+                raise ValueError("give name (one file) or files (one per section)")
+            asked = set(re.findall(r"[\w\-]+\.(?:md|txt|markdown|fountain|html|csv|json)\b", self.request or "", re.I))
+            if names and len(asked) == 1 and not asked & set(names) and not re.search(r"\d", next(iter(asked))):
+                raise ValueError(f"I asked for one file, {next(iter(asked))}, and files would split the document into {len(names)}. Send name={next(iter(asked))} and leave files empty")
+            if names and len(names) != len(outline):
+                raise ValueError(f"files has {len(names)} names but the outline has {len(outline)} sections; give one file name per section or leave files empty")
+            for name in names or [args.name]:
+                self.tools.workspace_path(name)
+        except (ValidationError, ValueError) as exc:
+            return Outcome(False, {"error": str(exc)[:600]}, "参数无效")
+        listing = "\n".join(f"{n}. {line}" for n, line in enumerate(outline, 1))
+        system = WRITER.format(language=language_rule(args.brief + self.request))
+        done, texts = [], []
+        entry.update(title=args.name if not names else f"{len(names)} 个文件", sections=done)
+        for number, title in enumerate(outline, 1):
+            self.store.update_job(job["id"], phase=f"正在写第 {number}/{len(outline)} 部分", progress=min(.9, .1 + .8 * (number - 1) / len(outline)))
+            before = f"The previous section ended like this:\n…{texts[-1][-500:]}\n\n" if texts else ""
+            ask = (f"Brief:\n{args.brief}\n\nAll sections, in order:\n{listing}\n\n{before}"
+                   f"Now write section {number} of {len(outline)}: {title}\nLength: about {args.length} characters.")
+            text = ""
+            for attempt in range(WRITER_TRIES):
+                messages = [{"role": "system", "content": system}, {"role": "user", "content": ask if not attempt else ask +
+                             "\nYour previous attempt repeated an earlier section. This section has its own events: write them."}]
+
+                async def on_text(partial):
+                    entry["console"] = strip_markup(partial)[-1500:]
+                    save()
+                # Room for about twice the length asked for: a section that runs on is the model starting the same section over.
+                budget = min(self.tokens, max(900, args.length * 2 + 500))
+                reply = await self.ask(messages, tools=None, max_tokens=budget, temperature=.7 + .15 * attempt, on_text=on_text, search=False)
+                text = once(strip_markup(reply.text))
+                follow = None
+                if reply.finish == "length" and text:  # one more call is enough for a section: carry on, or close it if it is long enough
+                    follow = CONTINUE if len(text) < args.length * 1.2 else CONTINUE + " Bring this section to its close within about 300 characters."
+                elif 0 < len(text) < args.length * .8:  # well short of the length asked for: one push to carry the section on
+                    follow = SHORT.format(have=len(text), want=args.length)
+                if follow:
+                    more = await self.ask(messages + [{"role": "assistant", "content": text}, {"role": "user", "content": follow}],
+                                          tools=None, max_tokens=700 if "Bring this section" in follow else budget, temperature=.7, search=False)
+                    extra = strip_markup(more.text).strip()
+                    if extra and not similar(extra, text):
+                        joined = once(text + ("" if follow.startswith(CONTINUE) else "\n\n") + extra)
+                        text = joined if len(joined) > len(text) else text
+                if text and not any(similar(text, earlier) for earlier in texts):
+                    break
+                text = ""
+            if not text:
+                break
+            # A section that came out without its heading gets the one from the outline, so the document keeps its structure.
+            head = re.split(r"\s*(?:—+|-{2,}|－+|\|)\s*", title)[0].strip()[:60]
+            squeeze = lambda t: re.sub(r"[\s#*《》【】]", "", t)
+            mark = squeeze(re.split(r"[：:]", head)[0])
+            if mark and mark not in squeeze("".join(text.lstrip().splitlines()[:3])):
+                text = head + "\n\n" + text.lstrip()
+            texts.append(text)
+            name = names[number - 1] if names else args.name
+            if names or number == 1:
+                self.tools.save_file(name, text + "\n")
+            else:
+                self.tools.append_file(name, text + "\n")
+            self.written.append((name, "save_file" if names or number == 1 else "append_file", text))
+            done.append({"title": title[:80], "file": name, "characters": len(text)})
+            entry.pop("console", None)
+            save(force=True)
+        result = {"sections_written": len(done), "sections_planned": len(outline), "characters": sum(d["characters"] for d in done),
+                  "files": list(dict.fromkeys(d["file"] for d in done)), "sections": done}
+        if len(done) < len(outline):
+            return Outcome(False, {**result, "error": f"Stopped at section {len(done) + 1} of {len(outline)}: it kept coming out as a copy of an earlier section. "
+                                                      f"The first {len(done)} are saved. Tell the user exactly this."}, f"只写完 {len(done)}/{len(outline)} 部分")
+        return Outcome(True, result, f"{len(done)} 部分 · 共 {result['characters']} 字")
 
     async def command(self, job, p, entry, arguments, save):
         """run_command: shows the command, waits for the user's approval, runs it and streams its output into the trace."""
@@ -363,6 +930,17 @@ class Agent:
         entry["status"] = "running"
         self.store.update_job(job["id"], phase="正在运行 " + args.command[:60])
         save(force=True)
+        if args.background:
+            try:
+                result = await self.shell.start(args.command, cwd)
+            except ValueError as exc:
+                return Outcome(False, {"error": str(exc)}, str(exc)[:120])
+            entry["console"] = excerpt(result["output"], 4000)
+            entry["command_id"] = result["command_id"]
+            if not result["running"]:
+                entry["exit_code"] = result["exit_code"]
+                return Outcome(result["exit_code"] == 0, {**result, "error": f"It ended at once with exit code {result['exit_code']}."}, f"已结束 · 退出码 {result['exit_code']}")
+            return Outcome(True, {**result, "note": "Still running. Read more with command_output; stop it with stop_command when done."}, "已在后台运行")
 
         async def on_output(text):
             entry["console"] = text[-4000:]
@@ -396,6 +974,12 @@ class Agent:
             return Outcome(False, {"error": str(exc)[:500]}, "参数无效"), None
         if args.status == "blocked":
             return Outcome(True, {"status": "blocked"}, "需要你"), ("blocked", args.summary)
+        left = [i["step"] for i in meta.get("plan", []) if i["status"] != "done"]
+        if left and meta["goal"].get("plan_checks", 0) < 2:
+            meta["goal"]["plan_checks"] = meta["goal"].get("plan_checks", 0) + 1
+            return Outcome(False, {"error": "Your plan still has unfinished items: " + "; ".join(left)[:800] +
+                                            ". Finish them (or mark them done with update_plan if they really are), then call finish_goal again."},
+                           f"计划还有 {len(left)} 项未完成"), None
         achieved, missing = await self.review(steps, args)
         if achieved is False and meta["goal"]["reviews"] < GOAL_REVIEWS:
             meta["goal"]["reviews"] += 1
@@ -418,25 +1002,42 @@ class Agent:
                 lines.append(f"- {c['name']} {clip(shown, 300)} → {c.get('status')}: {c.get('summary', '')}\n  {clip(c.get('output', ''), 700)}")
         trace = "\n".join(lines[-30:]) or "(no tool calls)"
         messages = [{"role": "system", "content": REVIEW},
-                    {"role": "user", "content": f"Goal:\n{self.request}\n\nTool calls and results:\n{clip(trace, 14000)}\n\n"
+                    {"role": "user", "content": f"Goal:\n{self.request}\n\nDocuments written (measured by the system):\n{self.documents()}\n\n"
+                                                f"Tool calls and results:\n{clip(trace, 14000)}\n\n"
                                                 f"The assistant says it is done:\n{claim.summary}\nEvidence it cites: {claim.evidence or '(none)'}"}]
-        reply = await self.runtime.stream(messages, tools=None, max_tokens=600, temperature=0)
-        match = re.search(r"\{.*\}", strip_markup(reply.text), re.S)
+        reply = await self.ask(messages, tools=None, max_tokens=600, temperature=0, search=False)
+        text = strip_markup(reply.text)
+        match = re.search(r"\{.*\}", text, re.S)
         try:
             verdict = json.loads(match.group(0)) if match else {}
         except json.JSONDecodeError:
             verdict = {}
-        achieved = verdict.get("achieved")
-        return (achieved if isinstance(achieved, bool) else None), str(verdict.get("missing") or "")[:500]
+        achieved = verdict.get("achieved") if isinstance(verdict, dict) else None
+        if not isinstance(achieved, bool):  # the verdict was cut off or not strict JSON: read the two fields directly
+            flag = re.search(r'"?achieved"?\s*[:：]\s*"?(true|false)', text, re.I)
+            achieved = flag.group(1).lower() == "true" if flag else None
+            missing = re.search(r'"missing"\s*:\s*"(.*?)(?:"\s*}|\Z)', text, re.S)
+            verdict = {"missing": missing.group(1) if missing else ""}
+        return achieved, str(verdict.get("missing") or "")[:500]
 
     @staticmethod
-    def compact(messages):
-        """Long goals pile up tool output; shorten the oldest results first and keep the latest six intact."""
+    def compact(messages, limit=GOAL_CONTEXT):
+        """Long turns pile up tool output and written documents; shorten the oldest first and keep the latest six tool rounds intact."""
         def size():
-            return sum(len(m["content"]) if isinstance(m["content"], str) else 2000 for m in messages)
+            return sum(message_size(m) for m in messages)
+        if size() <= limit:
+            return
         tools = [i for i, m in enumerate(messages) if m["role"] == "tool"]
         for i in tools[:-6]:
-            if size() <= GOAL_CONTEXT:
+            if size() <= limit:
                 return
             if len(messages[i]["content"]) > 600:
                 messages[i] = {**messages[i], "content": clip(messages[i]["content"], 600)}
+        recent = tools[-6] if len(tools) >= 6 else len(messages)
+        for i, m in enumerate(messages[:recent]):
+            if size() <= limit:
+                return
+            if m.get("tool_calls") and any(len(c["function"]["arguments"]) > ARGUMENT_CHARS * 2 for c in m["tool_calls"]):
+                calls = [{**c, "function": {**c["function"], "arguments": dumps(shorten_arguments(parse_arguments(c["function"]["arguments"])))}}
+                         if len(c["function"]["arguments"]) > ARGUMENT_CHARS * 2 else c for c in m["tool_calls"]]
+                messages[i] = {**m, "tool_calls": calls}

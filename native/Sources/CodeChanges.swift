@@ -12,7 +12,7 @@ struct ChangeSetCard: View {
     let jobID: String
     @State private var full: Job?
     @State private var commands: [BuildCommand] = []
-    @State private var busy = false
+    @State private var starting = false
     @State private var failure: String?
 
     /// Live status comes from the polled snapshot; the diff itself from the full job.
@@ -28,13 +28,13 @@ struct ChangeSetCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if full == nil {
-                ProgressView().controlSize(.small)
+                BusyRing()
             }
             ForEach(Array(changes.enumerated()), id: \.offset) { _, change in
                 DiffView(path: change["path"].string, diff: change["diff"].string, isNew: change["before"].isNull)
             }
             if full != nil { actions }
-            if let failure { Label(failure, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(Color.warning).textSelection(.enabled) }
+            if let failure { Label(failure, systemImage: "exclamationmark.triangle").font(.jSmall).foregroundStyle(Color.danger).textSelection(.enabled) }
             if let run = testRun { TestRunView(job: run) }
         }
         .task { await load() }
@@ -43,25 +43,25 @@ struct ChangeSetCard: View {
     @ViewBuilder var actions: some View {
         HStack(spacing: 10) {
             if reverted {
-                Label("已撤销", systemImage: "arrow.uturn.backward").foregroundStyle(.secondary)
+                Label("已撤销", systemImage: "arrow.uturn.backward").font(.jCallout).foregroundStyle(Color.inkSoft)
             } else if applied {
-                Label("已写入文件", systemImage: "checkmark.circle.fill").foregroundStyle(Color.jurvisAccent)
-                Button("撤销") { Task { await change("revert") } }.buttonStyle(.bordered).disabled(busy)
+                Label("已写入文件", systemImage: "checkmark.circle.fill").font(.jCallout).foregroundStyle(Color.signal)
+                ActionButton(title: "撤销", busyTitle: "正在撤销", scale: .small) { await change("revert") }
             } else {
-                Button { Task { await change("apply") } } label: { Label("应用修改", systemImage: "checkmark") }
-                    .buttonStyle(.borderedProminent).disabled(busy)
+                ActionButton(title: "应用修改", busyTitle: "正在应用", icon: "checkmark", kind: .primary, scale: .small) { await change("apply") }
             }
             if !reverted, !commands.isEmpty {
+                let testing = starting || testRun?.isActive == true
                 Menu {
                     ForEach(commands) { command in Button(command.label) { Task { await run(command) } } }
-                } label: { Label("运行测试", systemImage: "play") }
+                } label: { ButtonFace(title: testing ? "测试中" : "运行测试", icon: "play", busy: testing) }
+                .menuStyle(.button).buttonStyle(.jurvis(.secondary, .small)).menuIndicator(.hidden)
                 .fixedSize()
-                .disabled(busy || testRun?.isActive == true || !applied)
+                .disabled(testing || !applied)
                 .help(applied ? "在 Mac 的项目目录里运行（无沙箱，最长 5 分钟）" : "先应用修改再运行测试")
             }
             Spacer()
         }
-        .font(.callout)
     }
 
     func load() async {
@@ -73,15 +73,13 @@ struct ChangeSetCard: View {
     }
 
     func change(_ action: String) async {
-        busy = true; failure = nil; defer { busy = false }
-        do {
-            let _: JSONValue = try await store.requireAPI().request("/api/code/jobs/\(jobID)/\(action)", method: "POST")
-            await store.refresh()
-        } catch { failure = error.localizedDescription }
+        failure = nil
+        do { let _: JSONValue = try await store.requireAPI().request("/api/code/jobs/\(jobID)/\(action)", method: "POST") }
+        catch { failure = error.localizedDescription }
     }
 
     func run(_ command: BuildCommand) async {
-        busy = true; failure = nil; defer { busy = false }
+        starting = true; failure = nil; defer { starting = false }
         do { _ = try await store.submit("/api/code/projects/\(projectID)/run", body: ["command_id": command.id, "change_id": jobID]) }
         catch { failure = error.localizedDescription }
     }
@@ -94,27 +92,26 @@ struct TestRunView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                if job.isActive { ProgressView().controlSize(.small) }
+                if job.isActive { SignalDot() }
                 else { Image(systemName: job.status == "succeeded" ? "checkmark.circle.fill" : "xmark.octagon.fill")
-                        .foregroundStyle(job.status == "succeeded" ? Color.jurvisAccent : Color.warning) }
-                Text(job.result["command"].string.isEmpty ? "测试" : job.result["command"].string).font(.callout.monospaced())
+                        .foregroundStyle(job.status == "succeeded" ? Color.success : Color.danger) }
+                Text(job.result["command"].string.isEmpty ? "测试" : job.result["command"].string).font(.jCallout.monospaced())
                 Text(job.isActive ? "运行中…" : job.status == "succeeded" ? "通过" : (job.error ?? job.statusLabel))
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    .font(.jSmall).foregroundStyle(Color.inkSoft).lineLimit(1)
                 Spacer()
-                if job.isActive { Button("停止") { Task { await store.cancel(job) } }.buttonStyle(.borderless).font(.caption) }
+                if job.isActive { ActionButton(title: "停止", busyTitle: "正在停止", kind: .ghost, scale: .small, isBusy: store.isCancelling(job)) { await store.cancel(job) } }
                 if !job.result["output"].string.isEmpty {
-                    Button(expanded ? "收起输出" : "查看输出") { expanded.toggle() }.buttonStyle(.borderless).font(.caption)
+                    Button(expanded ? "收起输出" : "查看输出") { expanded.toggle() }.buttonStyle(.jurvis(.ghost, .small))
                 }
             }
             if expanded || (job.status == "failed" && !job.result["output"].string.isEmpty) {
-                ScrollView { Text(job.result["output"].string).font(.system(.caption2, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
+                ScrollView { Text(job.result["output"].string).font(.jMono).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
                     .frame(maxHeight: 220).padding(8)
-                    .background(Color.subtleFill, in: RoundedRectangle(cornerRadius: 8))
+                    .background(Color.bubble, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
         }
         .padding(10)
-        .background(Color.card, in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.hairline))
+        .surface(radius: Metrics.smallRadius)
     }
 }
 
@@ -131,11 +128,11 @@ struct DiffView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Image(systemName: "doc.text")
-                Text(path).font(.callout.monospaced().weight(.medium)).lineLimit(1).truncationMode(.middle)
-                if isNew { Badge(text: "新文件", tone: .success) }
+                Text(path).font(.jCallout.monospaced().weight(.medium)).lineLimit(1).truncationMode(.middle)
+                if isNew { Badge(text: "新文件") }
                 Spacer()
-                Text("+\(lines.filter { $0.hasPrefix("+") }.count) −\(lines.filter { $0.hasPrefix("-") }.count)").font(.caption.monospaced()).foregroundStyle(.secondary)
-                Button { copyText(diff) } label: { Image(systemName: "doc.on.doc") }.buttonStyle(.borderless).help("复制差异")
+                Text("+\(lines.filter { $0.hasPrefix("+") }.count) −\(lines.filter { $0.hasPrefix("-") }.count)").font(.jSmall.monospaced()).foregroundStyle(Color.inkSoft)
+                CopyButton(text: diff, title: "复制差异", iconOnly: true)
             }
             .padding(10)
             Divider()
@@ -143,21 +140,21 @@ struct DiffView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(shown.enumerated()), id: \.offset) { _, line in
                         Text(line)
-                            .foregroundStyle(line.hasPrefix("@@") ? Color.blue : .primary)
+                            .foregroundStyle(line.hasPrefix("@@") ? Color.inkSoft : .ink)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal, 10)
-                            .background(line.hasPrefix("+") ? Color.green.opacity(0.13) : line.hasPrefix("-") ? Color.red.opacity(0.12) : .clear)
+                            .foregroundStyle(line.hasPrefix("-") ? Color.inkFaint : Color.ink).strikethrough(line.hasPrefix("-"), color: Color.inkFaint)
+                            .background(line.hasPrefix("+") ? Color.bubble : .clear)
                     }
                 }
-                .font(.system(.caption, design: .monospaced)).textSelection(.enabled).padding(.vertical, 6)
+                .font(.jMono).textSelection(.enabled).padding(.vertical, 6)
             }
             if lines.count > preview {
                 Divider()
                 Button(expanded ? "收起" : "显示全部 \(lines.count) 行") { expanded.toggle() }
-                    .buttonStyle(.borderless).font(.caption).padding(8)
+                    .buttonStyle(.jurvis(.ghost, .small)).padding(4)
             }
         }
-        .background(Color.card, in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.hairline))
+        .surface(radius: Metrics.smallRadius)
     }
 }

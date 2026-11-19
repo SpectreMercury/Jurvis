@@ -59,15 +59,18 @@ class Security:
             self.store.execute("UPDATE devices SET last_seen=? WHERE id=?", (time.time(),row["id"]))
         return row
 
-    def pairing(self, address):
+    def pairing(self, address, others=()):
         # An invitation is single-use, time-limited, and contains a pinned TLS fingerprint.
+        # `others` are further addresses of this Mac (its Tailscale address, say) the device may fall back to.
         now=time.time()
         self.codes={k:v for k,v in self.codes.items() if v>now}
         code=secrets.token_urlsafe(24)
         self.codes[code]=now+300
         url=f"https://{address}:{self.settings.port}"
-        link="jurvis://pair?"+urlencode({"url":url,"code":code,"fingerprint":self.fingerprint})
-        return {"url":url,"code":code,"fingerprint":self.fingerprint,"link":link,"expires_at":now+300}
+        urls=[url]+[f"https://{other}:{self.settings.port}" for other in others if other!=address]
+        link="jurvis://pair?"+urlencode([("url",url),("code",code),("fingerprint",self.fingerprint)]+[("alt",other) for other in urls[1:]])
+        # The same invitation for a browser: the web app reads the code from the fragment, which is never sent to a server.
+        return {"url":url,"urls":urls,"code":code,"fingerprint":self.fingerprint,"link":link,"web_link":f"{url}/app/#pair={code}","expires_at":now+300}
 
     def pair(self, code, name, client):
         now=time.time()
@@ -91,3 +94,18 @@ def lan_addresses():
     return list(dict.fromkeys(a.address for name,items in psutil.net_if_addrs().items()
                             if not name.startswith(("lo","utun","awdl","llw"))
                             for a in items if a.family==socket.AF_INET and not a.address.startswith("127.")))
+
+
+TAILNET = ipaddress.ip_network("100.64.0.0/10")   # the range Tailscale hands out addresses from
+
+
+def tailscale_addresses():
+    """This Mac's addresses on a Tailscale network, which reach it from outside the home."""
+    import psutil
+    return list(dict.fromkeys(a.address for name,items in psutil.net_if_addrs().items() if not name.startswith("lo")
+                            for a in items if a.family==socket.AF_INET and ipaddress.ip_address(a.address) in TAILNET))
+
+
+def reach_addresses():
+    """Every address a paired device may use: the local network first, then Tailscale."""
+    return list(dict.fromkeys(lan_addresses()+tailscale_addresses()))

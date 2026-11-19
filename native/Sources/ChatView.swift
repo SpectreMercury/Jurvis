@@ -1,7 +1,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// What the next message should make; picked with the chips under the composer.
+/// What the next message should make; picked with the chips by the composer.
 enum ComposerMode: String, CaseIterable, Identifiable {
     case goal, image, video, drama
     var id: String { rawValue }
@@ -10,42 +10,72 @@ enum ComposerMode: String, CaseIterable, Identifiable {
     var placeholder: String {
         ["goal": "给一个要做到完成的目标，例如：装好 xx 插件并确认能用", "image": "描述你想要的画面", "video": "描述镜头、动作和声音", "drama": "说说故事、时长和风格"][rawValue]!
     }
+    var hint: String {
+        ["goal": "目标：先列计划，自己做完再汇报。需要运行命令时会先问你。", "image": "图片：描述画面，在这台 Mac 上生成。",
+         "video": "视频：描述镜头、动作和声音，在这台 Mac 上生成。", "drama": "短剧：从梗概到角色、分镜和镜头，一步步做成片。"][rawValue]!
+    }
 }
 
-/// The whole app is this conversation: an empty chat is a centred composer, like a chat app.
+/// A task: an empty one is a headline and a composer; a running one is the conversation with its steps.
 struct ChatView: View {
     @EnvironmentObject var store: AppStore
+    /// On a narrow phone the workspace opens from a bar above the composer.
+    var onWorkspace: (() -> Void)? = nil
     @State private var input = ""
     @State private var sending = false
     @State private var importing = false
     @State private var connecting = false
+    /// Attachments picked, pasted or dropped that are still uploading.
+    @State private var uploading = 0
+    @State private var linkingProject = false
     @State private var attachments: [Asset] = []
     @State private var mode: ComposerMode?
-    @State private var preview: Asset?
+    @State private var width: CGFloat = 800
     @FocusState private var focused: Bool
+    @AppStorage("workspaceOpen") private var workspaceOpen = true
     #if os(macOS)
     @State private var pasteMonitor: Any?
     #endif
 
+    var isHome: Bool { store.visibleMessages.isEmpty && store.selectedSession == nil }
+    /// Phone width: one column, a one-line composer, finger-sized controls.
+    var narrow: Bool {
+        #if os(iOS)
+        return width < Metrics.phoneWidth
+        #else
+        return false
+        #endif
+    }
+    #if os(macOS)
+    private let control: CGFloat = 32
+    #else
+    private let control: CGFloat = 40
+    #endif
+
     var body: some View {
         Group {
-            if store.messages.isEmpty && store.selectedSession == nil {
+            if isHome {
                 home
             } else {
                 conversation
             }
         }
         .background(Color.canvas)
-        .sheet(item: $preview) { MediaDetail(asset: $0).environmentObject(store) }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.image], allowsMultipleSelection: true) { result in
-            Task { await store.perform {
-                for url in try result.get().prefix(max(0, 4 - attachments.count)) {
-                    attachments.append(try await store.uploadImage(url))
+            guard let urls = try? result.get() else { return }
+            let picked = urls.prefix(max(0, 4 - attachments.count - uploading))
+            uploading += picked.count
+            Task {
+                for url in picked {
+                    await store.perform { attachments.append(try await store.uploadImage(url)) }
+                    uploading -= 1
                 }
-            } }
+            }
         }
         .fileImporter(isPresented: $connecting, allowedContentTypes: [.folder]) { result in
-            Task { await store.perform {
+            linkingProject = true
+            Task { defer { linkingProject = false }; await store.perform {
                 let url = try result.get()
                 let granted = url.startAccessingSecurityScopedResource(); defer { if granted { url.stopAccessingSecurityScopedResource() } }
                 let project: CodeProject = try await store.requireAPI().request("/api/code/projects", method: "POST", body: ["root": url.path])
@@ -66,93 +96,199 @@ struct ChatView: View {
             attach(images); return nil
         } }
         .onDisappear { if let pasteMonitor { NSEvent.removeMonitor(pasteMonitor) }; pasteMonitor = nil }
+        #else
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                VStack(spacing: 1) {
+                    Text(store.currentSession?.title ?? "新任务").font(.jHeading).lineLimit(1)
+                    if let status = store.runStatus { RunStatusLine(text: status) }
+                }
+            }
+        }
         #endif
     }
 
     /// Uploads pasted or dropped images as attachments, up to four per message.
     func attach(_ images: [(Data, String)]) {
-        Task { await store.perform {
-            for (data, name) in images.prefix(max(0, 4 - attachments.count)) {
-                attachments.append(try await store.uploadImage(data, name: name))
+        let picked = images.prefix(max(0, 4 - attachments.count - uploading))
+        uploading += picked.count
+        Task {
+            for (data, name) in picked {
+                await store.perform { attachments.append(try await store.uploadImage(data, name: name)) }
+                uploading -= 1
             }
-        } }
+        }
     }
 
+    // MARK: New task
+
     var home: some View {
-        VStack(spacing: 26) {
-            Spacer(minLength: 40)
-            VStack(spacing: 14) {
-                BrandMark(size: 52)
-                Text(store.activeProject.map { "聊聊 \($0.name) 的代码" } ?? "有什么可以帮你？")
-                    .font(.system(size: 28, weight: .semibold)).multilineTextAlignment(.center)
+        VStack(spacing: 0) {
+            Spacer(minLength: 20)
+            Text("今天交给 Jurvis 什么？").font(.jDisplay).multilineTextAlignment(.center).lineLimit(2).minimumScaleFactor(0.8)
+                .padding(.bottom, narrow ? 20 : 28)
+            composer.frame(maxWidth: 680)
+            ViewThatFits(in: .horizontal) {
+                modeRow
+                ScrollView(.horizontal, showsIndicators: false) { modeRow }
             }
-            composer.frame(maxWidth: 720)
-            Text(store.activeProject == nil ? "对话、读图、计算、记忆，也能生成图片、视频和短剧，或修改你的代码。全部在你的 Mac 上运行。"
-                                             : "Jurvis 会先阅读代码，修改以差异形式出现在对话里，你点「应用修改」才会写入文件。")
-                .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 520)
-            Spacer(minLength: 60)
+            .padding(.top, 16)
+            Text(hint).font(.jCallout).foregroundStyle(Color.inkSoft).multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true).frame(maxWidth: 520, minHeight: 40, alignment: .top).padding(.top, 14)
+            Spacer(minLength: 20)
+            waiting.frame(maxWidth: 680)
+            Spacer(minLength: narrow ? 12 : 28)
         }
-        .padding(.horizontal, 20)
+        .padding(.horizontal, narrow ? 16 : 32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    var hint: String {
+        if let mode { return mode.hint }
+        if store.activeProject != nil { return "Jurvis 会先阅读代码，修改以差异形式出现在对话里，你点「应用修改」才会写入文件。" }
+        return "对话：直接说想要的结果，Jurvis 会按需要读文件、搜索和动手。"
+    }
+
+    /// Task types, as a row of pills under the composer.
+    var modeRow: some View {
+        HStack(spacing: 8) {
+            Chip(title: "对话", icon: "text.bubble", on: mode == nil, scale: .large) { mode = nil }
+            ForEach(ComposerMode.allCases) { item in
+                Chip(title: item.title, icon: item.icon, on: mode == item, scale: .large) { mode = mode == item ? nil : item }
+            }
+            projectChip(compact: false, scale: .large)
+        }
+        .fixedSize()
+    }
+
+    /// Tasks that stopped to ask something, so a new task never hides them.
+    @ViewBuilder var waiting: some View {
+        let items = store.waitingSessions
+        if !items.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Eyebrow(text: "等你处理").padding(.horizontal, 4)
+                ForEach(items.prefix(2), id: \.session.id) { item in
+                    Button { Task { await store.selectSession(item.session.id) } } label: {
+                        HStack(spacing: 12) {
+                            IconWell(icon: "hand.raised", tint: .signal, fill: .signalSoft)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(item.session.title).font(.jBody).foregroundStyle(Color.ink).lineLimit(1)
+                                Text(item.job.phase).font(.jSmall).foregroundStyle(Color.inkFaint).lineLimit(1)
+                            }
+                            Spacer(minLength: 8)
+                            HStack(spacing: 4) { Text("去确认"); Image(systemName: "chevron.right").font(.system(size: 10)) }
+                                .font(.jCallout).foregroundStyle(Color.signal).fixedSize()
+                        }
+                        .padding(.horizontal, 14).frame(minHeight: 56)
+                        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Color.hairline))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(PressStyle())
+                }
+            }
+        }
+    }
+
+    // MARK: Running task
+
     var conversation: some View {
         VStack(spacing: 0) {
+            #if os(macOS)
+            header
+            #endif
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 26) {
-                        ForEach(store.messages) { message in
-                            if message.isUser { UserMessage(message: message, open: { preview = $0 }) }
-                            else { AssistantMessage(message: message, open: { preview = $0 }) }
+                    LazyVStack(alignment: .leading, spacing: 22) {
+                        if store.loadingSession && store.messages.isEmpty { LoadingState(text: "正在打开任务") }
+                        ForEach(store.visibleMessages) { message in
+                            if message.isUser { UserMessage(message: message, open: { store.view($0) }) }
+                            else { AssistantMessage(message: message, open: { store.view($0) }) }
+                        }
+                        if store.visibleMessages.last?.id == "outgoing" {
+                            HStack(spacing: 8) { SignalDot(); Text("正在发送").font(.jSmall).foregroundStyle(Color.inkSoft) }
                         }
                         Color.clear.frame(height: 1).id("bottom")
                     }
-                    .padding(.horizontal, 20).padding(.top, 24).padding(.bottom, 12)
+                    .padding(.horizontal, narrow ? 16 : 24).padding(.top, 16).padding(.bottom, 12)
                     .frame(maxWidth: Metrics.readable).frame(maxWidth: .infinity)
                 }
                 .scrollDismissesKeyboard(.interactively)
                 .onChange(of: store.messages.last?.content) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
                 .onChange(of: store.messages.last?.steps.flatMap(\.calls).count) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
-                .onChange(of: store.messages.count) { _, _ in withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("bottom", anchor: .bottom) } }
+                .onChange(of: store.visibleMessages.count) { _, _ in withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("bottom", anchor: .bottom) } }
                 .onAppear { proxy.scrollTo("bottom", anchor: .bottom) }
             }
             if store.currentSession?.allow_commands == 1, let id = store.selectedSession {
                 HStack(spacing: 6) {
                     Image(systemName: "terminal")
-                    Text("这段对话里的命令会直接运行")
-                    Button("改为每次确认") { Task { await store.setAllowCommands(id, false) } }.buttonStyle(.borderless)
+                    Text("这个任务里的命令会直接运行").lineLimit(1)
+                    ActionButton(title: "改为每次确认", busyTitle: "正在修改", kind: .ghost, scale: .small) { await store.setAllowCommands(id, false) }
                 }
-                .font(.caption).foregroundStyle(.secondary).padding(.top, 6)
+                .font(.jSmall).foregroundStyle(Color.inkSoft).padding(.top, 6)
             }
-            composer
-                .frame(maxWidth: Metrics.readable)
-                .padding(.horizontal, 16).padding(.bottom, 14).padding(.top, 4)
+            VStack(spacing: 8) {
+                if let onWorkspace { WorkspaceBar(action: onWorkspace) }
+                composer
+            }
+            .frame(maxWidth: Metrics.readable)
+            .padding(.horizontal, narrow ? 12 : 24).padding(.bottom, narrow ? 8 : 18).padding(.top, 8)
         }
     }
 
+    #if os(macOS)
+    /// The task's name and where it stands, with the switch for the workspace.
+    var header: some View {
+        HStack(spacing: 10) {
+            Text(store.currentSession?.title ?? "新任务").font(.jSection).lineLimit(1).truncationMode(.tail)
+            if let status = store.runStatus { Badge(text: status, tone: .active) }
+            Spacer(minLength: 8)
+            if let job = store.chatJob, !store.isCancelling(job) {
+                Button { Task { await store.cancel(job) } } label: { Image(systemName: "stop.circle") }
+                    .buttonStyle(.jurvisIcon(.ghost, .regular)).help("停止").accessibilityLabel("停止任务")
+            }
+            Button { withAnimation(.easeOut(duration: 0.18)) { workspaceOpen.toggle() } } label: { Image(systemName: "sidebar.right") }
+                .buttonStyle(.jurvisIcon(.ghost, .regular))
+                .help(workspaceOpen ? "收起工作台" : "打开工作台").accessibilityLabel(workspaceOpen ? "收起工作台" : "打开工作台")
+        }
+        .padding(.leading, 24).padding(.trailing, 12).frame(height: 52)
+    }
+    #endif
+
+    // MARK: Composer
+
     var canSend: Bool {
-        !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && store.connected && !sending && !store.chatBusy
+        !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && store.connected && !sending && !store.chatBusy && uploading == 0
     }
 
     var placeholder: String {
         if let mode { return mode.placeholder }
         if let project = store.activeProject { return "问问 \(project.name) 的代码，或说说要改什么" }
-        return "问 Jurvis 任何事"
+        if isHome { return narrow ? "说清楚想要的结果" : "说清楚想要的结果，比如：写一个 10 集短剧剧本，保存成文件" }
+        return narrow ? "补充要求或调整方向" : "补充要求或调整方向，Jurvis 会接着做"
     }
 
     var addLabel: some View {
-        Image(systemName: "plus").font(.body.weight(.medium)).frame(width: 30, height: 30)
-            .background(Color.canvas.opacity(0.6), in: Circle()).overlay(Circle().strokeBorder(Color.hairline))
-            .contentShape(Circle())
+        Image(systemName: "plus").font(.system(size: 14, weight: .regular)).foregroundStyle(Color.ink).frame(width: control, height: control)
+            .overlay(Circle().strokeBorder(narrow && !isHome ? Color.clear : Color.hairline))
+            .frame(minWidth: narrow ? 44 : nil, minHeight: narrow ? 44 : nil)
+            .contentShape(Rectangle())
     }
 
     @ViewBuilder var addButton: some View {
         #if os(iOS)
-        // iOS text fields can't take an image paste, so pasting lives here.
+        // iOS text fields can't take an image paste, so pasting lives here. On a phone the task types do too.
         Menu {
             Button { importing = true } label: { Label("选择图片", systemImage: "photo.on.rectangle") }
             Button { if let images = ClipboardImages.read(), !images.isEmpty { attach(images) } else { store.error = "剪贴板里没有图片" } } label: {
                 Label("粘贴图片", systemImage: "doc.on.clipboard")
+            }
+            if narrow && !isHome {
+                SwiftUI.Section("任务类型") {
+                    ForEach(ComposerMode.allCases) { item in
+                        Button { mode = mode == item ? nil : item } label: { Label(item.title, systemImage: mode == item ? "checkmark" : item.icon) }
+                    }
+                }
             }
         } label: { addLabel }
         .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden)
@@ -163,41 +299,75 @@ struct ChatView: View {
         #endif
     }
 
-    var composer: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if !attachments.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(attachments) { asset in
-                            MediaThumb(asset: asset).frame(width: 56, height: 56)
-                                .overlay(alignment: .topTrailing) {
-                                    Button { attachments.removeAll { $0.id == asset.id } } label: {
-                                        Image(systemName: "xmark.circle.fill").symbolRenderingMode(.palette).foregroundStyle(.white, .black.opacity(0.6))
-                                    }.buttonStyle(.plain).padding(3).accessibilityLabel("移除 \(asset.name)")
-                                }
-                        }
+    @ViewBuilder var attachmentStrip: some View {
+        if !attachments.isEmpty || uploading > 0 {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(attachments) { asset in
+                        Button { store.view(asset, among: attachments) } label: { MediaThumb(asset: asset).frame(width: 56, height: 56) }.buttonStyle(.plain)
+                            .overlay(alignment: .topTrailing) {
+                                Button { attachments.removeAll { $0.id == asset.id } } label: {
+                                    Image(systemName: "xmark.circle.fill").symbolRenderingMode(.palette).foregroundStyle(.white, .black.opacity(0.6))
+                                }.buttonStyle(.plain).padding(3).accessibilityLabel("移除 \(asset.name)")
+                            }
+                    }
+                    ForEach(0..<uploading, id: \.self) { _ in
+                        RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.bubble).frame(width: 56, height: 56)
+                            .overlay { BusyRing(size: 16) }.accessibilityLabel("正在上传图片")
                     }
                 }
             }
-            TextField(placeholder, text: $input, axis: .vertical)
-                .textFieldStyle(.plain).font(.body).lineLimit(1...10)
-                .focused($focused)
-                .onSubmit { if canSend { Task { await send() } } }
-                .accessibilityLabel("消息输入框")
-            HStack(spacing: 8) {
-                addButton.disabled(attachments.count >= 4)
-                // Labels when they fit, icons only on narrow screens.
-                ViewThatFits(in: .horizontal) {
-                    chips(compact: false)
-                    chips(compact: true)
+        }
+    }
+
+    var field: some View {
+        TextField(placeholder, text: $input, axis: .vertical)
+            .textFieldStyle(.plain).font(.system(size: 15)).lineLimit(1...10)
+            .focused($focused)
+            .onSubmit { if canSend { Task { await send() } } }
+            .accessibilityLabel("消息输入框")
+    }
+
+    /// A rounded card with a hairline and a very soft shadow. On a phone, inside a task, it folds to one line.
+    var composer: some View {
+        let pill = narrow && !isHome
+        let radius: CGFloat = pill ? 24 : Metrics.composerRadius
+        return VStack(alignment: .leading, spacing: 10) {
+            attachmentStrip
+            if pill {
+                if let mode {
+                    Chip(title: mode.title, icon: mode.icon, on: true) { self.mode = nil }.padding(.leading, 8)
                 }
-                Spacer(minLength: 4)
-                sendButton
+                HStack(alignment: .bottom, spacing: 2) {
+                    addButton.disabled(attachments.count + uploading >= 4)
+                    field.padding(.vertical, 11)
+                    sendButton
+                }
+            } else {
+                // Room for a couple of lines before it starts growing.
+                field.padding(.leading, 2).frame(minHeight: isHome ? 46 : 26, alignment: .topLeading)
+                HStack(spacing: 6) {
+                    addButton.disabled(attachments.count + uploading >= 4)
+                    if !isHome {
+                        // Labels when they fit, icons only when they do not.
+                        ViewThatFits(in: .horizontal) {
+                            chips(compact: false)
+                            chips(compact: true)
+                        }
+                    }
+                    Spacer(minLength: 4)
+                    sendButton
+                }
             }
         }
-        .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 10)
-        .background(Color.bubble, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 26, style: .continuous).strokeBorder(focused ? Color.primary.opacity(0.18) : Color.hairline))
+        .padding(.leading, pill ? 2 : 16).padding(.trailing, pill ? 2 : 10).padding(.top, pill ? 2 : 14).padding(.bottom, pill ? 2 : 10)
+        .background {
+            RoundedRectangle(cornerRadius: radius, style: .continuous).fill(Color.card)
+                .shadow(color: Color.shadow, radius: 1, y: 1)
+                .shadow(color: Color.shadow, radius: 12, y: 8)
+        }
+        .overlay { RoundedRectangle(cornerRadius: radius, style: .continuous).strokeBorder(focused ? Color.ring : Color.stroke) }
+        .animation(.easeOut(duration: 0.2), value: focused)
         .onDrop(of: [.image], isTargeted: nil) { providers in
             // Images dragged in from Finder, Photos or a browser.
             Task {
@@ -222,9 +392,9 @@ struct ChatView: View {
     }
 
     /// Binds a new conversation to a code project; an existing one shows its project.
-    @ViewBuilder func projectChip(compact: Bool) -> some View {
+    @ViewBuilder func projectChip(compact: Bool, scale: Chip.Scale = .regular) -> some View {
         if store.selectedSession != nil {
-            if let project = store.activeProject { Chip(title: project.name, icon: "chevron.left.forwardslash.chevron.right", on: true, compact: compact) {} .disabled(true) }
+            if let project = store.activeProject { Chip(title: project.name, icon: "chevron.left.forwardslash.chevron.right", on: true, compact: compact, scale: scale) {} .disabled(true) }
         } else {
             Menu {
                 ForEach(store.codeProjects) { project in
@@ -238,27 +408,33 @@ struct ChatView: View {
                 Button { connecting = true } label: { Label("连接项目文件夹…", systemImage: "folder.badge.plus") }
                 #endif
             } label: {
-                Chip(title: store.activeProject?.name ?? "代码", icon: "chevron.left.forwardslash.chevron.right", on: store.activeProject != nil, compact: compact && store.activeProject == nil) {}
+                Chip(title: linkingProject ? "正在连接" : store.activeProject?.name ?? "代码", icon: "chevron.left.forwardslash.chevron.right", on: store.activeProject != nil, compact: compact && store.activeProject == nil && !linkingProject, busy: linkingProject, scale: scale) {}
                     .allowsHitTesting(false)
             }
             .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
-            .help("让这段对话关联一个代码项目")
+            .help("让这个任务关联一个代码项目")
         }
     }
 
     @ViewBuilder var sendButton: some View {
         if let job = store.chatJob {
+            let stopping = store.isCancelling(job)
             Button { Task { await store.cancel(job) } } label: {
-                Image(systemName: "stop.fill").font(.caption).foregroundStyle(Color.inkReversed).frame(width: 34, height: 34).background(Color.ink, in: Circle())
-            }.buttonStyle(.plain).help("停止回复").accessibilityLabel("停止回复")
+                Group {
+                    if stopping { BusyRing(size: 15) }
+                    else { RoundedRectangle(cornerRadius: 2.5).fill(Color.inkReversed).frame(width: 10, height: 10) }
+                }
+                .sendFace(Color.ink, size: control)
+            }
+            .buttonStyle(PressStyle()).disabled(stopping).help(stopping ? "正在停止" : "停止").accessibilityLabel(stopping ? "正在停止" : "停止回复")
         } else {
             Button { Task { await send() } } label: {
-                Group { if sending { ProgressView().controlSize(.small) } else { Image(systemName: "arrow.up").font(.body.weight(.semibold)) } }
-                    .foregroundStyle(Color.inkReversed).frame(width: 34, height: 34)
-                    .background(canSend ? Color.ink : Color.ink.opacity(0.25), in: Circle())
+                Group { if sending { BusyRing(size: 14) } else { Image(systemName: "arrow.up").font(.system(size: 14, weight: .medium)) } }
+                    .foregroundStyle(canSend || sending ? Color.inkReversed : Color.inkFaint)
+                    .sendFace(canSend || sending ? Color.ink : Color.bubble, size: control)
             }
-            .buttonStyle(.plain).disabled(!canSend).keyboardShortcut(.return, modifiers: .command)
-            .help("发送（Return）").accessibilityLabel("发送消息")
+            .buttonStyle(PressStyle()).disabled(!canSend).keyboardShortcut(.return, modifiers: .command)
+            .help("发送（Return）").accessibilityLabel(sending ? "正在发送" : "发送消息")
         }
     }
 
@@ -273,27 +449,74 @@ struct ChatView: View {
     }
 }
 
+private extension View {
+    func sendFace(_ fill: Color, size: CGFloat) -> some View {
+        frame(width: size, height: size).background(fill, in: Circle())
+            #if os(iOS)
+            .frame(minWidth: 44, minHeight: 44)
+            #endif
+    }
+}
+
+/// For hand-drawn buttons: the press answers immediately, whatever the button goes on to do.
+struct PressStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.contentShape(Rectangle())
+            .scaleEffect(configuration.isPressed ? 0.96 : 1)
+            .animation(.easeOut(duration: 0.08), value: configuration.isPressed)
+    }
+}
+
+/// A pill that is either off (white, hairline) or on (black).
 struct Chip: View {
+    enum Scale { case regular, large }
     var title: String
     var icon: String
     var on: Bool
     var compact = false
+    var busy = false
+    var scale: Scale = .regular
     var action: () -> Void
+    var height: CGFloat {
+        #if os(macOS)
+        return scale == .large ? 36 : 32
+        #else
+        return scale == .large ? 40 : 36
+        #endif
+    }
     var body: some View {
+        let shape = Capsule()
         Button(action: action) {
             Group {
-                if compact { Image(systemName: icon).frame(width: 18) } else { Label(title, systemImage: icon) }
+                if busy { HStack(spacing: 6) { BusyRing(); Text(title) } }
+                else if compact { Image(systemName: icon).frame(width: 18) }
+                else { HStack(spacing: scale == .large ? 8 : 6) { Image(systemName: icon).font(.system(size: 12)); Text(title) } }
             }
-            .font(.callout).lineLimit(1)
-                .padding(.horizontal, compact ? 6 : 11).frame(height: 30)
-                .foregroundStyle(on ? Color.inkReversed : .primary)
-                .background(on ? Color.ink : Color.canvas.opacity(0.6), in: Capsule())
-                .overlay(Capsule().strokeBorder(on ? .clear : Color.hairline))
-                .contentShape(Capsule())
+            .font(.jCallout).lineLimit(1)
+            .padding(.horizontal, compact ? 7 : scale == .large ? 14 : 12).frame(height: height)
+            .foregroundStyle(on ? Color.inkReversed : .ink)
+            .background(on ? Color.ink : Color.card, in: shape)
+            .overlay(shape.strokeBorder(on ? .clear : Color.hairline))
+            #if os(iOS)
+            .frame(minWidth: 44, minHeight: 44)
+            #endif
+            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressStyle())
         .help(title).accessibilityLabel(title)
         .accessibilityAddTraits(on ? .isSelected : [])
+    }
+}
+
+/// "进行中 · 第 5 / 12 步", in the one green.
+struct RunStatusLine: View {
+    var text: String
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle().fill(Color.signal).frame(width: 6, height: 6)
+            Text(text).lineLimit(1)
+        }
+        .font(.jMicro).foregroundStyle(Color.signal)
     }
 }
 
@@ -315,12 +538,13 @@ struct UserMessage: View {
             }
             Text(message.content)
                 .textSelection(.enabled)
-                .padding(.horizontal, 14).padding(.vertical, 10)
-                .background(Color.bubble, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                .font(.jBody).lineSpacing(4)
+                .padding(.horizontal, 16).padding(.vertical, 10)
+                .background(Color.bubble, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                 .contextMenu { Button("复制") { copyText(message.content) } }
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
-        .padding(.leading, 60)
+        .padding(.leading, 48)
     }
 }
 
@@ -331,8 +555,10 @@ struct AssistantMessage: View {
 
     var body: some View {
         let steps = message.steps
+        let plan = message.plan
         VStack(alignment: .leading, spacing: 12) {
             if case .object = message.metadata["goal"] { GoalStatus(goal: message.metadata["goal"], live: message.isLive) }
+            if !plan.isEmpty { PlanList(plan: plan, live: message.isLive) }
             if steps.isEmpty {
                 if !message.content.isEmpty { MarkdownText(text: message.content) }
             } else {
@@ -341,6 +567,7 @@ struct AssistantMessage: View {
                     if !step.calls.isEmpty { ToolTrace(messageID: message.id, calls: step.calls, open: open) }
                 }
             }
+            if !message.isLive, !message.metadata["sources"].array.isEmpty { SourceList(sources: message.metadata["sources"].array) }
             footer(hasContent: !message.content.isEmpty || !steps.isEmpty)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -349,27 +576,25 @@ struct AssistantMessage: View {
     @ViewBuilder func footer(hasContent: Bool) -> some View {
         if message.isLive {
             HStack(spacing: 8) {
-                ProgressView().controlSize(.small)
-                Text(liveStatus).font(.caption).foregroundStyle(.secondary)
+                SignalDot()
+                Text(liveStatus).font(.jSmall).foregroundStyle(Color.inkSoft).lineLimit(1)
             }
         } else {
             if !message.errorText.isEmpty {
-                Label(message.errorText, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(Color.warning).textSelection(.enabled)
+                Label(message.errorText, systemImage: "exclamationmark.triangle").font(.jSmall).foregroundStyle(Color.danger).textSelection(.enabled)
             }
-            if message.status == "cancelled" { Text("已停止").font(.caption).foregroundStyle(.secondary) }
-            if message.status == "interrupted" { Text("引擎重启中断了这条回复").font(.caption).foregroundStyle(.secondary) }
-            HStack(spacing: 14) {
-                if hasContent {
-                    Button { copyText(message.content) } label: { Label("复制", systemImage: "doc.on.doc") }
-                }
+            if message.status == "cancelled" { Text("已停止").font(.jSmall).foregroundStyle(Color.inkSoft) }
+            if message.status == "interrupted" { Text("引擎重启中断了这条回复").font(.jSmall).foregroundStyle(Color.inkSoft) }
+            HStack(spacing: 4) {
+                if hasContent { CopyButton(text: message.content) }
                 if ["failed", "cancelled", "interrupted"].contains(message.status), store.messages.last?.id == message.id {
-                    Button { Task { await store.retryMessage(message) } } label: { Label("重试", systemImage: "arrow.clockwise") }
+                    ActionButton(title: "重试", busyTitle: "正在重试", icon: "arrow.clockwise", kind: .ghost, scale: .small) { await store.retryMessage(message) }
                 }
                 if message.metadata["truncated"] == .bool(true) {
-                    Text("回复达到长度上限").foregroundStyle(.secondary)
+                    Text("回复达到长度上限").font(.jSmall).foregroundStyle(Color.inkSoft)
                 }
             }
-            .font(.caption).buttonStyle(.borderless).foregroundStyle(.secondary)
+            .padding(.leading, -12)
         }
     }
 
@@ -382,9 +607,41 @@ struct AssistantMessage: View {
     }
 }
 
+/// The plan of a goal as rows with round marks: done, the one being worked on, and what is left.
+struct PlanList: View {
+    var plan: [PlanStep]
+    var live: Bool
+    var limit: Int? = nil
+    #if os(macOS)
+    private let rowHeight: CGFloat = 32
+    #else
+    private let rowHeight: CGFloat = 36
+    #endif
+
+    var body: some View {
+        let current = live ? plan.firstIndex { !$0.done } : nil
+        let rows = Array(plan.enumerated())
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(limit.map { Array(rows.prefix($0)) } ?? rows, id: \.offset) { index, item in
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    StatusMark(state: item.done ? .done : index == current ? .running : .pending)
+                        .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 4 }
+                    Text(item.step).font(index == current ? .jBody.weight(.medium) : .jBody)
+                        .foregroundStyle(item.done || index == current ? Color.ink : .inkSoft)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+                .padding(.vertical, 6).frame(minHeight: rowHeight)
+                .accessibilityElement(children: .combine)
+                .accessibilityValue(item.done ? "已完成" : index == current ? "进行中" : "未开始")
+            }
+        }
+    }
+}
+
 // MARK: - Tool trace
 
-/// One quiet line per step ("阅读源码 · 修改代码"), expandable for arguments and results.
+/// Each tool call is a small pill; tap one for its arguments and result. A long run folds to its latest calls.
 /// What a tool produced for the user (images, videos, code changes) always shows in full below it.
 struct ToolTrace: View {
     @EnvironmentObject var store: AppStore
@@ -393,123 +650,131 @@ struct ToolTrace: View {
     var open: (Asset) -> Void
     @State private var expanded = false
 
-    /// Commands are shown as their own cards, since the user approves them and reads their output.
-    var quiet: [ToolCall] { calls.filter { $0.name != "run_command" } }
-    var running: ToolCall? { quiet.first(where: \.isRunning) }
-    var failed: Bool { quiet.contains(where: \.failed) }
-    var title: String {
-        if let running { return "正在" + running.label + "…" }
-        return Array(NSOrderedSet(array: quiet.map(\.label))).compactMap { $0 as? String }.joined(separator: " · ")
-    }
+    /// Commands and anything waiting for a yes are shown as their own cards.
+    static func isCard(_ call: ToolCall) -> Bool { call.name == "run_command" || call.awaiting }
+    var quiet: [ToolCall] { calls.filter { !Self.isCard($0) } }
 
     var body: some View {
+        let quiet = quiet
+        let folded = !expanded && quiet.count > 4
         VStack(alignment: .leading, spacing: 10) {
-            if !quiet.isEmpty { fold }
+            if !quiet.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    if quiet.count > 4 {
+                        Button { withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() } } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "chevron.right").font(.system(size: 10)).rotationEffect(.degrees(expanded ? 90 : 0))
+                                Text(expanded ? "收起" : "更早的 \(quiet.count - 3) 步").lineLimit(1)
+                            }
+                            .font(.jSmall).foregroundStyle(Color.inkFaint).frame(minHeight: 28).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("工具：\(quiet.count) 步")
+                    }
+                    ForEach(folded ? Array(quiet.suffix(3)) : quiet) { call in ToolCallRow(call: call, open: open) }
+                }
+            }
             ForEach(calls) { call in
-                if call.name == "run_command" { CommandCard(messageID: messageID, call: call) }
+                if Self.isCard(call) { CommandCard(messageID: messageID, call: call) }
                 else if call.name == "edit_code", let id = call.job_id { ChangeSetCard(jobID: id) }
                 else if let id = call.job_id, let job = store.job(id) { JobInline(job: job, open: open) }
             }
         }
     }
-
-    var fold: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Button { withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() } } label: {
-                HStack(spacing: 7) {
-                    if running != nil { ProgressView().controlSize(.mini) }
-                    else { Image(systemName: failed ? "exclamationmark.circle" : "checkmark.circle").foregroundStyle(failed ? Color.warning : .secondary) }
-                    Text(title).lineLimit(1)
-                    Image(systemName: "chevron.right").font(.caption2.weight(.semibold)).rotationEffect(.degrees(expanded ? 90 : 0))
-                }
-                .font(.callout).foregroundStyle(.secondary).contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("工具：\(title)")
-
-            if expanded {
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(quiet) { call in ToolCallRow(call: call, open: open) }
-                }
-                .padding(.leading, 4)
-                .overlay(alignment: .leading) { Rectangle().fill(Color.hairline).frame(width: 2) }
-            }
-        }
-    }
 }
 
-/// A shell command the assistant wants to run: the user sees why and exactly what, approves it, then watches the output.
+/// Something the assistant wants to do that needs a yes: the user sees exactly what and why, approves it, then watches the output.
 struct CommandCard: View {
     @EnvironmentObject var store: AppStore
     var messageID: String
     var call: ToolCall
     @State private var showOutput = false
-    @State private var deciding = false
+    /// What the user pressed; stays until the call leaves `awaiting`, which can be after the request returns.
+    @State private var decision: String?
 
     var lines: [Substring] { (call.console ?? "").split(separator: "\n", omittingEmptySubsequences: false) }
+    var isCommand: Bool { call.name == "run_command" }
+    var reason: String { call.reason?.isEmpty == false ? call.reason! : isCommand ? "运行命令" : call.label }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Image(systemName: "terminal").foregroundStyle(.secondary)
-                Text(call.reason?.isEmpty == false ? call.reason! : "运行命令").font(.callout.weight(.medium)).lineLimit(2)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                IconWell(icon: isCommand ? "terminal" : ToolCallRow.icon(call.name))
+                Text(call.awaiting ? (isCommand ? "Jurvis 想运行一条命令" : "Jurvis 想\(call.label)") : reason).font(.jHeading).lineLimit(2)
                 Spacer(minLength: 6)
                 status
             }
-            Text(call.command ?? "").font(.system(.callout, design: .monospaced)).textSelection(.enabled)
+            Text(call.command ?? "").font(.jMono).textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(10).background(Color.canvas, in: RoundedRectangle(cornerRadius: 8))
-            if let cwd = call.cwd { Text("在 " + cwd).font(.caption2).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.middle) }
+                .padding(.horizontal, 12).padding(.vertical, 10)
+                .background(Color.subtleFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.hairline))
+            if call.awaiting, isCommand { Text(reason).font(.jCallout).foregroundStyle(Color.inkSoft).fixedSize(horizontal: false, vertical: true) }
+            if let cwd = call.cwd, !cwd.isEmpty { Text("在 " + cwd).font(.jMicro).foregroundStyle(Color.inkFaint).lineLimit(1).truncationMode(.middle) }
             if call.awaiting { approval }
             if call.isRunning, !(call.console ?? "").isEmpty { console(lines.suffix(8).joined(separator: "\n")) }
             if !call.isRunning, !call.awaiting, !(call.console ?? "").isEmpty {
                 Button { withAnimation(.easeOut(duration: 0.15)) { showOutput.toggle() } } label: {
-                    Label(showOutput ? "收起输出" : "查看输出（\(lines.count) 行）", systemImage: "chevron.right")
-                        .labelStyle(.titleAndIcon).font(.caption)
+                    Label(showOutput ? "收起输出" : "查看输出（\(lines.count) 行）", systemImage: showOutput ? "chevron.down" : "chevron.right")
+                        .labelStyle(.titleAndIcon)
                 }
-                .buttonStyle(.borderless).foregroundStyle(.secondary)
+                .buttonStyle(.jurvis(.ghost, .small)).padding(.leading, -12)
                 if showOutput { console(call.console ?? "") }
             }
         }
-        .padding(14)
-        .background(Color.bubble.opacity(0.6), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(call.awaiting ? Color.primary.opacity(0.35) : Color.hairline))
+        .padding(16)
+        .surface(radius: 18, edge: .stroke, lifted: call.awaiting)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(call.awaiting ? "需要你确认" : reason)
     }
 
     @ViewBuilder var status: some View {
-        if call.awaiting { Text("等你确认").font(.caption.weight(.semibold)) }
-        else if call.isRunning { HStack(spacing: 5) { ProgressView().controlSize(.mini); Text("运行中").font(.caption).foregroundStyle(.secondary) } }
+        if call.awaiting { Text("等你确认").font(.jSmall).foregroundStyle(Color.signal).fixedSize() }
+        else if call.isRunning { HStack(spacing: 6) { SignalDot(); Text("运行中").font(.jSmall).foregroundStyle(Color.signal) }.fixedSize() }
         else if let summary = call.summary {
             let problem = call.failed || call.status == "skipped"
-            Label(summary, systemImage: problem ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
-                .font(.caption).foregroundStyle(problem ? Color.warning : .secondary).lineLimit(1)
+            HStack(spacing: 6) {
+                if !problem { StatusMark(state: .done, size: 14) }
+                Text(summary).font(.jSmall).foregroundStyle(problem ? Color.danger : Color.inkSoft).lineLimit(1)
+            }
         }
     }
 
     var approval: some View {
-        HStack(spacing: 8) {
-            Button { decide("run") } label: { Text("运行").padding(.horizontal, 6) }.buttonStyle(.borderedProminent).tint(Color.ink)
-            Button { decide("deny") } label: { Text("拒绝") }.buttonStyle(.bordered)
-            Spacer(minLength: 4)
-            Button { decide("always") } label: { Text("本对话都允许").font(.caption) }.buttonStyle(.borderless)
-                .help("之后这段对话里的命令直接运行；删除、sudo、git push 等仍会询问")
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) {
+                decisionButton("run", title: "允许", busy: "运行中", icon: "checkmark", kind: .primary)
+                decisionButton("always", title: "本任务内都允许", busy: "运行中", icon: nil, kind: .secondary)
+                    .help("之后这个任务里的命令直接运行；删除、sudo、git push 等仍会询问")
+                decisionButton("deny", title: "拒绝", busy: "正在拒绝", icon: "xmark", kind: .ghost)
+                Spacer(minLength: 0)
+            }
+            VStack(spacing: 8) {
+                HStack(spacing: 8) {
+                    decisionButton("run", title: "允许", busy: "运行中", icon: "checkmark", kind: .primary, fill: true)
+                    decisionButton("deny", title: "拒绝", busy: "正在拒绝", icon: "xmark", kind: .secondary, fill: true)
+                }
+                decisionButton("always", title: "本任务内都允许", busy: "运行中", icon: nil, kind: .ghost, fill: true)
+            }
         }
-        .disabled(deciding)
-        .controlSize(.small)
+    }
+
+    func decisionButton(_ choice: String, title: String, busy: String, icon: String?, kind: ButtonKind, fill: Bool = false) -> some View {
+        ActionButton(title: title, busyTitle: busy, icon: icon, kind: kind, scale: .regular, fill: fill, isBusy: decision == choice) {
+            decision = choice
+            if await !store.decideCommand(message: messageID, call: call.id, choice) { decision = nil }
+        }
+        .disabled(decision != nil && decision != choice)
     }
 
     func console(_ text: String) -> some View {
         ScrollView([.horizontal, .vertical]) {
-            Text(text).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+            Text(text).font(.jMono).textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading).padding(10)
         }
         .frame(maxHeight: 260)
-        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
-    }
-
-    func decide(_ decision: String) {
-        deciding = true
-        Task { await store.decideCommand(message: messageID, call: call.id, decision); deciding = false }
+        .background(Color.subtleFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.hairline))
     }
 }
 
@@ -520,17 +785,24 @@ struct GoalStatus: View {
 
     var body: some View {
         let status = goal["status"].string
-        HStack(spacing: 8) {
-            Image(systemName: icon(status)).foregroundStyle(status == "done" ? Color.jurvisAccent : status == "running" ? .secondary : Color.warning)
-            Text("目标").font(.caption.weight(.semibold))
-            Text(label(status)).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+        if live {
+            Badge(text: "目标 · " + label(status), tone: .active)
+        } else {
+            HStack(alignment: .firstTextBaseline, spacing: 7) {
+                Group {
+                    if status == "done" { StatusMark(state: .done, size: 16) }
+                    else if status == "blocked" { StatusMark(state: .waiting, size: 16) }
+                    else { Image(systemName: icon(status)).font(.system(size: 13)).foregroundStyle(Color.inkSoft) }
+                }
+                .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 3 }
+                Text("目标").font(.jSmall.weight(.medium))
+                Text(label(status)).font(.jSmall).foregroundStyle(status == "blocked" ? Color.signal : Color.inkSoft).lineLimit(2)
+            }
         }
-        .padding(.horizontal, 10).padding(.vertical, 6)
-        .background(Color.bubble, in: Capsule())
     }
 
     func icon(_ status: String) -> String {
-        ["done": "checkmark.seal.fill", "blocked": "hand.raised.fill", "unverified": "questionmark.circle", "incomplete": "pause.circle"][status] ?? "scope"
+        ["unverified": "questionmark.circle", "incomplete": "pause.circle"][status] ?? "scope"
     }
 
     func label(_ status: String) -> String {
@@ -548,6 +820,7 @@ struct GoalStatus: View {
     }
 }
 
+/// One tool call as a pill: icon, what it did, the file or query in monospace, and how it went.
 struct ToolCallRow: View {
     @EnvironmentObject var store: AppStore
     var call: ToolCall
@@ -557,33 +830,33 @@ struct ToolCallRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Button { withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() } } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: ToolCallRow.icon(call.name)).font(.callout).foregroundStyle(Color.jurvisAccent).frame(width: 18)
-                    Text(call.label).font(.callout.weight(.medium))
-                    Text(argumentPreview).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
-                    Spacer(minLength: 6)
-                    status
-                    Image(systemName: "chevron.right").font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
-                        .rotationEffect(.degrees(expanded ? 90 : 0))
+                HStack(spacing: 8) {
+                    if call.isRunning { StatusMark(state: .running, size: 14) }
+                    else { Image(systemName: ToolCallRow.icon(call.name)).font(.system(size: 12)).frame(width: 14) }
+                    Text(call.label).fixedSize()
+                    if !argumentPreview.isEmpty {
+                        Text(argumentPreview).font(.jMono).foregroundStyle(Color.ink).lineLimit(1).truncationMode(.middle).layoutPriority(1)
+                    }
+                    if let summary = call.summary, !call.isRunning {
+                        Text(summary).font(.jSmall).foregroundStyle(call.failed ? Color.danger : Color.inkFaint).lineLimit(1)
+                    }
                 }
+                .font(.jCallout).foregroundStyle(Color.inkSoft)
+                .padding(.leading, 10).padding(.trailing, 12).frame(minHeight: 30)
+                .background(Color.subtleFill, in: Capsule())
+                .overlay(Capsule().strokeBorder(Color.hairline))
+                #if os(iOS)
+                .frame(minHeight: 44)
+                #endif
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("\(call.label)，\(call.summary ?? call.status)")
 
-            if expanded { details.padding(.leading, 28) }
-        }
-        .padding(.horizontal, 12).padding(.vertical, 9)
-    }
-
-    @ViewBuilder var status: some View {
-        if call.isRunning {
-            ProgressView().controlSize(.mini)
-        } else {
-            HStack(spacing: 5) {
-                if let summary = call.summary { Text(summary).font(.caption).foregroundStyle(call.failed ? Color.warning : .secondary).lineLimit(1) }
-                Image(systemName: call.failed ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
-                    .font(.caption).foregroundStyle(call.failed ? Color.warning : Color.jurvisAccent)
+            if expanded {
+                details.padding(.leading, 14)
+                    .overlay(alignment: .leading) { Rectangle().fill(Color.hairline).frame(width: 1) }
+                    .padding(.leading, 8)
             }
         }
     }
@@ -603,7 +876,7 @@ struct ToolCallRow: View {
             if let output = call.output, !output.isEmpty {
                 CodeBlock(title: call.failed ? "错误" : "结果", text: prettyJSON(output))
             }
-            if let duration = call.duration { Text(String(format: "耗时 %.2f 秒", duration)).font(.caption2).foregroundStyle(.tertiary) }
+            if let duration = call.duration { Text(String(format: "耗时 %.2f 秒", duration)).font(.jMicro).foregroundStyle(Color.inkFaint) }
         }
     }
 
@@ -621,7 +894,10 @@ struct ToolCallRow: View {
         switch name {
         case "calculate": return "function"
         case "list_files", "read_file": return "doc.text"
-        case "save_file": return "square.and.arrow.down"
+        case "save_file": return "doc.badge.plus"
+        case "append_file": return "text.append"
+        case "edit_file": return "pencil.line"
+        case "update_plan": return "checklist"
         case "recall": return "magnifyingglass"
         case "remember": return "brain"
         case "create_image": return "photo"
@@ -630,6 +906,8 @@ struct ToolCallRow: View {
         case "job_status": return "checklist"
         case "code_search": return "text.magnifyingglass"
         case "code_propose", "edit_code": return "wand.and.stars"
+        case "home_control": return "house"
+        case "web_search": return "globe"
         default: return name.hasPrefix("code") ? "chevron.left.forwardslash.chevron.right" : "wrench.and.screwdriver"
         }
     }
@@ -644,11 +922,11 @@ struct JobInline: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Badge(text: job.statusLabel, tone: job.tone)
-                if job.isActive { Text(job.phase).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
-                if let error = job.error { Text(error).font(.caption).foregroundStyle(Color.warning).lineLimit(2) }
+                if job.isActive { Text(job.phase).font(.jSmall).foregroundStyle(Color.inkSoft).lineLimit(1) }
+                if let error = job.error { Text(error).font(.jSmall).foregroundStyle(Color.danger).lineLimit(2) }
                 Spacer()
                 if job.isActive {
-                    Button("取消") { Task { await store.cancel(job) } }.buttonStyle(.borderless).font(.caption)
+                    ActionButton(title: "取消", busyTitle: "正在停止", kind: .ghost, scale: .small, isBusy: store.isCancelling(job)) { await store.cancel(job) }
                 }
                 destination
             }
@@ -666,7 +944,7 @@ struct JobInline: View {
     }
     @ViewBuilder var destination: some View {
         switch job.kind {
-        case "plan": Button("打开短剧") { store.section = .drama }.buttonStyle(.borderless).font(.caption)
+        case "plan": Button { store.section = .drama } label: { Label("打开短剧", systemImage: "film.stack") }.buttonStyle(.jurvis(.ghost, .small))
         default: EmptyView()
         }
     }
@@ -685,15 +963,15 @@ struct MarkdownText: View {
         VStack(alignment: .leading, spacing: 9) {
             ForEach(Array(MarkdownText.parse(text).enumerated()), id: \.offset) { _, block in
                 switch block {
-                case .paragraph(let s): inline(s).lineSpacing(4)
-                case .heading(let level, let s): inline(s).font(level == 1 ? .title3.weight(.semibold) : .headline).padding(.top, 4)
+                case .paragraph(let s): inline(s).font(.jBody).lineSpacing(6)
+                case .heading(let level, let s): inline(s, font: level == 1 ? .jSection : .jHeading).font(level == 1 ? .jSection : .jHeading).padding(.top, 4)
                 case .bullet(let marker, let s):
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(marker).foregroundStyle(.secondary).monospacedDigit()
-                        inline(s).lineSpacing(3)
+                        Text(marker).font(.jBody).foregroundStyle(Color.inkSoft).monospacedDigit()
+                        inline(s).font(.jBody).lineSpacing(4)
                     }
                 case .quote(let s):
-                    inline(s).foregroundStyle(.secondary).padding(.leading, 10)
+                    inline(s).font(.jBody).foregroundStyle(Color.inkSoft).padding(.leading, 10)
                         .overlay(alignment: .leading) { Rectangle().fill(Color.hairline).frame(width: 3) }
                 case .code(let lang, let s): CodeBlock(title: lang.isEmpty ? nil : lang, text: s)
                 case .rule: Divider()
@@ -704,9 +982,16 @@ struct MarkdownText: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    func inline(_ s: String) -> Text {
+    /// Strong text is set in medium: the app has no bold.
+    func inline(_ s: String, font: Font = .jBody) -> Text {
         let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        return Text((try? AttributedString(markdown: s, options: options)) ?? AttributedString(s))
+        var text = (try? AttributedString(markdown: s, options: options)) ?? AttributedString(s)
+        let strong = text.runs.filter { $0.inlinePresentationIntent?.contains(.stronglyEmphasized) ?? false }.map(\.range)
+        for range in strong {
+            text[range].inlinePresentationIntent = text[range].inlinePresentationIntent?.subtracting(.stronglyEmphasized)
+            text[range].font = font.weight(.medium)
+        }
+        return Text(text)
     }
 
     static func parse(_ text: String) -> [Block] {
@@ -749,19 +1034,19 @@ struct CodeBlock: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text(title ?? "").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                Text(title ?? "").font(.jMicro).foregroundStyle(Color.inkSoft)
                 Spacer()
-                Button { copyText(text) } label: { Image(systemName: "doc.on.doc") }.buttonStyle(.borderless).font(.caption).help("复制")
+                CopyButton(text: text, iconOnly: true)
             }
-            .padding(.horizontal, 10).padding(.vertical, 5)
+            .padding(.leading, 10).padding(.trailing, 2).padding(.vertical, 1)
             Divider()
             ScrollView(.horizontal) {
-                Text(text).font(.system(.caption, design: .monospaced)).textSelection(.enabled).padding(10)
+                Text(text).font(.jMono).textSelection(.enabled).padding(10)
             }
             .frame(maxHeight: 320)
         }
-        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.hairline))
+        .background(Color.subtleFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.hairline))
     }
 }
 

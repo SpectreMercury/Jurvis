@@ -18,7 +18,7 @@ class ScriptedModel:
         self.turns, self.calls = list(turns), []
 
     async def stream(self, messages, *, tools=None, tool_choice=None, max_tokens=0, temperature=0, on_text=None):
-        self.calls.append({"messages": [dict(m) for m in messages], "tools": tools})
+        self.calls.append({"messages": [dict(m) for m in messages], "tools": tools, "temperature": temperature})
         turn = self.turns.pop(0)
         if on_text and turn.text:
             await on_text(turn.text)
@@ -190,7 +190,8 @@ async def test_coding_session_edits_become_an_applicable_change_set(app, tmp_pat
     _, message = await run(app, model, "total 应该相加")
     first = model.calls[0]
     assert "calc.py" in first["messages"][0]["content"] and pid in first["messages"][0]["content"]
-    assert {t["function"]["name"] for t in first["tools"]} == {"calculate", "recall", "remember", "code_files", "code_read", "code_search", "edit_code", "run_command"}
+    assert {t["function"]["name"] for t in first["tools"]} == {"calculate", "recall", "remember", "code_files", "code_read", "code_search", "find_files", "search_files", "edit_code",
+                                                               "run_command", "command_output", "stop_command"}
     entry = message["metadata"]["steps"][0]["calls"][0]
     assert entry["status"] == "ok" and "calc.py +1 −1" in entry["summary"]
     assert (root / "calc.py").read_text().endswith("a * b\n"), "nothing is written before the user applies"
@@ -229,7 +230,7 @@ async def test_repeated_failing_call_is_stopped_and_reported(app):
     model = ScriptedModel([bad, bad, bad, Completion("", [], "stop"), Completion("", [], "stop")])
     _, message = await run(app, model, "读 ../x.md")
     assert len(model.calls) == 5 and model.calls[3]["tools"] is None
-    assert message["status"] == "complete" and message["content"].startswith("没能完成这个请求") and "工作区" in message["content"]
+    assert message["status"] == "complete" and message["content"].startswith("没能完成：") and "工作区" in message["content"]
 
 
 @pytest.mark.asyncio

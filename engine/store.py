@@ -62,6 +62,17 @@ class Store:
             # The user allowed the assistant to run commands in this conversation without asking each time.
             if "allow_commands" not in columns:
                 db.execute("ALTER TABLE sessions ADD COLUMN allow_commands INTEGER NOT NULL DEFAULT 0")
+            # Per-conversation model, memory bookkeeping and the rolling summary of older messages.
+            for name, kind in (("model", "TEXT"), ("incognito", "INTEGER NOT NULL DEFAULT 0"), ("summary", "TEXT"),
+                               ("summary_upto", "REAL NOT NULL DEFAULT 0"), ("memory_upto", "REAL NOT NULL DEFAULT 0"), ("tools", "TEXT")):
+                if name not in columns:
+                    db.execute(f"ALTER TABLE sessions ADD COLUMN {name} {kind}")
+            columns = [r[1] for r in db.execute("PRAGMA table_info(memories)")]
+            for name, kind in (("importance", "REAL NOT NULL DEFAULT 0.5"), ("durable", "INTEGER NOT NULL DEFAULT 1"), ("tags", "TEXT NOT NULL DEFAULT '[]'"),
+                               ("source", "TEXT NOT NULL DEFAULT 'manual'"), ("session_id", "TEXT"), ("embedding", "BLOB"), ("embed_model", "TEXT"), ("used_at", "REAL")):
+                if name not in columns:
+                    db.execute(f"ALTER TABLE memories ADD COLUMN {name} {kind}")
+            db.execute("UPDATE schema_version SET version=2 WHERE version<2")
 
     @contextmanager
     def connection(self):
@@ -83,8 +94,8 @@ class Store:
         if row is None:
             return None
         obj = dict(row)
-        for key in ("payload", "result", "document", "metadata"):
-            if key in obj:
+        for key in ("payload", "result", "document", "metadata", "tags"):
+            if isinstance(obj.get(key), str):
                 obj[key] = json.loads(obj[key])
         return obj
 
@@ -146,6 +157,16 @@ class Store:
                 return None
             db.execute("UPDATE jobs SET status='running',phase='正在准备',updated_at=? WHERE id=?", (time.time(), row["id"]))
             return self.decode(db.execute("SELECT * FROM jobs WHERE id=?", (row["id"],)).fetchone())
+
+    def queued(self):
+        return self.all("SELECT * FROM jobs WHERE status='queued' ORDER BY created_at LIMIT 50")
+
+    def claim(self, ident):
+        """Marks one queued job as running; None if something else took or cancelled it."""
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            changed = db.execute("UPDATE jobs SET status='running',phase='正在准备',updated_at=? WHERE id=? AND status='queued'", (time.time(), ident)).rowcount
+            return self.decode(db.execute("SELECT * FROM jobs WHERE id=?", (ident,)).fetchone()) if changed else None
 
     def recover(self):
         with self.connection() as db:

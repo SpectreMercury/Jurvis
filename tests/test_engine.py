@@ -113,14 +113,22 @@ def test_upload_rejects_non_images_and_sanitizes_metadata(client):
     with Image.open(io.BytesIO(out.content)) as image:assert image.size==(80,60)
 
 
-def test_workspace_is_scoped_and_never_overwrites(app):
+def test_workspace_is_scoped_and_keeps_replaced_versions(app):
     tools=app.state.worker.tools
     for bad in ('../secret','/etc/passwd','.env','nested/file'):
         with pytest.raises(ValueError):tools.execute('read_file',{'name':bad})
     one=tools.execute('save_file',{'name':'note.md','content':'first'})
     two=tools.execute('save_file',{'name':'note.md','content':'second'})
-    assert one['saved']!=two['saved']
-    assert tools.execute('read_file',{'name':one['saved']})['content']=='first'
+    assert one['saved']==two['saved']=='note.md' and two['replaced']
+    assert tools.execute('read_file',{'name':'note.md'})['content']=='second'
+    history=list((app.state.worker.settings.data/'workspace/.history').iterdir())
+    assert [p.read_text() for p in history]==['first']
+    assert tools.save_file('note.md','imported',replace=False)['saved']!='note.md'  # an upload never replaces a document
+    assert [f['name'] for f in tools.execute('list_files',{})['files'] if f['name'].startswith('.')]==[]
+    tools.execute('append_file',{'name':'note.md','content':'third'})
+    edited=tools.execute('edit_file',{'name':'note.md','old_text':'second','new_text':'2nd'})
+    assert edited['replacements']==1 and tools.execute('read_file',{'name':'note.md'})['content']=='2nd\n\nthird'
+    with pytest.raises(ValueError):tools.execute('edit_file',{'name':'note.md','old_text':'missing','new_text':'x'})
     outside=app.state.worker.settings.data.parent/'outside.txt';outside.write_text('private')
     (app.state.worker.settings.data/'workspace/link.txt').symlink_to(outside)
     with pytest.raises(ValueError):tools.execute('read_file',{'name':'link.txt'})
@@ -175,3 +183,76 @@ async def test_worker_cancel_stops_provider_and_persists(app):
     await asyncio.sleep(.01)
     assert app.state.store.get_job(job['id'])['status']=='cancelled'
     await worker.close()
+
+
+DRAMA={'style':'水彩','characters':[{'id':'c1','name':'小葵','description':'女孩','appearance':'girl, dark brown twin tails'},{'id':'c2','name':'师兄','description':'青年','appearance':'young man, green robe'}],
+       'shots':[{'id':'s1','title':'竹林','description':'对峙','image_prompt':'bamboo forest','character_ids':['c1','c2']},{'id':'s2','title':'庭院','description':'收剑','image_prompt':'stone courtyard','character_ids':['c1']}]}
+
+
+def drama_project(client,doc=DRAMA):
+    project=client.post('/api/projects',json={'title':'一致性','brief':'两镜头'}).json()
+    return client.put('/api/projects/'+project['id'],json={'document':doc,'expected_updated_at':project['updated_at']}).json()
+
+
+def fake_media(worker):
+    calls=[]
+    async def run(kind,p,job_id,prompt=None,phase=None):
+        calls.append((kind,p));return {'asset_ids':[f'{kind}{len(calls)}']}
+    async def rewrite(p,ident):return p['prompt']
+    worker.media.run=run;worker.rewrite=rewrite;worker.catalog.validate_video=lambda p:None
+    return calls
+
+
+def test_shot_media_requires_the_previous_stage(client):
+    project=drama_project(client)
+    frame=client.post('/api/images',json={'prompt':'x','project_id':project['id'],'shot_id':'s1'})
+    assert frame.status_code==400 and '定妆' in frame.json()['detail']
+    assert client.post('/api/videos',json={'prompt':'x','project_id':project['id'],'shot_id':'s1'}).status_code==400
+
+
+@pytest.mark.asyncio
+async def test_produce_runs_character_frame_video_in_order(client,app):
+    worker=app.state.worker;calls=fake_media(worker)
+    project=drama_project(client)
+    await worker.produce({'project_id':project['id'],'stage':'video','width':352,'height':608,'enhance':True},'job')
+    assert [k for k,_ in calls]==['image']*4+['video']*2
+    sheets,frames,videos=calls[:2],calls[2:4],calls[4:]
+    assert 'white background' in sheets[0][1]['prompt'] and sheets[0][1]['character_id']=='c1'
+    assert frames[0][1]['reference_assets']==['image1','image2'] and frames[1][1]['reference_assets']==['image1']
+    assert 'Picture 1 is 小葵: girl, dark brown twin tails' in frames[1][1]['prompt']
+    assert (frames[0][1]['width'],frames[0][1]['height'])==(704,1216)
+    assert videos[0][1]['first_frame']=='image3' and 'dark brown twin tails' in videos[1][1]['prompt']
+
+
+@pytest.mark.asyncio
+async def test_new_character_sheet_invalidates_frames_and_takes(client,app):
+    worker=app.state.worker;calls=fake_media(worker)
+    project=drama_project(client)
+    await worker.produce({'project_id':project['id'],'stage':'video','width':352,'height':608,'enhance':True},'job')
+    worker.attach_result({'project_id':project['id'],'character_id':'c2'},{'asset_ids':['new-sheet']},'image')
+    calls.clear()
+    await worker.produce({'project_id':project['id'],'stage':'frames'},'job')
+    assert [p['shot_id'] for _,p in calls]==['s1']
+    doc=app.state.store.one('SELECT document FROM projects WHERE id=?',(project['id'],))['document']
+    assert doc['shots'][0]['video_asset'] is None and doc['shots'][0]['versions'] and doc['shots'][1]['video_asset']
+
+
+def test_pairing_invitation_carries_the_tailscale_address(client,app,monkeypatch):
+    from urllib.parse import urlparse,parse_qs
+    import engine.app,engine.security
+    assert engine.security.ipaddress.ip_address('100.101.102.103') in engine.security.TAILNET
+    assert engine.security.ipaddress.ip_address('100.63.0.1') not in engine.security.TAILNET
+    monkeypatch.setattr(engine.app,'reach_addresses',lambda:['192.168.1.20','100.101.102.103'])
+    invite=client.post('/api/pairing').json()
+    port=app.state.security.settings.port
+    assert invite['url']==f'https://192.168.1.20:{port}'
+    assert invite['urls']==[f'https://192.168.1.20:{port}',f'https://100.101.102.103:{port}']
+    query=parse_qs(urlparse(invite['link']).query)
+    assert query['url']==[invite['url']] and query['alt']==[invite['urls'][1]]
+    # a paired device can ask again later, and an unpaired one cannot
+    assert client.get('/api/reach').json()=={'urls':invite['urls']}
+    with TestClient(app) as stranger:
+        assert stranger.get('/api/reach').status_code==401
+    # with only Tailscale up there is still an invitation
+    monkeypatch.setattr(engine.app,'reach_addresses',lambda:['100.101.102.103'])
+    assert client.post('/api/pairing').json()['urls']==[f'https://100.101.102.103:{port}']

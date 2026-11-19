@@ -8,14 +8,44 @@ enum APIError: LocalizedError {
 }
 
 final class API: NSObject, URLSessionDelegate, @unchecked Sendable {
-    let connection: Connection
+    private(set) var connection: Connection
+    /// The address in use right now: one of the connection's.
+    private(set) var base: String
     lazy var session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 30
         config.timeoutIntervalForResource = 300
         return URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }()
-    init(_ connection: Connection) { self.connection = connection; super.init() }
+    init(_ connection: Connection) { self.connection = connection; base = connection.url; super.init() }
+
+    /// Every address of the Mac, the one in use first.
+    var candidates: [String] { [base] + ([connection.url] + (connection.others ?? [])).filter { $0 != base } }
+    /// True when the Mac is being reached over Tailscale rather than the local network.
+    var overTailscale: Bool { URL(string: base)?.host.map(Self.isTailscale) ?? false }
+    static func isTailscale(_ host: String) -> Bool {
+        let parts = host.split(separator: ".").compactMap { Int($0) }
+        return parts.count == 4 && parts[0] == 100 && (64...127).contains(parts[1])
+    }
+    /// Finds an address that answers and switches to it. At home that is the local network; outside, Tailscale.
+    func reconnect() async -> Bool {
+        for candidate in candidates {
+            guard let url = URL(string: candidate + "/health") else { continue }
+            var req = URLRequest(url: url); req.timeoutInterval = 3
+            if let (_, response) = try? await session.data(for: req), (response as? HTTPURLResponse)?.statusCode == 200 {
+                base = candidate; return true
+            }
+        }
+        return false
+    }
+    /// Replaces the known addresses with the ones the Mac reports. Returns the connection to save, or nil if nothing changed.
+    func learn(_ urls: [String]) -> Connection? {
+        let known = [connection.url] + (connection.others ?? [])
+        let valid = urls.filter { URL(string: $0)?.scheme == "https" }
+        guard let first = valid.first, valid != known else { return nil }
+        connection.url = first; connection.others = Array(valid.dropFirst())
+        return connection
+    }
     func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge, completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
         guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
               let trust = challenge.protectionSpace.serverTrust,
@@ -29,7 +59,7 @@ final class API: NSObject, URLSessionDelegate, @unchecked Sendable {
         completionHandler(.useCredential, URLCredential(trust: trust))
     }
     func request<T: Decodable>(_ path: String, method: String = "GET", body: Any? = nil) async throws -> T {
-        guard let url = URL(string: connection.url + path) else { throw APIError.message("连接地址无效") }
+        guard let url = URL(string: base + path) else { throw APIError.message("连接地址无效") }
         var req = URLRequest(url: url); req.httpMethod = method
         req.setValue("Bearer " + connection.token, forHTTPHeaderField: "Authorization")
         if let body {
@@ -51,7 +81,7 @@ final class API: NSObject, URLSessionDelegate, @unchecked Sendable {
     }
     func upload<T: Decodable>(_ path: String, data: Data, name: String, mime: String) async throws -> T {
         let boundary = UUID().uuidString
-        var req = URLRequest(url: URL(string: connection.url + path)!)
+        var req = URLRequest(url: URL(string: base + path)!)
         req.httpMethod = "POST"; req.setValue("Bearer " + connection.token, forHTTPHeaderField: "Authorization")
         req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         let safeName = name.replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "\r", with: "").replacingOccurrences(of: "\n", with: "")
@@ -61,7 +91,7 @@ final class API: NSObject, URLSessionDelegate, @unchecked Sendable {
         return try JSONDecoder().decode(T.self, from: out)
     }
     func assetData(_ id: String) async throws -> Data {
-        var req = URLRequest(url: URL(string: connection.url + "/api/assets/\(id)/file")!)
+        var req = URLRequest(url: URL(string: base + "/api/assets/\(id)/file")!)
         req.setValue("Bearer " + connection.token, forHTTPHeaderField: "Authorization")
         let (data,response) = try await session.data(for: req); try check(response,data); return data
     }

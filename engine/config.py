@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     llm_timeout: float = 900
     media_timeout: float = 7200
     history_messages: int = 24
+    browser_headless: bool = False            # drive the browser without a window (automated runs)
+    local_model: str = ""                     # folder of an MLX model to use instead of the default; relative paths start at models/
+    shared_skills: str = "~/.claude/skills"   # skills written for Claude Code are offered here too; empty turns that off
 
     def prepare(self):
         for name in ("assets", "workspace", "logs", "security"):
@@ -25,7 +28,14 @@ class Settings(BaseSettings):
 
     @property
     def llm_model(self):
+        if self.local_model:
+            path = Path(self.local_model).expanduser()
+            return path if path.is_absolute() else self.root / "models" / path
         return self.root / "models/qwen/aeon-mxfp4-mtplx"
+
+    @property
+    def llm_title(self):
+        return f"{self.llm_model.name}（本机）" if self.local_model else "Qwen 3.8 · 27B（本机）"
 
     @property
     def python(self):

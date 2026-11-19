@@ -22,12 +22,18 @@ let output = URL(fileURLWithPath: CommandLine.arguments.count > 1 ? CommandLine.
     print("ok   \(name)")
 }
 
+extension AppStore {
+    func reviewCount(_ project: Project) -> Int {
+        project.document.shots.filter { $0.first_frame != nil }.count + project.document.characters.filter { $0.reference_asset != nil }.count
+    }
+}
+
 @MainActor func run() async {
     let store = AppStore()
     await store.start()
     guard store.connected, let snapshot = store.snapshot else { print("FAIL engine not reachable: \(store.error ?? "")"); exit(1) }
     await store.reloadSettings()
-    let root = RootView().environmentObject(store).tint(Color.jurvisAccent)
+    let root = RootView().environmentObject(store).tint(Color.ink)
 
     for section in Section.allCases {
         store.section = section
@@ -42,14 +48,18 @@ let output = URL(fileURLWithPath: CommandLine.arguments.count > 1 ? CommandLine.
     store.section = .tasks
     await capture("tasks-dark", dark: true, root)
 
-    // Media detail sheets: the screen that used to crash on video.
+    // The media viewer: the screen that used to crash on video.
     for asset in snapshot.assets {
         let kind = asset.isVideo ? "video" : "image"
-        await capture("media-\(kind)-\(asset.kind)-\(asset.id.prefix(6))", size: CGSize(width: 700, height: 760), wait: 3,
-                       MediaDetail(asset: asset).environmentObject(store))
+        await capture("media-\(kind)-\(asset.kind)-\(asset.id.prefix(6))", size: CGSize(width: 900, height: 760), wait: 3,
+                       MediaViewer(viewing: MediaViewing(assets: [asset], index: 0)).environmentObject(store))
     }
-    if let project = snapshot.projects.first {
-        await capture("drama-detail", NavigationStack { ProjectDetailView(projectID: project.id) }.environmentObject(store))
+    // The drama with the most artwork, in both appearances and at a narrow width.
+    if let project = snapshot.projects.max(by: { store.reviewCount($0) < store.reviewCount($1) }) {
+        let page = NavigationStack { ProjectDetailView(projectID: project.id) }.environmentObject(store)
+        await capture("drama-detail", size: CGSize(width: 1100, height: 1500), page)
+        await capture("drama-detail-dark", size: CGSize(width: 1100, height: 1500), dark: true, page)
+        await capture("drama-detail-narrow", size: CGSize(width: 420, height: 1200), page)
     }
     if let code = snapshot.jobs.first(where: { $0.kind == "code" && $0.status == "succeeded" && ($0.result["change_count"].number ?? 0) > 0 }) {
         await capture("code-change", size: CGSize(width: 820, height: 640), ScrollView { ChangeSetCard(jobID: code.id).padding(20) }.environmentObject(store))

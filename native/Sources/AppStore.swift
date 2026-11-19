@@ -24,6 +24,15 @@ import ImageIO
     @Published var files: [WorkspaceFile] = []
     @Published var invitation: Invitation?
     @Published var mediaCache: [String: URL] = [:]
+    /// The message being sent, shown at once while the Mac has not stored it yet.
+    @Published var outgoing: Message?
+    private var outgoingBase = 0
+    /// A conversation was picked and its messages are on their way.
+    @Published var loadingSession = false
+    /// Jobs whose cancel request has been pressed but not answered yet.
+    @Published var cancelling: Set<String> = []
+    /// The picture or clip open in the full-window viewer.
+    @Published var viewing: MediaViewing?
     private var thumbnails: [String: Image] = [:]
     private var polling: Task<Void,Never>?
     #if os(macOS)
@@ -70,6 +79,8 @@ import ImageIO
         } catch { self.report(error); connectionStatus = "引擎未连接" }
         #else
         if let connection = Keychain.load() { api = API(connection); await beginPolling() }
+        // For UI checks in the simulator, where nobody can scan a code: `SIMCTL_CHILD_JURVIS_PAIR_LINK=… xcrun simctl launch …`.
+        else if let link = Self.checkLink { await pair(link) }
         else { connectionStatus = "请与 Mac 配对" }
         #endif
         connecting = false
@@ -82,7 +93,9 @@ import ImageIO
     }
     #endif
     func beginPolling() async {
+        _ = await api?.reconnect()
         await refresh()
+        await learnAddresses()
         await loadCodeProjects()
         polling?.cancel()
         polling = Task { [weak self] in
@@ -111,9 +124,22 @@ import ImageIO
             if connectionStatus != "Mac 已连接" { connectionStatus = "Mac 已连接" }
             await refreshMessages()
         } catch {
+            // The address in use stopped answering, as when the phone leaves the home network: try the Mac's other addresses.
+            if api.candidates.count > 1, await api.reconnect(), let state: Snapshot = try? await api.request("/api/state") {
+                if state != snapshot { snapshot = state }
+                connected = true; connectionStatus = "Mac 已连接"
+                return
+            }
             if connected { connected = false }
             if connectionStatus != "连接已断开，正在重试" { connectionStatus = "连接已断开，正在重试" }
         }
+    }
+    /// Asks the Mac where it can be reached and remembers the answer, so Tailscale switched on later works without pairing again.
+    func learnAddresses() async {
+        #if os(iOS)
+        guard let api, let reach: Reach = try? await api.request("/api/reach"), let updated = api.learn(reach.urls) else { return }
+        try? Keychain.save(updated)
+        #endif
     }
     func refreshMessages() async {
         guard let api, let id = selectedSession else { return }
@@ -128,8 +154,14 @@ import ImageIO
         if failure is CancellationError || (failure as? URLError)?.code == .cancelled { return }
         error = failure.localizedDescription
     }
-    func perform(_ action: () async throws -> Void) async {
-        do { try await action(); await refresh() } catch { self.report(error) }
+    /// Returns whether the action succeeded, for buttons that show the outcome.
+    @discardableResult func perform(_ action: () async throws -> Void) async -> Bool {
+        do { try await action(); await refresh(); return true } catch { self.report(error); return false }
+    }
+    /// Stored messages plus the one still on its way; the outgoing one drops out once a poll has brought it back.
+    var visibleMessages: [Message] {
+        if let outgoing, messages.count == outgoingBase { return messages + [outgoing] }
+        return messages
     }
     /// A new conversation is created on the engine when its first message is sent.
     func newChat(project: String? = nil) async { selectedSession = nil; messages = []; codeProjectID = project; section = .assistant }
@@ -139,9 +171,19 @@ import ImageIO
         let id = selectedSession == nil ? codeProjectID : currentSession?.code_project_id
         return codeProjects.first { $0.id == id }
     }
-    func selectSession(_ id: String) async { selectedSession = id; messages = []; section = .assistant; await refresh() }
+    func selectSession(_ id: String) async {
+        selectedSession = id; messages = []; section = .assistant; loadingSession = true
+        // Messages first: they are what the user is waiting to see.
+        await refreshMessages()
+        if selectedSession == id { loadingSession = false }
+        await refresh()
+    }
     func send(_ text: String, assets: [String], mode: String? = nil) async throws {
         guard let api else { throw APIError.message("请先连接 Mac") }
+        outgoingBase = messages.count
+        outgoing = Message(id: "outgoing", session_id: selectedSession ?? "", role: "user", content: text, status: "complete",
+                           created_at: Date().timeIntervalSince1970, metadata: .object(["asset_ids": .array(assets.map { .string($0) })]))
+        defer { outgoing = nil }
         if selectedSession == nil {
             var body: [String: Any] = ["title": "新对话"]
             if let project = codeProjectID { body["code_project_id"] = project }
@@ -197,6 +239,24 @@ import ImageIO
         thumbnails[asset.id] = image
         return image
     }
+    /// The whole picture for the viewer, which needs more than a thumbnail's pixels.
+    func fullImage(_ asset: Asset) async -> CGImage? {
+        guard let url = try? await mediaURL(asset), let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 16384, kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary)
+    }
+    func view(_ asset: Asset, among assets: [Asset] = []) {
+        let set = assets.contains(asset) ? assets : [asset]
+        viewing = MediaViewing(assets: set, index: set.firstIndex(of: asset) ?? 0)
+    }
+    func stepViewing(_ by: Int) {
+        guard let current = viewing, current.assets.indices.contains(current.index + by) else { return }
+        viewing?.index += by
+    }
+    /// The artwork that stands for a drama: its opening frame, or failing that its lead.
+    func cover(of project: Project) -> Asset? {
+        let shots = project.document.shots.flatMap { [$0.first_frame, $0.video_asset] }
+        return (shots + project.document.characters.map(\.reference_asset)).lazy.compactMap { self.asset($0) }.first
+    }
     func reloadSettings() async {
         guard let api else { return }
         await perform {
@@ -213,14 +273,17 @@ import ImageIO
             guard let components = URLComponents(string:link.trimmingCharacters(in:.whitespacesAndNewlines)), components.scheme == "jurvis", components.host == "pair" else { throw APIError.message("请粘贴 Mac 上生成的完整配对链接") }
             func field(_ key: String) -> String? { components.queryItems?.first { $0.name == key }?.value }
             guard let endpoint = field("url"), URL(string:endpoint)?.scheme == "https", let code = field("code"), let fingerprint = field("fingerprint"), fingerprint.count == 64 else { throw APIError.message("配对链接不完整") }
-            let candidate = API(Connection(url:endpoint,token:"",fingerprint:fingerprint))
+            let others = (components.queryItems ?? []).filter { $0.name == "alt" }.compactMap(\.value).filter { URL(string:$0)?.scheme == "https" }
+            let candidate = API(Connection(url:endpoint,token:"",fingerprint:fingerprint,others:others))
+            _ = await candidate.reconnect()
             #if os(macOS)
             let name = Host.current().localizedName ?? "Mac"
             #else
             let name = UIDevice.current.name
             #endif
             let result: PairResult = try await candidate.request("/pair",method:"POST",body:["code":code,"name":name])
-            let connection = Connection(url:endpoint,token:result.token,fingerprint:fingerprint)
+            let connection = Connection(url:endpoint,token:result.token,fingerprint:fingerprint,others:others.isEmpty ? nil : others)
+            candidate.close()
             try Keychain.save(connection); api?.close(); api = API(connection); await beginPolling()
         } catch { self.report(error); Logger(subsystem:"app.jurvis",category:"connection").error("Pairing failed: \(error.localizedDescription,privacy:.public)") }
     }
@@ -233,8 +296,11 @@ import ImageIO
     func outputs(of job: Job) -> [Asset] { job.result["asset_ids"].array.compactMap { asset($0.string) } }
     var chatJob: Job? { activeJobs.first { $0.kind == "chat" && $0.payload["session_id"].string == selectedSession } }
     func cancel(_ job: Job) async {
+        cancelling.insert(job.id); defer { cancelling.remove(job.id) }
         await perform { let _: Job = try await self.requireAPI().request("/api/jobs/\(job.id)/cancel", method: "POST") }
     }
+    /// Pressed, or accepted by the Mac and still winding down: a running job can take a while to stop.
+    func isCancelling(_ job: Job) -> Bool { job.isActive && (cancelling.contains(job.id) || job.phase == "正在停止") }
     func retry(_ job: Job) async {
         await perform { let _: Job = try await self.requireAPI().request("/api/jobs/\(job.id)/retry", method: "POST") }
     }
@@ -246,7 +312,7 @@ import ImageIO
         await retry(job)
     }
     /// The user's answer to a command the assistant wants to run: "run", "deny" or "always" (allow the whole conversation).
-    func decideCommand(message: String, call: String, _ decision: String) async {
+    @discardableResult func decideCommand(message: String, call: String, _ decision: String) async -> Bool {
         await perform {
             let _: JSONValue = try await self.requireAPI().request("/api/messages/\(message)/commands/\(call)", method: "POST", body: ["decision": decision])
             await self.refreshMessages()
@@ -266,5 +332,24 @@ import ImageIO
         let doc = try JSONSerialization.jsonObject(with:JSONEncoder().encode(project.document))
         let _: Project = try await api.request("/api/projects/\(project.id)",method:"PUT",body:["document":doc,"expected_updated_at":project.updated_at])
         await refresh()
+    }
+}
+
+extension AppStore {
+    /// A pairing link handed in at launch. Debug builds only.
+    static var checkLink: String? {
+        #if DEBUG
+        return ProcessInfo.processInfo.environment["JURVIS_PAIR_LINK"]
+        #else
+        return nil
+        #endif
+    }
+    /// The screen to open at launch for a UI check. Debug builds only.
+    static var checkStart: String? {
+        #if DEBUG
+        return ProcessInfo.processInfo.environment["JURVIS_UI_START"]
+        #else
+        return nil
+        #endif
     }
 }
