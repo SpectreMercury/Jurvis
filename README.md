@@ -2,59 +2,65 @@
 
 <h1 align="center">Jurvis</h1>
 
-Mac 驱动的个人助理，以对话为中心：聊天、读图、生图、视频、短剧、改代码和控制智能家居都在同一个对话里完成。模型可以用本机的，也可以用云端的。Mac、iPhone、iPad 共用 SwiftUI 界面，另有可以装到任何手机和电脑主屏幕的网页版，全部连接同一个本地任务引擎。当前版本 **0.1.0 开发预览**：已有真实模型和媒体验证，尚未完成真机、长期稳定性和发布签名验收。
+<p align="center">English · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a></p>
 
-## 文档
+A personal assistant that runs on your Mac and is built around one conversation: chat, image understanding, image generation, video, short dramas, code changes and smart-home control all happen in the same thread. Models can be local or in the cloud. Mac, iPhone and iPad share one SwiftUI interface, and there is a web app that installs to the home screen of any phone or computer. All of them connect to the same local task engine. Current version: **0.1.0 developer preview**. It has been validated with real models and real media, but has not yet been through on-device testing, long-term stability testing or release signing.
+
+The app interface is currently in Chinese. Labels quoted below are shown as they appear in the app, with an English gloss.
+
+## Documentation
 
 | | |
 |---|---|
-| [部署引擎](docs/DEPLOY.md) | 安装、启动、配置、开机自启、从其他设备访问 |
-| [本地模型](docs/MODELS.md) | 换用自己的 MLX 模型，接入 Ollama / LM Studio，云端服务 |
-| [网页版（PWA）](docs/PWA.md) | 打开、配对、装到主屏幕 |
-| [原生 App](docs/APPS.md) | 构建 Mac 版，装到 iPhone / iPad，TestFlight |
-| [智能家居连接器](docs/CONNECTORS.md) | 支持的品牌和各自需要的令牌 |
+| [Deploying the engine](docs/DEPLOY.md) | Install, start, configure, start at login, reach it from other devices |
+| [Local models](docs/MODELS.md) | Use your own MLX model, connect Ollama / LM Studio, cloud providers |
+| [Web app (PWA)](docs/PWA.md) | Open, pair, install to the home screen |
+| [Native apps](docs/APPS.md) | Build the Mac app, install on iPhone / iPad, TestFlight |
+| [Smart-home connectors](docs/CONNECTORS.md) | Supported brands and the token each one needs |
 
-## 已实现
+These documents are currently available in Chinese only.
 
-- **模型**：默认使用本机的视觉语言模型，完全离线。填写 [Miavo](https://miavo.xyz) 的 API Key 后可以改用云端模型（设置里选默认模型，每段对话也能单独选），也可以添加任何 OpenAI 兼容的服务（OpenAI、DeepSeek、OpenRouter、Ollama、LM Studio 等）。
-- **联网**：使用 Miavo 的模型时，联网搜索由 Miavo 随模型提供，回复下方列出来源。使用本机模型时，只要配置了 Miavo，助手也能通过它搜索；任何模型都能读取你给的网页链接（不读取本机和内网地址）。
-- **记忆**：每次回复后在后台从对话里提取值得长期记住的事实（不记密码和密钥），下次对话前取回相关的几条。配置向量模型后按语义检索，否则用内置的关键词匹配，离线也能用。记忆可以查看、编辑、停用和清空；「无痕」对话不读也不写记忆。长对话的早期内容会被折叠成摘要，而不是丢掉。
-- **技能**：把某类任务的做法写成 `data/skills/<名字>/SKILL.md`，助手只在任务对得上时才加载全文，技能里的参考文件按需再读。格式与其他 agent 的 SKILL.md 通用：`~/.claude/skills/` 里为 Claude Code 写的技能会直接出现（可在设置里逐个停用，或用 `JURVIS_SHARED_SKILLS=` 整体关闭），连接的代码项目还可以带自己的 `.jurvis/skills/`。重名时以你自己的为准。
-- **MCP**：接入 MCP 服务（本地进程或 HTTP），它们的工具直接出现在对话里。没有标明只读的工具每次先问你。工具超过 24 个时不再全部列给模型，由它按关键词查找后再调用。
-- **浏览器**：助手可以在 Mac 上打开一个浏览器窗口（需要已安装 Chrome、Edge、Brave 或 Chromium，使用独立的用户目录，不碰你自己的浏览器数据），读页面、列出可点的元素、点击、输入和截图。打开和阅读不用确认；点击、输入和运行脚本先问你，可以选「本任务内都允许」。下载一律拒绝；密码和支付信息请自己在窗口里填。
-- **计划**：输入框下的「计划」让助手只看不动手，先交一份清单，你确认或修改后再开始。使用云端模型时，较大的任务也会自动列出清单并逐项勾掉。
-- **产出预览**：助手写出的 HTML 页面和 SVG 图在工作台和作品库里直接渲染，可在预览和源码之间切换。页面在隔离的框里运行，读不到 Jurvis 的登录信息，也不能联网。
-- **智能家居**：连接 Home Assistant、Philips Hue、SmartThings、涂鸦后，在对话里说「把客厅灯调暗一点」，或在「家居」页直接操作。门锁、门和摄像头每次都先问你。见[连接器说明](docs/CONNECTORS.md)。
-- **子任务**：助手可以把查资料这类旁支任务交给一个只读的帮手，只把结论带回对话。使用云端模型时，一步里交出去的几个子任务同时进行；本机模型一次做一个。
-- **文件查找**：除了读写工作区文档，助手可以按路径模式找文件、用正则搜索内容（工作区和连接的代码项目都行），长文件按行号分段读取。
-- **对话**：按日期分组可搜索的对话历史、图片理解、计算、工作区文本文件，以及创作和编码工具调用。输入框下的「图片 / 视频 / 短剧」开关直接指定要生成的内容，「代码」开关让新对话关联一个代码项目。
-- **运行命令**：需要安装插件、跑脚本、用 git 或查看系统时，Jurvis 在 Mac 上执行 shell 命令。每条命令先以卡片显示原因、命令和目录，你点「运行」才执行，输出实时显示；可选「本对话都允许」，但删除、sudo、git push、kill 等危险命令仍每次询问。需要一直运行的命令（开发服务器、监听脚本）可以放到后台，助手随时查看输出、用完停掉；引擎退出时它们一并结束。
-- **目标模式**：点「目标」后发出的消息是一个要做到完成的目标。Jurvis 自主连续执行（最多 40 步、45 分钟），代码修改直接应用（可撤销），并必须用工具验证后调用 finish_goal 结束；另一次独立复核会核对执行记录，证据不足就退回继续做。卡住或缺信息时停下来问你。
-- **代码**：在对话里关联 Mac 授权的项目目录后，Jurvis 自己阅读和搜索源码，修改以差异卡片出现在回复中，点「应用修改」才写入（有文件版本冲突检查，可撤销）。支持 Python pytest、Swift Package 测试，以及项目声明的 npm test/build/lint/typecheck；脚本由用户明确点击运行。
-- **图片**：Qwen Image 2.1 文生图、参考图编辑、种子和画幅、素材导入与导出。
-- **短剧**：故事梗概、角色、分镜、参考图、首尾帧、中文对白提示、分镜版本、逐镜审片、整片 H.264/AAC 导出。视频可提取首尾帧继续创作。
-- **任务**：SQLite 持久化队列、取消、重试、重启中断标记、幂等提交。占用本机显卡的任务（本机模型、生图、视频）一次一个；云端模型的对话与它们并行，最多 4 段同时进行。重任务期间阻止 Mac 自动空闲睡眠。
-- **连接**：TLS、证书指纹固定、一次性配对邀请、设备凭据钥匙串保存、设备撤销。移动端操作 Mac 上的数据和已授权的代码项目。
+## What works today
 
-## 在这台 Mac 使用
+- **Models**: A local vision-language model is the default and works fully offline. Enter a [Miavo](https://miavo.xyz) API key to use cloud models instead (pick a default in settings; each conversation can choose its own), or add any OpenAI-compatible service (OpenAI, DeepSeek, OpenRouter, Ollama, LM Studio and so on).
+- **Web**: With a Miavo model, web search is provided by Miavo alongside the model and sources are listed under the reply. With the local model, the assistant can still search through Miavo if it is configured. Any model can read a web link you give it (it will not read local or private-network addresses).
+- **Memory**: After each reply, facts worth keeping are extracted from the conversation in the background (never passwords or keys), and the relevant few are retrieved before the next conversation. With an embedding model configured, retrieval is semantic; otherwise a built-in keyword match is used, which works offline. Memories can be viewed, edited, disabled and cleared. An 「无痕」 (incognito) conversation neither reads nor writes memory. Early parts of long conversations are folded into a summary instead of being dropped.
+- **Skills**: Write how to do a kind of task as `data/skills/<name>/SKILL.md`. The assistant loads the full text only when the task matches, and reads a skill's reference files on demand. The format is the same SKILL.md other agents use: skills written for Claude Code in `~/.claude/skills/` show up directly (disable them one by one in settings, or turn them all off with `JURVIS_SHARED_SKILLS=`), and a connected code project can carry its own `.jurvis/skills/`. When names collide, yours win.
+- **MCP**: Connect MCP servers (local process or HTTP) and their tools appear in the conversation. Tools not marked read-only ask you first, every time. Past 24 tools they are no longer all listed to the model; it looks them up by keyword and then calls them.
+- **Browser**: The assistant can open a browser window on the Mac (Chrome, Edge, Brave or Chromium must be installed; it uses a separate profile and does not touch your own browser data), read pages, list clickable elements, click, type and take screenshots. Opening and reading need no confirmation; clicking, typing and running scripts ask first, with the option 「本任务内都允许」 (allow for this task). Downloads are always refused. Enter passwords and payment details yourself in the window.
+- **Plan**: 「计划」 (Plan) under the input box makes the assistant look without acting and hand you a checklist first; it starts after you confirm or edit it. With cloud models, larger tasks also get a checklist automatically, ticked off item by item.
+- **Output preview**: HTML pages and SVG images the assistant writes render directly in the workspace and the library, switchable between preview and source. Pages run in an isolated frame that cannot read Jurvis sign-in data and cannot reach the network.
+- **Smart home**: After connecting Home Assistant, Philips Hue, SmartThings or Tuya, say "dim the living-room lights a little" in the conversation, or operate devices directly on the 「家居」 (Home) page. Locks, doors and cameras ask first, every time. See the [connector guide](docs/CONNECTORS.md).
+- **Subtasks**: The assistant can hand a side task such as research to a read-only helper and bring only the conclusion back. With cloud models, several subtasks handed off in one step run at the same time; the local model does one at a time.
+- **File search**: Besides reading and writing workspace documents, the assistant can find files by path pattern and search contents with regular expressions (in the workspace and in connected code projects), and reads long files in line ranges.
+- **Conversation**: Searchable history grouped by date, image understanding, calculation, workspace text files, and creative and coding tool calls. The 「图片 / 视频 / 短剧」 (Image / Video / Short drama) switches under the input box set what to generate, and the 「代码」 (Code) switch attaches a code project to a new conversation.
+- **Running commands**: When it needs to install a plugin, run a script, use git or inspect the system, Jurvis runs shell commands on the Mac. Each command first appears as a card with the reason, the command and the directory, and runs only when you click 「运行」 (Run), with live output. You can choose 「本对话都允许」 (allow for this conversation), but dangerous commands such as deletion, sudo, git push and kill still ask every time. Commands that need to keep running (dev servers, watchers) can go to the background; the assistant checks their output at any time and stops them when done, and they end with the engine.
+- **Goal mode**: After clicking 「目标」 (Goal), the message you send is a goal to carry through to completion. Jurvis works autonomously (up to 40 steps and 45 minutes), applies code changes directly (undoable), and must verify with tools before ending with finish_goal. A separate independent review checks the execution record and sends the work back if the evidence is insufficient. When stuck or missing information, it stops and asks you.
+- **Code**: After attaching a project directory you have authorised on the Mac, Jurvis reads and searches the source itself. Changes appear as diff cards in the reply and are written only when you click 「应用修改」 (Apply changes), with file-version conflict checks and undo. Supports Python pytest, Swift Package tests, and the npm test/build/lint/typecheck scripts a project declares; scripts run only when you click.
+- **Images**: Qwen Image 2.1 text-to-image, reference-image editing, seed and aspect ratio, asset import and export.
+- **Short dramas**: Synopsis, characters, storyboard, reference images, first and last frames, Chinese dialogue prompts, shot versions, shot-by-shot review, and H.264/AAC export of the whole film. First and last frames can be extracted from a video to keep creating.
+- **Tasks**: A persistent SQLite queue with cancel, retry, interruption marking on restart and idempotent submission. Tasks that use the local GPU (local model, images, video) run one at a time; cloud-model conversations run alongside them, up to 4 at once. The Mac is kept from idle sleep during heavy tasks.
+- **Connection**: TLS, certificate fingerprint pinning, one-time pairing invitations, device credentials in the keychain, and device revocation. Mobile devices operate on the data and authorised code projects on the Mac.
 
-打开 `build/release/Build/Products/Release/Jurvis.app`。它会连接已经运行的引擎；引擎不在线时自动尝试从当前项目目录启动。
+## Using it on this Mac
 
-直接在对话里说要做什么，或先点输入框下的「图片 / 视频 / 短剧」。改代码时点「代码 → 连接项目文件夹…」选择目录，再在这段对话里提需求。左下角「素材 / 短剧 / 任务 / 更多」是管理页面。素材和结果保存在 `data/`，原始模型保存在 `models/`。
+Open `build/release/Build/Products/Release/Jurvis.app`. It connects to a running engine, and tries to start one from the current project directory if none is online.
 
-在 **设置 → 配对 iPhone 或 iPad** 创建邀请。移动设备安装 Jurvis 后扫描二维码或粘贴链接；设备需与 Mac 网络互通，Mac 需要保持开机。连接是设备到 Mac 的直连，没有云端中继。
+Say what you want in the conversation, or click 「图片 / 视频 / 短剧」 under the input box first. To change code, click 「代码 → 连接项目文件夹…」 (Code → Connect project folder…), pick a directory, and make your request in that conversation. 「素材 / 短剧 / 任务 / 更多」 (Assets / Short dramas / Tasks / More) at the bottom left are the management pages. Assets and results are stored in `data/`; original models are stored in `models/`.
 
-**在外面使用**：在 Mac 和手机上安装 [Tailscale](https://tailscale.com) 并登录同一个账号。邀请里会同时带上 Mac 的局域网地址和 Tailscale 地址，App 在家走局域网，出门后自动换成 Tailscale；已经配对的设备下次在家连上时会自动学到新地址，不用重新配对。网页版在外面用 `https://<Mac 的 Tailscale 地址>:18777/app/` 打开。
+Create an invitation in **设置 → 配对 iPhone 或 iPad** (Settings → Pair iPhone or iPad). After installing Jurvis on the mobile device, scan the QR code or paste the link. The device must be able to reach the Mac over the network, and the Mac must stay on. The connection goes directly from the device to the Mac, with no cloud relay.
 
-### 网页版（PWA）
+**Away from home**: Install [Tailscale](https://tailscale.com) on the Mac and the phone and sign in to the same account. The invitation carries both the Mac's LAN address and its Tailscale address; the app uses the LAN at home and switches to Tailscale automatically when you leave. Devices that are already paired learn the new address the next time they connect at home, without pairing again. Away from home, open the web app at `https://<the Mac's Tailscale address>:18777/app/`.
 
-引擎自带网页版，源码在 `web/`，不需要构建。在 Mac 上打开 `https://127.0.0.1:18777/app/`，或在同一网络的其他设备上打开 `https://<Mac 的地址>:18777/app/`，粘贴配对邀请里的代码即可使用；邀请接口返回的 `web_link` 可以直接打开完成配对。
+### Web app (PWA)
 
-引擎使用自签名证书，浏览器第一次会提示证书不受信任，需要手动继续。在这种证书下浏览器不允许注册 Service Worker，所以「添加到主屏幕」后的离线外壳和安装提示需要一个受信任的证书（例如用 mkcert 签发并在设备上安装根证书，或通过 Tailscale HTTPS、反向代理访问）；没有它网页版照常工作，只是不能离线打开。
+The engine ships with the web app. Its source is in `web/` and needs no build step. Open `https://127.0.0.1:18777/app/` on the Mac, or `https://<the Mac's address>:18777/app/` on another device on the same network, and paste the code from a pairing invitation. The `web_link` returned by the invitation API can be opened directly to complete pairing.
 
-## 开发安装与构建
+The engine uses a self-signed certificate, so the browser warns that it is untrusted the first time and you have to continue manually. Under such a certificate browsers do not allow a Service Worker to be registered, so the offline shell and install prompt after "Add to Home Screen" need a trusted certificate (for example one issued with mkcert with its root installed on the device, or access through Tailscale HTTPS or a reverse proxy). Without one the web app works as usual; it just cannot open offline.
 
-要求：Apple Silicon、完整 Xcode、Python 3.12（uv 可管理）、uv、ffmpeg。当前真实验证机器为 M5 Pro / 64GB；更低内存机型尚未验证。依赖和模型占用大量磁盘空间。
+## Development setup and build
+
+Requirements: Apple Silicon, full Xcode, Python 3.12 (uv can manage it), uv and ffmpeg. The machine used for real validation is an M5 Pro with 64GB; machines with less memory have not been validated. Dependencies and models take a lot of disk space.
 
 ```bash
 ./scripts/bootstrap.sh
@@ -62,7 +68,7 @@ Mac 驱动的个人助理，以对话为中心：聊天、读图、生图、视�
 ./scripts/build-apps.sh
 ```
 
-完整验收（真实模型，独立端口和临时数据目录，不影响正在使用的引擎和数据）：
+Full acceptance (real models, separate ports and a temporary data directory, so the engine and data you are using are not affected):
 
 ```bash
 ./scripts/e2e.sh
@@ -73,59 +79,59 @@ Mac 驱动的个人助理，以对话为中心：聊天、读图、生图、视�
 ./scripts/ui-press.sh
 ```
 
-`e2e.sh` 通过 App 使用的同一套 API 跑完对话与工具调用、读图、停止与重试、生图、视频、首尾帧、短剧全流程、Coding 修改/测试/撤销、配对与撤销。`scenarios.sh` 用真实模型跑 20 多段多轮对话（闲聊、计算接续、记忆、文件、注入防护、图片/视频/短剧、代码对话、语言切换、能力边界、长文、停止、模糊请求、执行命令装插件、拒绝命令、目标模式修到测试通过、模糊目标先询问），逐轮检查调用了哪些工具、参数和回复内容，并输出可读的对话记录。`longtasks.sh` 用真实模型跑超出单次模型输出的长任务，按实测结果判定而不是看模型怎么说：5 集剧本写好后只改第 2 集并原地更新文件、10 集每集千字的剧本写进一个文件（逐集检查字数且各集不雷同）、对话里直接写 5000 字小说、目标模式写 6 个分集文件加目录、短剧分镜计划（时长加总、每镜不超过 15 秒）及后续追问、22 轮长对话（早期细节、话题切换后回到原任务、原地修改文档）。全套在本机模型上需要一到两小时，可只跑指定用例：`./scripts/longtasks.sh <临时目录> "ten episodes in one file"`，对话记录写在该目录的 `longtasks.md`。当前状态（本机 Qwen 27B，2026-11-20）：6 组全部通过过，但不是同一轮一次跑完的——最近一次完整运行通过 4 组，剩余 2 组修复后单独重跑通过；26 段回归连续三轮都是 25/26，每轮失败的是不同的一段（模型偶发的口算错、语言跟随错），所以把它看作有波动的验收而不是恒定全绿。
+`e2e.sh` uses the same API as the apps to run conversation and tool calls, image understanding, stop and retry, image generation, video, first and last frames, the full short-drama flow, coding change/test/undo, and pairing and revocation. `scenarios.sh` runs more than 20 multi-turn conversations with a real model (small talk, follow-up calculation, memory, files, injection defence, image/video/short drama, coding conversations, language switching, capability limits, long text, stopping, vague requests, running a command to install a plugin, declining a command, goal mode fixing code until tests pass, asking first on a vague goal), checks turn by turn which tools were called, their arguments and the reply, and writes a readable transcript. `longtasks.sh` runs long tasks that exceed a single model output with a real model, judged by measured results and not by what the model says: writing a 5-episode script and then changing only episode 2 with the file updated in place; a 10-episode script of a thousand characters each in one file (word count checked per episode, and episodes must differ); a 5,000-character story written directly in the conversation; goal mode writing 6 episode files plus an index; a short-drama storyboard plan (durations summed, no shot over 15 seconds) with follow-up questions; and a 22-turn conversation (early details, returning to the original task after a change of topic, editing a document in place). The whole set takes one to two hours on the local model; you can run chosen cases only: `./scripts/longtasks.sh <temp dir> "ten episodes in one file"`, with the transcript written to `longtasks.md` in that directory. Current status (local Qwen 27B, 2026-11-20): all 6 groups have passed, but not in one single run. The most recent complete run passed 4 groups, and the remaining 2 passed when rerun on their own after fixes. The 26 regression conversations scored 25/26 in three consecutive rounds, with a different one failing each round (occasional arithmetic slips and wrong-language replies by the model), so treat this as acceptance with some variance, not as constantly green.
 
-`ui-typing.sh` 在真实输入框里模拟键盘、鼠标和中文输入法，检查焦点、组字和响应延迟。`ui-press.sh` 用真实鼠标事件点击按钮，检查点击后 50 毫秒内出现处理中状态、宽度不变、连点不重复执行、失败后可重试，不需要引擎也不碰数据。`ui-smoke.sh` 连接正在运行的引擎，离屏渲染 Mac 版每个页面和每个素材详情（包括视频），截图保存在 `build/ui-smoke/`。
+`ui-typing.sh` simulates keyboard, mouse and Chinese input method in the real input box and checks focus, composition and response latency. `ui-press.sh` clicks buttons with real mouse events and checks that a busy state appears within 50 ms, that width does not change, that repeated clicks do not run twice and that a failure can be retried; it needs no engine and touches no data. `ui-smoke.sh` connects to a running engine and renders every page and every asset detail (including video) of the Mac app off-screen, saving screenshots to `build/ui-smoke/`.
 
-`bootstrap.sh` 使用锁定的 Python 依赖、ComfyUI 和节点提交，生成本机模型路径，不替换原有模型。单独运行后端：`./scripts/start-engine.sh`。开发时也可直接在 Xcode 打开 `native/Jurvis.xcodeproj`。
+`bootstrap.sh` uses locked Python dependencies and pinned ComfyUI and node commits, generates local model paths, and does not replace existing models. To run the backend alone: `./scripts/start-engine.sh`. During development you can also open `native/Jurvis.xcodeproj` in Xcode.
 
-构建产物：
+Build outputs:
 
-| 目标 | 位置 |
+| Target | Location |
 |---|---|
-| Mac 本地 App | `build/release/Build/Products/Release/Jurvis.app` |
-| iPhone / iPad 模拟器 | `build/mobile-release/Build/Products/Release-iphonesimulator/Jurvis.app` |
-| 真机工程 | Xcode 中选 `JurvisMobile`，配置自己的开发团队与签名 |
-| TestFlight | 在 `.env` 设置 `JURVIS_TEAM_ID`，在 App Store Connect 建好 App 记录后运行 `./scripts/testflight.sh` |
+| Local Mac app | `build/release/Build/Products/Release/Jurvis.app` |
+| iPhone / iPad simulator | `build/mobile-release/Build/Products/Release-iphonesimulator/Jurvis.app` |
+| Device build | Select `JurvisMobile` in Xcode and set your own development team and signing |
+| TestFlight | Set `JURVIS_TEAM_ID` in `.env`, create the app record in App Store Connect, then run `./scripts/testflight.sh` |
 
-Mac App 当前依赖此工作目录内的引擎、运行时和模型。它还不是可独立移到任意机器运行的安装包。项目移动后需重新运行安装和构建脚本；Mac 分发公证、iOS 签名和 App Store 发布均未执行。
+The Mac app currently depends on the engine, runtime and models inside this working directory. It is not yet an installer that can be moved to any machine. After moving the project, run the install and build scripts again. Mac notarisation, iOS signing and App Store release have not been done.
 
-## 创作扩展与准确版本
+## Creative extensions and exact versions
 
-扩展在设置中安装，或运行 `.venv/bin/python scripts/install_components.py <组件ID>`。下载可续传，完成后核验 SHA-256；已下载不代表组合效果已通过实测。
+Install extensions in settings, or run `.venv/bin/python scripts/install_components.py <component ID>`. Downloads resume and are verified with SHA-256 when complete. Downloaded does not mean the combination has been tested.
 
-| 组件 | ID | 接入方式 |
+| Component | ID | How it is integrated |
 |---|---|---|
-| H3 FL2VA INT8 Pruned | `h3_convrot_int8` | 原生 UNETLoader + Apple Silicon 量化适配；与 Civitai 发布版本哈希一致 |
-| Motion Speed / FoS v1.0 | `h3_motion_fos` | -8 到 +8 强度，0 关闭；影响生成运动，不是播放速度 |
-| Turbo multistep v2 | `h3_turbo_v2` | 独立的 4/6/8 步方案，视频/音频 shift 6/3；需要准确的权重文件 |
-| DaSiWa C-MMH3 v3.3 | `dasiwa_v33` | 原版存档校验 + Mac 核心流程适配：res_multistep/simple、25 步、shift 11/4 |
+| H3 FL2VA INT8 Pruned | `h3_convrot_int8` | Native UNETLoader plus an Apple Silicon quantisation adapter; hash matches the version published on Civitai |
+| Motion Speed / FoS v1.0 | `h3_motion_fos` | Strength -8 to +8, 0 is off; affects generated motion, not playback speed |
+| Turbo multistep v2 | `h3_turbo_v2` | A separate 4/6/8-step scheme, video/audio shift 6/3; needs the exact weight file |
+| DaSiWa C-MMH3 v3.3 | `dasiwa_v33` | Original archive verification plus a core-flow adaptation for Mac: res_multistep/simple, 25 steps, shift 11/4 |
 
-本机已完成 ConvRot 和 Motion Speed 的准确文件安装，以及 DaSiWa 原版存档校验。ConvRot + DaSiWa 核心流程已实际生成视频；Motion Speed 已在另一段 GGUF 视频中实跑。具体分辨率、耗时与测试范围见验收记录。
+On this machine, the exact files for ConvRot and Motion Speed have been installed and the original DaSiWa archive has been verified. The ConvRot + DaSiWa core flow has actually generated video; Motion Speed has been run in a separate GGUF video. See the validation record for resolutions, timings and test scope.
 
-DaSiWa 适配不执行第三方工作流里的任意节点，也未启用 RTX 增强、潜空间连续生成、RefMod 和完整多模态 Ref2VA。当前首尾帧流程使用 FL2VA 权重。原版工作流及模型路径固定在 `config/media-catalog.json`，不会用同名的其他版本静默替代。
+The DaSiWa adaptation does not execute arbitrary nodes from third-party workflows, and does not enable RTX enhancement, latent continuation, RefMod or full multimodal Ref2VA. The current first/last-frame flow uses the FL2VA weights. The original workflow and model paths are pinned in `config/media-catalog.json` and are never silently replaced by another version with the same name.
 
-若来源要求登录：从组件来源页下载准确文件，放到设置显示的位置，再点击「安装 / 校验」。不要把网站令牌写入源码或工作流。Turbo v2 在本轮环境中未能匿名下载，因此其配置已接入，但尚未启用和实测。
+If a source requires sign-in: download the exact file from the component's source page, put it where settings shows, then click 「安装 / 校验」 (Install / Verify). Do not write site tokens into source code or workflows. Turbo v2 could not be downloaded anonymously in this environment, so its configuration is wired in but it has not been enabled or tested.
 
-最初提供的 [Ref2VA Prompt Rewriter](https://huggingface.co/lightx2v/MiniMax-H3-Prompt-Rewriter-Qwen3.8-27B-Ref2VA) 是专门的提示词改写模型。当前实现使用已有 Qwen 视觉语言模型和对应 FL2VA 官方提示规范完成编排，**尚未下载或运行这份独立 SFT 权重**；不能视为与专用改写模型效果相同。规范来源固定在 `engine/prompts/sources.json`。
+The [Ref2VA Prompt Rewriter](https://huggingface.co/lightx2v/MiniMax-H3-Prompt-Rewriter-Qwen3.8-27B-Ref2VA) originally provided is a dedicated prompt-rewriting model. The current implementation orchestrates prompts with the existing Qwen vision-language model and the corresponding official FL2VA prompt guide; **this separate SFT weight has not been downloaded or run**, and the result should not be considered equivalent to the dedicated rewriter. The guide's sources are pinned in `engine/prompts/sources.json`.
 
-## 数据、运行和维护
+## Data, operation and maintenance
 
-- `engine/`：API、任务调度、模型路由（`llm.py`）、记忆（`memory.py`）、技能、MCP、智能家居连接器（`home/`）、工具、代码工作台、媒体工作流。
-- `web/`：网页版（PWA）。
-- `native/Sources/`：共享的 SwiftUI 界面、TLS 客户端、钥匙串和扫码。
-- `config/`：固定的依赖版本、运行时来源、扩展校验清单。
-- `data/jurvis.sqlite3`：对话、任务、素材索引、分镜、记忆、设备和代码项目。
-- `data/assets/`：生成媒体；`data/coding/`：代码修改快照；`data/logs/`：运行日志。
-- `data/settings.json`：默认模型、记忆和家居的偏好；`data/skills/`：技能。
-- `data/security/`：设备本地令牌和 TLS 私钥，以及模型服务的 API Key（`providers.json`）、MCP 服务（`mcp.json`）和家居连接器的令牌（`home.json`）；整个 `data/` 默认仅当前用户可访问，不应上传到仓库。
+- `engine/`: API, task scheduling, model routing (`llm.py`), memory (`memory.py`), skills, MCP, smart-home connectors (`home/`), tools, the code workbench and media workflows.
+- `web/`: the web app (PWA).
+- `native/Sources/`: the shared SwiftUI interface, TLS client, keychain and QR scanning.
+- `config/`: pinned dependency versions, runtime sources and extension checksums.
+- `data/jurvis.sqlite3`: conversations, tasks, the asset index, storyboards, memory, devices and code projects.
+- `data/assets/`: generated media; `data/coding/`: code change snapshots; `data/logs/`: run logs.
+- `data/settings.json`: preferences for the default model, memory and home; `data/skills/`: skills.
+- `data/security/`: the device-local token and TLS private key, plus model-provider API keys (`providers.json`), MCP servers (`mcp.json`) and smart-home connector tokens (`home.json`). The whole of `data/` is readable only by the current user by default and should not be uploaded to a repository.
 
-引擎监听 TLS 18777；MLX 和 ComfyUI 分别只监听本机 18778/18779。本机模型串行切换以控制内存。选择云端模型时，对话内容（包括附带的图片、取回的记忆和工具结果）会发送给所选的服务；本机模型不发送任何内容。退出 Mac 界面后已启动的引擎可继续处理移动端任务。
+The engine listens on TLS 18777; MLX and ComfyUI listen only on localhost, on 18778 and 18779. Local models are switched serially to keep memory under control. When a cloud model is selected, the conversation (including attached images, retrieved memories and tool results) is sent to the chosen service; the local model sends nothing. After you quit the Mac interface, an engine that is already running keeps handling tasks from mobile devices.
 
-备份前停止引擎，然后整体备份 `data/`。代码撤销仅在文件仍与本次应用后的版本一致时执行；其他编辑器的更新会触发冲突提示。代码执行和助手的命令直接在本机运行，没有容器沙箱；助手命令以你的用户身份、无标准输入运行，不会自动提交、推送或发布。
+Stop the engine before backing up, then back up `data/` as a whole. Code undo runs only while the file still matches the version from that apply; edits from other editors trigger a conflict prompt. Code execution and the assistant's commands run directly on the machine with no container sandbox. Assistant commands run as your user with no standard input, and never commit, push or publish on their own.
 
-真实验收结果与尚未覆盖的项目见 [验收记录](docs/VALIDATION.md)。第三方组件来源见 [来源记录](docs/SOURCES.md)。
+Real acceptance results and what is not yet covered are in the [validation record](docs/VALIDATION.md). Third-party component sources are in the [source record](docs/SOURCES.md).
 
-## 许可证
+## License
 
-Jurvis 的源码以 [Apache License 2.0](LICENSE) 开源。模型权重、ComfyUI 节点和第三方提示词规范不随源码分发，各自遵循其许可证和使用条款，详见[来源记录](docs/SOURCES.md)。
+The Jurvis source code is open source under the [Apache License 2.0](LICENSE). Model weights, ComfyUI nodes and third-party prompt guides are not distributed with the source; each follows its own license and terms of use, detailed in the [source record](docs/SOURCES.md).
