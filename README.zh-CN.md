@@ -2,9 +2,103 @@
 
 <h1 align="center">Jurvis</h1>
 
+<p align="center">运行在你自己 Mac 上的个人助理。聊天、读图、生图、视频、改代码和控制家居，都在同一个对话里。</p>
+
+<p align="center">
+  <a href="pyproject.toml"><img alt="版本" src="https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2FSpectreMercury%2FJurvis%2Fmain%2Fpyproject.toml&query=%24.project.version&label=version&color=blue"></a>
+  <a href="docs/TESTING.md"><img alt="测试" src="https://img.shields.io/badge/tests-167%20passed-brightgreen"></a>
+  <a href="docs/TESTING.md"><img alt="覆盖率" src="https://img.shields.io/badge/coverage-81%25-green"></a>
+  <a href="LICENSE"><img alt="许可证" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
+  <img alt="Python" src="https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white">
+  <img alt="平台" src="https://img.shields.io/badge/platform-macOS%20%7C%20iOS%20%7C%20Web-lightgrey">
+</p>
+
 <p align="center"><a href="README.md">English</a> · 简体中文 · <a href="README.ja.md">日本語</a></p>
 
-Mac 驱动的个人助理，以对话为中心：聊天、读图、生图、视频、短剧、改代码和控制智能家居都在同一个对话里完成。模型可以用本机的，也可以用云端的。Mac、iPhone、iPad 共用 SwiftUI 界面，另有可以装到任何手机和电脑主屏幕的网页版，全部连接同一个本地任务引擎。当前版本 **0.1.0 开发预览**：已有真实模型和媒体验证，尚未完成真机、长期稳定性和发布签名验收。
+> [!NOTE]
+> **0.1.0 是开发预览版。** 已有真实模型和媒体验证，尚未完成真机、长期稳定性和发布签名验收。
+
+## 功能
+
+| | |
+|---|---|
+| **模型** | 默认使用本机视觉语言模型，完全离线。可选 [Miavo](https://miavo.xyz) 云端模型，或任何 OpenAI 兼容服务（OpenAI、DeepSeek、OpenRouter、Ollama、LM Studio）。 |
+| **Agent** | 计划模式、目标模式（自主执行并独立复核）、并行的只读子任务、联网搜索和网页读取。 |
+| **记忆** | 后台提取长期事实，语义或关键词检索，无痕对话，长对话自动摘要。 |
+| **技能与 MCP** | 通用的 `SKILL.md` 技能，与 `~/.claude/skills/` 共享。MCP 服务支持本地进程和 HTTP。 |
+| **代码** | 阅读和搜索已授权的项目，修改以差异卡片呈现，可应用可撤销，可运行 pytest / Swift / npm 脚本。 |
+| **命令与浏览器** | 在 Mac 上执行命令、操作独立用户目录的浏览器，每个动作先确认。 |
+| **媒体** | 文生图和参考图编辑（Qwen Image）、首尾帧视频、完整短剧流程，H.264/AAC 导出。 |
+| **智能家居** | 16 个连接器，包括 Home Assistant、Philips Hue、SmartThings、涂鸦。 |
+| **客户端** | Mac、iPhone、iPad（同一套 SwiftUI 代码）和可安装的网页版，配对到同一个引擎。 |
+| **任务** | SQLite 持久化队列，支持取消、重试和幂等提交。本机显卡任务一次一个，云端对话并行。 |
+
+## 快速开始
+
+**要求：** Apple Silicon、Xcode、Python 3.12、[uv](https://docs.astral.sh/uv/)、ffmpeg。验证机器为 M5 Pro / 64GB。
+
+```bash
+git clone https://github.com/SpectreMercury/Jurvis.git && cd Jurvis
+./scripts/bootstrap.sh      # 锁定的依赖、固定版本的 ComfyUI、模型路径
+./scripts/start-engine.sh   # 引擎运行在 https://127.0.0.1:18777
+```
+
+然后打开一个客户端：
+
+| 客户端 | 方式 |
+|---|---|
+| 网页版 | 打开 `https://127.0.0.1:18777/app/`，接受自签名证书。 |
+| Mac 版 | 运行 `./scripts/build-apps.sh`，打开 `build/release/Build/Products/Release/Jurvis.app`。 |
+| iPhone / iPad | 在 Xcode 构建 `JurvisMobile`，然后在 **设置 → 配对 iPhone 或 iPad** 配对。 |
+
+在外面使用时，两端安装 [Tailscale](https://tailscale.com)。已配对的设备会在局域网和 Tailscale 之间自动切换。
+
+## 架构
+
+```mermaid
+flowchart LR
+  mac[Mac 版] --> engine
+  ios[iPhone / iPad] --> engine
+  web[网页版 · PWA] --> engine
+  engine["引擎 · FastAPI + SQLite 队列<br/>TLS :18777"]
+  engine --> mlx["MLX 本机模型<br/>localhost :18778"]
+  engine --> comfy["ComfyUI<br/>localhost :18779"]
+  engine --> cloud[云端模型]
+  engine --> tools[MCP · 浏览器 · 命令 · 智能家居]
+```
+
+| 路径 | 内容 |
+|---|---|
+| `engine/` | API、任务调度、模型路由、记忆、技能、MCP、工具、代码工作台、媒体工作流 |
+| `engine/home/` | 智能家居连接器 |
+| `web/` | 网页版（PWA），不需要构建 |
+| `native/Sources/` | 共享的 SwiftUI 界面、TLS 客户端、钥匙串和扫码 |
+| `config/` | 固定的依赖版本、运行时来源、扩展校验清单 |
+| `data/` | 对话、素材、设置和密钥。只在本机，不提交到仓库。 |
+
+## 安全
+
+- **直连。** 设备通过 TLS 直接连接 Mac，使用证书指纹固定和一次性配对邀请，没有云端中继。
+- **默认本地。** 本机模型不向外发送任何内容。选择云端模型时，对话、附件、取回的记忆和工具结果会发送给所选服务。
+- **先确认。** 执行命令、修改代码、浏览器点击和输入、非只读的 MCP 工具，以及门锁、门和摄像头，都先问你。
+- **没有沙箱。** 命令和项目脚本以你的用户身份在 Mac 上运行。助手不会自动提交、推送或发布。
+
+## 测试
+
+```bash
+./scripts/check.sh                              # 单元测试、编译和语法检查
+.venv/bin/python -m pytest --cov=engine         # 覆盖率（需要 pytest-cov）
+```
+
+| 套件 | 范围 |
+|---|---|
+| `check.sh` | 167 项单元测试，`engine/` 语句覆盖率 81% |
+| `e2e.sh` | 真实模型跑完整 API 流程：对话、读图、生图、视频、短剧、Coding、配对 |
+| `scenarios.sh` | 26 段多轮对话，逐轮检查 |
+| `longtasks.sh` | 超出单次模型输出的长任务，按实测结果判定 |
+| `ui-smoke.sh` · `ui-typing.sh` · `ui-press.sh` | Mac 版的渲染、输入和按钮行为 |
+
+真实模型的验收结果有波动。详见[测试与验收](docs/TESTING.md)和[验收记录](docs/VALIDATION.md)。
 
 ## 文档
 
@@ -15,119 +109,10 @@ Mac 驱动的个人助理，以对话为中心：聊天、读图、生图、视�
 | [网页版（PWA）](docs/PWA.md) | 打开、配对、装到主屏幕 |
 | [原生 App](docs/APPS.md) | 构建 Mac 版，装到 iPhone / iPad，TestFlight |
 | [智能家居连接器](docs/CONNECTORS.md) | 支持的品牌和各自需要的令牌 |
-
-## 已实现
-
-- **模型**：默认使用本机的视觉语言模型，完全离线。填写 [Miavo](https://miavo.xyz) 的 API Key 后可以改用云端模型（设置里选默认模型，每段对话也能单独选），也可以添加任何 OpenAI 兼容的服务（OpenAI、DeepSeek、OpenRouter、Ollama、LM Studio 等）。
-- **联网**：使用 Miavo 的模型时，联网搜索由 Miavo 随模型提供，回复下方列出来源。使用本机模型时，只要配置了 Miavo，助手也能通过它搜索；任何模型都能读取你给的网页链接（不读取本机和内网地址）。
-- **记忆**：每次回复后在后台从对话里提取值得长期记住的事实（不记密码和密钥），下次对话前取回相关的几条。配置向量模型后按语义检索，否则用内置的关键词匹配，离线也能用。记忆可以查看、编辑、停用和清空；「无痕」对话不读也不写记忆。长对话的早期内容会被折叠成摘要，而不是丢掉。
-- **技能**：把某类任务的做法写成 `data/skills/<名字>/SKILL.md`，助手只在任务对得上时才加载全文，技能里的参考文件按需再读。格式与其他 agent 的 SKILL.md 通用：`~/.claude/skills/` 里为 Claude Code 写的技能会直接出现（可在设置里逐个停用，或用 `JURVIS_SHARED_SKILLS=` 整体关闭），连接的代码项目还可以带自己的 `.jurvis/skills/`。重名时以你自己的为准。
-- **MCP**：接入 MCP 服务（本地进程或 HTTP），它们的工具直接出现在对话里。没有标明只读的工具每次先问你。工具超过 24 个时不再全部列给模型，由它按关键词查找后再调用。
-- **浏览器**：助手可以在 Mac 上打开一个浏览器窗口（需要已安装 Chrome、Edge、Brave 或 Chromium，使用独立的用户目录，不碰你自己的浏览器数据），读页面、列出可点的元素、点击、输入和截图。打开和阅读不用确认；点击、输入和运行脚本先问你，可以选「本任务内都允许」。下载一律拒绝；密码和支付信息请自己在窗口里填。
-- **计划**：输入框下的「计划」让助手只看不动手，先交一份清单，你确认或修改后再开始。使用云端模型时，较大的任务也会自动列出清单并逐项勾掉。
-- **产出预览**：助手写出的 HTML 页面和 SVG 图在工作台和作品库里直接渲染，可在预览和源码之间切换。页面在隔离的框里运行，读不到 Jurvis 的登录信息，也不能联网。
-- **智能家居**：连接 Home Assistant、Philips Hue、SmartThings、涂鸦后，在对话里说「把客厅灯调暗一点」，或在「家居」页直接操作。门锁、门和摄像头每次都先问你。见[连接器说明](docs/CONNECTORS.md)。
-- **子任务**：助手可以把查资料这类旁支任务交给一个只读的帮手，只把结论带回对话。使用云端模型时，一步里交出去的几个子任务同时进行；本机模型一次做一个。
-- **文件查找**：除了读写工作区文档，助手可以按路径模式找文件、用正则搜索内容（工作区和连接的代码项目都行），长文件按行号分段读取。
-- **对话**：按日期分组可搜索的对话历史、图片理解、计算、工作区文本文件，以及创作和编码工具调用。输入框下的「图片 / 视频 / 短剧」开关直接指定要生成的内容，「代码」开关让新对话关联一个代码项目。
-- **运行命令**：需要安装插件、跑脚本、用 git 或查看系统时，Jurvis 在 Mac 上执行 shell 命令。每条命令先以卡片显示原因、命令和目录，你点「运行」才执行，输出实时显示；可选「本对话都允许」，但删除、sudo、git push、kill 等危险命令仍每次询问。需要一直运行的命令（开发服务器、监听脚本）可以放到后台，助手随时查看输出、用完停掉；引擎退出时它们一并结束。
-- **目标模式**：点「目标」后发出的消息是一个要做到完成的目标。Jurvis 自主连续执行（最多 40 步、45 分钟），代码修改直接应用（可撤销），并必须用工具验证后调用 finish_goal 结束；另一次独立复核会核对执行记录，证据不足就退回继续做。卡住或缺信息时停下来问你。
-- **代码**：在对话里关联 Mac 授权的项目目录后，Jurvis 自己阅读和搜索源码，修改以差异卡片出现在回复中，点「应用修改」才写入（有文件版本冲突检查，可撤销）。支持 Python pytest、Swift Package 测试，以及项目声明的 npm test/build/lint/typecheck；脚本由用户明确点击运行。
-- **图片**：Qwen Image 2.1 文生图、参考图编辑、种子和画幅、素材导入与导出。
-- **短剧**：故事梗概、角色、分镜、参考图、首尾帧、中文对白提示、分镜版本、逐镜审片、整片 H.264/AAC 导出。视频可提取首尾帧继续创作。
-- **任务**：SQLite 持久化队列、取消、重试、重启中断标记、幂等提交。占用本机显卡的任务（本机模型、生图、视频）一次一个；云端模型的对话与它们并行，最多 4 段同时进行。重任务期间阻止 Mac 自动空闲睡眠。
-- **连接**：TLS、证书指纹固定、一次性配对邀请、设备凭据钥匙串保存、设备撤销。移动端操作 Mac 上的数据和已授权的代码项目。
-
-## 在这台 Mac 使用
-
-打开 `build/release/Build/Products/Release/Jurvis.app`。它会连接已经运行的引擎；引擎不在线时自动尝试从当前项目目录启动。
-
-直接在对话里说要做什么，或先点输入框下的「图片 / 视频 / 短剧」。改代码时点「代码 → 连接项目文件夹…」选择目录，再在这段对话里提需求。左下角「素材 / 短剧 / 任务 / 更多」是管理页面。素材和结果保存在 `data/`，原始模型保存在 `models/`。
-
-在 **设置 → 配对 iPhone 或 iPad** 创建邀请。移动设备安装 Jurvis 后扫描二维码或粘贴链接；设备需与 Mac 网络互通，Mac 需要保持开机。连接是设备到 Mac 的直连，没有云端中继。
-
-**在外面使用**：在 Mac 和手机上安装 [Tailscale](https://tailscale.com) 并登录同一个账号。邀请里会同时带上 Mac 的局域网地址和 Tailscale 地址，App 在家走局域网，出门后自动换成 Tailscale；已经配对的设备下次在家连上时会自动学到新地址，不用重新配对。网页版在外面用 `https://<Mac 的 Tailscale 地址>:18777/app/` 打开。
-
-### 网页版（PWA）
-
-引擎自带网页版，源码在 `web/`，不需要构建。在 Mac 上打开 `https://127.0.0.1:18777/app/`，或在同一网络的其他设备上打开 `https://<Mac 的地址>:18777/app/`，粘贴配对邀请里的代码即可使用；邀请接口返回的 `web_link` 可以直接打开完成配对。
-
-引擎使用自签名证书，浏览器第一次会提示证书不受信任，需要手动继续。在这种证书下浏览器不允许注册 Service Worker，所以「添加到主屏幕」后的离线外壳和安装提示需要一个受信任的证书（例如用 mkcert 签发并在设备上安装根证书，或通过 Tailscale HTTPS、反向代理访问）；没有它网页版照常工作，只是不能离线打开。
-
-## 开发安装与构建
-
-要求：Apple Silicon、完整 Xcode、Python 3.12（uv 可管理）、uv、ffmpeg。当前真实验证机器为 M5 Pro / 64GB；更低内存机型尚未验证。依赖和模型占用大量磁盘空间。
-
-```bash
-./scripts/bootstrap.sh
-./scripts/check.sh
-./scripts/build-apps.sh
-```
-
-完整验收（真实模型，独立端口和临时数据目录，不影响正在使用的引擎和数据）：
-
-```bash
-./scripts/e2e.sh
-./scripts/scenarios.sh
-./scripts/longtasks.sh
-./scripts/ui-smoke.sh
-./scripts/ui-typing.sh
-./scripts/ui-press.sh
-```
-
-`e2e.sh` 通过 App 使用的同一套 API 跑完对话与工具调用、读图、停止与重试、生图、视频、首尾帧、短剧全流程、Coding 修改/测试/撤销、配对与撤销。`scenarios.sh` 用真实模型跑 20 多段多轮对话（闲聊、计算接续、记忆、文件、注入防护、图片/视频/短剧、代码对话、语言切换、能力边界、长文、停止、模糊请求、执行命令装插件、拒绝命令、目标模式修到测试通过、模糊目标先询问），逐轮检查调用了哪些工具、参数和回复内容，并输出可读的对话记录。`longtasks.sh` 用真实模型跑超出单次模型输出的长任务，按实测结果判定而不是看模型怎么说：5 集剧本写好后只改第 2 集并原地更新文件、10 集每集千字的剧本写进一个文件（逐集检查字数且各集不雷同）、对话里直接写 5000 字小说、目标模式写 6 个分集文件加目录、短剧分镜计划（时长加总、每镜不超过 15 秒）及后续追问、22 轮长对话（早期细节、话题切换后回到原任务、原地修改文档）。全套在本机模型上需要一到两小时，可只跑指定用例：`./scripts/longtasks.sh <临时目录> "ten episodes in one file"`，对话记录写在该目录的 `longtasks.md`。当前状态（本机 Qwen 27B，2026-11-20）：6 组全部通过过，但不是同一轮一次跑完的——最近一次完整运行通过 4 组，剩余 2 组修复后单独重跑通过；26 段回归连续三轮都是 25/26，每轮失败的是不同的一段（模型偶发的口算错、语言跟随错），所以把它看作有波动的验收而不是恒定全绿。
-
-`ui-typing.sh` 在真实输入框里模拟键盘、鼠标和中文输入法，检查焦点、组字和响应延迟。`ui-press.sh` 用真实鼠标事件点击按钮，检查点击后 50 毫秒内出现处理中状态、宽度不变、连点不重复执行、失败后可重试，不需要引擎也不碰数据。`ui-smoke.sh` 连接正在运行的引擎，离屏渲染 Mac 版每个页面和每个素材详情（包括视频），截图保存在 `build/ui-smoke/`。
-
-`bootstrap.sh` 使用锁定的 Python 依赖、ComfyUI 和节点提交，生成本机模型路径，不替换原有模型。单独运行后端：`./scripts/start-engine.sh`。开发时也可直接在 Xcode 打开 `native/Jurvis.xcodeproj`。
-
-构建产物：
-
-| 目标 | 位置 |
-|---|---|
-| Mac 本地 App | `build/release/Build/Products/Release/Jurvis.app` |
-| iPhone / iPad 模拟器 | `build/mobile-release/Build/Products/Release-iphonesimulator/Jurvis.app` |
-| 真机工程 | Xcode 中选 `JurvisMobile`，配置自己的开发团队与签名 |
-| TestFlight | 在 `.env` 设置 `JURVIS_TEAM_ID`，在 App Store Connect 建好 App 记录后运行 `./scripts/testflight.sh` |
-
-Mac App 当前依赖此工作目录内的引擎、运行时和模型。它还不是可独立移到任意机器运行的安装包。项目移动后需重新运行安装和构建脚本；Mac 分发公证、iOS 签名和 App Store 发布均未执行。
-
-## 创作扩展与准确版本
-
-扩展在设置中安装，或运行 `.venv/bin/python scripts/install_components.py <组件ID>`。下载可续传，完成后核验 SHA-256；已下载不代表组合效果已通过实测。
-
-| 组件 | ID | 接入方式 |
-|---|---|---|
-| H3 FL2VA INT8 Pruned | `h3_convrot_int8` | 原生 UNETLoader + Apple Silicon 量化适配；与 Civitai 发布版本哈希一致 |
-| Motion Speed / FoS v1.0 | `h3_motion_fos` | -8 到 +8 强度，0 关闭；影响生成运动，不是播放速度 |
-| Turbo multistep v2 | `h3_turbo_v2` | 独立的 4/6/8 步方案，视频/音频 shift 6/3；需要准确的权重文件 |
-| DaSiWa C-MMH3 v3.3 | `dasiwa_v33` | 原版存档校验 + Mac 核心流程适配：res_multistep/simple、25 步、shift 11/4 |
-
-本机已完成 ConvRot 和 Motion Speed 的准确文件安装，以及 DaSiWa 原版存档校验。ConvRot + DaSiWa 核心流程已实际生成视频；Motion Speed 已在另一段 GGUF 视频中实跑。具体分辨率、耗时与测试范围见验收记录。
-
-DaSiWa 适配不执行第三方工作流里的任意节点，也未启用 RTX 增强、潜空间连续生成、RefMod 和完整多模态 Ref2VA。当前首尾帧流程使用 FL2VA 权重。原版工作流及模型路径固定在 `config/media-catalog.json`，不会用同名的其他版本静默替代。
-
-若来源要求登录：从组件来源页下载准确文件，放到设置显示的位置，再点击「安装 / 校验」。不要把网站令牌写入源码或工作流。Turbo v2 在本轮环境中未能匿名下载，因此其配置已接入，但尚未启用和实测。
-
-最初提供的 [Ref2VA Prompt Rewriter](https://huggingface.co/lightx2v/MiniMax-H3-Prompt-Rewriter-Qwen3.8-27B-Ref2VA) 是专门的提示词改写模型。当前实现使用已有 Qwen 视觉语言模型和对应 FL2VA 官方提示规范完成编排，**尚未下载或运行这份独立 SFT 权重**；不能视为与专用改写模型效果相同。规范来源固定在 `engine/prompts/sources.json`。
-
-## 数据、运行和维护
-
-- `engine/`：API、任务调度、模型路由（`llm.py`）、记忆（`memory.py`）、技能、MCP、智能家居连接器（`home/`）、工具、代码工作台、媒体工作流。
-- `web/`：网页版（PWA）。
-- `native/Sources/`：共享的 SwiftUI 界面、TLS 客户端、钥匙串和扫码。
-- `config/`：固定的依赖版本、运行时来源、扩展校验清单。
-- `data/jurvis.sqlite3`：对话、任务、素材索引、分镜、记忆、设备和代码项目。
-- `data/assets/`：生成媒体；`data/coding/`：代码修改快照；`data/logs/`：运行日志。
-- `data/settings.json`：默认模型、记忆和家居的偏好；`data/skills/`：技能。
-- `data/security/`：设备本地令牌和 TLS 私钥，以及模型服务的 API Key（`providers.json`）、MCP 服务（`mcp.json`）和家居连接器的令牌（`home.json`）；整个 `data/` 默认仅当前用户可访问，不应上传到仓库。
-
-引擎监听 TLS 18777；MLX 和 ComfyUI 分别只监听本机 18778/18779。本机模型串行切换以控制内存。选择云端模型时，对话内容（包括附带的图片、取回的记忆和工具结果）会发送给所选的服务；本机模型不发送任何内容。退出 Mac 界面后已启动的引擎可继续处理移动端任务。
-
-备份前停止引擎，然后整体备份 `data/`。代码撤销仅在文件仍与本次应用后的版本一致时执行；其他编辑器的更新会触发冲突提示。代码执行和助手的命令直接在本机运行，没有容器沙箱；助手命令以你的用户身份、无标准输入运行，不会自动提交、推送或发布。
-
-真实验收结果与尚未覆盖的项目见 [验收记录](docs/VALIDATION.md)。第三方组件来源见 [来源记录](docs/SOURCES.md)。
+| [创作扩展](docs/EXTENSIONS.md) | 可选的视频组件、准确版本和校验 |
+| [数据与运维](docs/OPERATIONS.md) | 数据目录、端口、备份、安全边界 |
+| [测试与验收](docs/TESTING.md) | 单元测试、覆盖率和验收脚本 |
 
 ## 许可证
 
-Jurvis 的源码以 [Apache License 2.0](LICENSE) 开源。模型权重、ComfyUI 节点和第三方提示词规范不随源码分发，各自遵循其许可证和使用条款，详见[来源记录](docs/SOURCES.md)。
+[Apache License 2.0](LICENSE)。模型权重、ComfyUI 节点和第三方提示词规范不随源码分发，各自遵循其许可证，详见[来源记录](docs/SOURCES.md)。
