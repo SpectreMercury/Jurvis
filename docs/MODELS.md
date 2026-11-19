@@ -78,4 +78,4 @@ Key 保存在 `data/security/providers.json`，只有当前用户可读，不会
 
 ## 生图和视频模型
 
-生图（Qwen Image 2.1）和视频（MiniMax H3）走 ComfyUI，权重放在 `models/qwen-image/` 和 `models/minimax-h3/`，具体文件名在设置页的模型状态里列出。可选的扩展用 `.venv/bin/python scripts/install_components.py <组件ID>` 安装并校验，清单和来源见 [README](../README.md#创作扩展与准确版本) 与[来源记录](SOURCES.md)。
+生图（Qwen Image 2.1）和视频（MiniMax H3）走 ComfyUI，权重放在 `models/qwen-image/` 和 `models/minimax-h3/`，具体文件名在设置页的模型状态里列出。可选的扩展用 `.venv/bin/python scripts/install_components.py <组件ID>` 安装并校验，清单和来源见 [README](../README.zh-CN.md#创作扩展与准确版本) 与[来源记录](SOURCES.md)。
