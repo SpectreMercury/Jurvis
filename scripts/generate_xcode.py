@@ -45,7 +45,7 @@ def main():
     folder=NATIVE/"Jurvis.xcodeproj";folder.mkdir(exist_ok=True)
     (folder/"project.pbxproj").write_text("// !$*UTF8*$!\n"+render({"archiveVersion":1,"classes":{},"objectVersion":56,"objects":objects,"rootObject":project})+"\n")
     info={"CFBundleDisplayName":"Jurvis","CFBundleName":"Jurvis","CFBundleIdentifier":"$(PRODUCT_BUNDLE_IDENTIFIER)","CFBundleExecutable":"$(EXECUTABLE_NAME)","CFBundlePackageType":"APPL","CFBundleShortVersionString":"$(MARKETING_VERSION)","CFBundleVersion":"$(CURRENT_PROJECT_VERSION)",
-          "JurvisWorkspaceRoot":"$(JURVIS_WORKSPACE_ROOT)","LSApplicationCategoryType":"public.app-category.productivity","NSLocalNetworkUsageDescription":"连接你的 Mac，使用本地助理、生图和短剧工具。","NSCameraUsageDescription":"扫描 Mac 上的配对二维码。","NSAppTransportSecurity":{"NSAllowsLocalNetworking":True},
+          "JurvisWorkspaceRoot":"$(JURVIS_WORKSPACE_ROOT)","LSApplicationCategoryType":"public.app-category.productivity","NSLocalNetworkUsageDescription":"连接你的 Mac，使用本地助理、生图和短剧工具。","NSCameraUsageDescription":"扫描 Mac 上的配对二维码。","NSMicrophoneUsageDescription":"用语音向 Jurvis 提问，录音只发送到你自己的 Mac。","NSAppTransportSecurity":{"NSAllowsLocalNetworking":True},
           "CFBundleURLTypes":[{"CFBundleURLName":"app.jurvis.pair","CFBundleURLSchemes":["jurvis"]}],"UILaunchScreen":{},"UISupportedInterfaceOrientations":["UIInterfaceOrientationPortrait","UIInterfaceOrientationLandscapeLeft","UIInterfaceOrientationLandscapeRight"],
           "UISupportedInterfaceOrientations~ipad":["UIInterfaceOrientationPortrait","UIInterfaceOrientationPortraitUpsideDown","UIInterfaceOrientationLandscapeLeft","UIInterfaceOrientationLandscapeRight"],"ITSAppUsesNonExemptEncryption":False,"NSHighResolutionCapable":True}
     (NATIVE/"Info.plist").write_bytes(plistlib.dumps(info))

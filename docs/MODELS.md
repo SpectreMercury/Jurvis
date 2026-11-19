@@ -76,6 +76,33 @@ Key 保存在 `data/security/providers.json`，只有当前用户可读，不会
 - **工具模型**：用来写摘要、提取记忆、改写搜索词的便宜模型。留空则用对话模型。
 - **向量模型**：填 `服务名:模型名` 后记忆按语义检索；留空用内置的关键词匹配，离线可用。
 
+## 语音模型
+
+语音输入、朗读和语音对话由 Mac 上的两个模型完成，手机和网页版只负责录音和播放，录音不会发到别处。两个模型都用 [mlx-audio](https://github.com/Blaizzy/mlx-audio) 加载，第一次使用时载入，闲置 10 分钟后自动释放内存。
+
+| 用途 | 默认目录 | 默认模型 | 大小 |
+|---|---|---|---|
+| 语音识别 | `models/speech/sensevoice-small` | [SenseVoiceSmall](https://huggingface.co/mlx-community/SenseVoiceSmall)，中英日韩粤 | 约 0.9GB |
+| 语音合成 | `models/speech/qwen3-tts-0.6b` | [Qwen3-TTS 0.6B CustomVoice 8bit](https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit)，9 种声音 | 约 1.8GB |
+
+安装：
+
+```bash
+.venv/bin/hf download mlx-community/SenseVoiceSmall --local-dir models/speech/sensevoice-small
+```
+
+```bash
+.venv/bin/hf download mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit --local-dir models/speech/qwen3-tts-0.6b
+```
+
+装好后重新打开设置页，「语音」一栏会显示两个模型的名字，输入框旁出现麦克风和语音对话按钮。只装识别模型时只有语音输入；两个都装才有语音对话。在设置里可以选朗读的声音。
+
+换用 mlx-audio 支持的其他模型时，在 `.env` 里用 `JURVIS_SPEECH_STT` 和 `JURVIS_SPEECH_TTS` 指向它们的目录（相对路径从 `models/` 算起）。目前只有上面两个默认模型实测过；其他合成模型的声音列表和调用方式可能不同。
+
+在 M5 Pro 上的实测：识别 5 秒的录音约 0.05 秒；合成一句话约 0.6 到 2 秒，比播放快。模型首次载入需要几秒到半分钟。
+
+网页版用麦克风需要浏览器允许，iPhone 上的 Safari 还要求页面是受信任的 HTTPS，见[网页版](PWA.md)。
+
 ## 生图和视频模型
 
 生图（Qwen Image 2.1）和视频（MiniMax H3）走 ComfyUI，权重放在 `models/qwen-image/` 和 `models/minimax-h3/`，具体文件名在设置页的模型状态里列出。可选的扩展用 `.venv/bin/python scripts/install_components.py <组件ID>` 安装并校验，清单和来源见 [README](../README.zh-CN.md#创作扩展与准确版本) 与[来源记录](SOURCES.md)。

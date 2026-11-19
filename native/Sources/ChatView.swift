@@ -31,6 +31,9 @@ struct ChatView: View {
     @State private var attachments: [Asset] = []
     @State private var mode: ComposerMode?
     @State private var width: CGFloat = 800
+    /// The voice conversation is open.
+    @State private var talking = false
+    @ObservedObject private var voice = Voice.shared
     @FocusState private var focused: Bool
     @AppStorage("workspaceOpen") private var workspaceOpen = true
     #if os(macOS)
@@ -83,6 +86,13 @@ struct ChatView: View {
                 await store.newChat(project: project.id)
             } }
         }
+        // What the Mac can do with speech decides which voice buttons the composer shows.
+        .task(id: store.connected) { await voice.refresh(store.api) }
+        #if os(iOS)
+        .fullScreenCover(isPresented: $talking) { VoiceConversationView().environmentObject(store) }
+        #else
+        .sheet(isPresented: $talking) { VoiceConversationView().environmentObject(store) }
+        #endif
         #if os(macOS)
         .onAppear { focused = true }  // on iPhone this would pop the keyboard and swallow the next tap
         #endif
@@ -341,6 +351,7 @@ struct ChatView: View {
                 HStack(alignment: .bottom, spacing: 2) {
                     addButton.disabled(attachments.count + uploading >= 4)
                     field.padding(.vertical, 11)
+                    voiceButtons
                     sendButton
                 }
             } else {
@@ -356,6 +367,7 @@ struct ChatView: View {
                         }
                     }
                     Spacer(minLength: 4)
+                    voiceButtons
                     sendButton
                 }
             }
@@ -413,6 +425,22 @@ struct ChatView: View {
             }
             .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
             .help("让这个任务关联一个代码项目")
+        }
+    }
+
+    /// Dictation into the field, and the hands-free conversation. Each shows only when the Mac has the model it needs.
+    @ViewBuilder var voiceButtons: some View {
+        if voice.canListen {
+            DictationButton(size: control, interrupted: talking) { text in
+                input += (input.isEmpty || input.last?.isWhitespace == true ? "" : " ") + text
+                #if os(macOS)
+                focused = true   // on iPhone this would pop the keyboard over what was just said
+                #endif
+            }
+            if voice.canSpeak {
+                Button { talking = true } label: { Image(systemName: "waveform").foregroundStyle(Color.inkSoft).composerFace(control) }
+                    .buttonStyle(PressStyle()).help("语音对话：你说，Jurvis 读出回答").accessibilityLabel("语音对话")
+            }
         }
     }
 
@@ -568,12 +596,13 @@ struct AssistantMessage: View {
                 }
             }
             if !message.isLive, !message.metadata["sources"].array.isEmpty { SourceList(sources: message.metadata["sources"].array) }
-            footer(hasContent: !message.content.isEmpty || !steps.isEmpty)
+            footer(hasContent: !message.content.isEmpty || !steps.isEmpty, words: steps.isEmpty ? message.content : steps.map(\.text).filter { !$0.isEmpty }.joined(separator: "\n\n"))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    @ViewBuilder func footer(hasContent: Bool) -> some View {
+    /// `words` is the text the model wrote, which is what the read button reads aloud.
+    @ViewBuilder func footer(hasContent: Bool, words: String) -> some View {
         if message.isLive {
             HStack(spacing: 8) {
                 SignalDot()
@@ -587,6 +616,7 @@ struct AssistantMessage: View {
             if message.status == "interrupted" { Text("引擎重启中断了这条回复").font(.jSmall).foregroundStyle(Color.inkSoft) }
             HStack(spacing: 4) {
                 if hasContent { CopyButton(text: message.content) }
+                if message.status == "complete", !words.isEmpty { ReadAloudButton(id: message.id, text: words) }
                 if ["failed", "cancelled", "interrupted"].contains(message.status), store.messages.last?.id == message.id {
                     ActionButton(title: "重试", busyTitle: "正在重试", icon: "arrow.clockwise", kind: .ghost, scale: .small) { await store.retryMessage(message) }
                 }

@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     history_messages: int = 24
     browser_headless: bool = False            # drive the browser without a window (automated runs)
     local_model: str = ""                     # folder of an MLX model to use instead of the default; relative paths start at models/
+    speech_stt: str = "speech/sensevoice-small"   # speech recognition model folder; relative paths start at models/
+    speech_tts: str = "speech/qwen3-tts-0.6b"     # speech synthesis model folder
     shared_skills: str = "~/.claude/skills"   # skills written for Claude Code are offered here too; empty turns that off
 
     def prepare(self):

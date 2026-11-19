@@ -20,6 +20,7 @@ ICONS = {
     "left": "chevron-left", "right": "chevron-right", "down": "chevron-down", "panel": "panel-right", "trash": "trash-2",
     "refresh": "refresh-cw", "link": "link", "shield": "shield", "eyeoff": "eye-off", "play": "play", "spark": "sparkles",
     "wrench": "wrench", "tasks": "list-checks",
+    "mic": "mic", "volume": "volume-2", "voice": "audio-lines",
     # devices
     "bulb": "lightbulb", "air": "air-vent", "fan": "fan", "blinds": "blinds", "lock": "lock", "unlocked": "lock-open",
     "plug": "plug", "power": "power", "speaker": "speaker", "robot": "bot", "thermometer": "thermometer", "camera": "cctv",

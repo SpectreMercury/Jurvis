@@ -178,7 +178,8 @@ import ImageIO
         if selectedSession == id { loadingSession = false }
         await refresh()
     }
-    func send(_ text: String, assets: [String], mode: String? = nil) async throws {
+    /// `voice` marks a message from the voice conversation: the reply will be read aloud.
+    @discardableResult func send(_ text: String, assets: [String], mode: String? = nil, voice: Bool = false) async throws -> Job {
         guard let api else { throw APIError.message("请先连接 Mac") }
         outgoingBase = messages.count
         outgoing = Message(id: "outgoing", session_id: selectedSession ?? "", role: "user", content: text, status: "complete",
@@ -192,8 +193,10 @@ import ImageIO
         }
         var body: [String: Any] = ["content": text, "asset_ids": assets, "request_id": UUID().uuidString]
         if let mode { body["mode"] = mode }
-        let _: Job = try await api.request("/api/sessions/\(selectedSession!)/messages",method:"POST",body:body)
+        if voice { body["voice"] = true }
+        let job: Job = try await api.request("/api/sessions/\(selectedSession!)/messages",method:"POST",body:body)
         await refresh()
+        return job
     }
     func submit(_ path: String, body: [String: Any]) async throws -> Job {
         guard let api else { throw APIError.message("请先连接 Mac") }

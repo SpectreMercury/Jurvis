@@ -79,9 +79,10 @@ final class API: NSObject, URLSessionDelegate, @unchecked Sendable {
             throw APIError.message("引擎返回错误 \(http.statusCode)")
         }
     }
-    func upload<T: Decodable>(_ path: String, data: Data, name: String, mime: String) async throws -> T {
+    func upload<T: Decodable>(_ path: String, data: Data, name: String, mime: String, timeout: TimeInterval? = nil) async throws -> T {
         let boundary = UUID().uuidString
         var req = URLRequest(url: URL(string: base + path)!)
+        if let timeout { req.timeoutInterval = timeout }
         req.httpMethod = "POST"; req.setValue("Bearer " + connection.token, forHTTPHeaderField: "Authorization")
         req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         let safeName = name.replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "\r", with: "").replacingOccurrences(of: "\n", with: "")
@@ -94,6 +95,15 @@ final class API: NSObject, URLSessionDelegate, @unchecked Sendable {
         var req = URLRequest(url: URL(string: base + "/api/assets/\(id)/file")!)
         req.setValue("Bearer " + connection.token, forHTTPHeaderField: "Authorization")
         let (data,response) = try await session.data(for: req); try check(response,data); return data
+    }
+    /// A reply that is not JSON, such as audio. Speech can wait for a model to load, so the caller sets the patience.
+    func bytes(_ path: String, body: Any, timeout: TimeInterval) async throws -> Data {
+        guard let url = URL(string: base + path) else { throw APIError.message("连接地址无效") }
+        var req = URLRequest(url: url); req.httpMethod = "POST"; req.timeoutInterval = timeout
+        req.setValue("Bearer " + connection.token, forHTTPHeaderField: "Authorization")
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let (data, response) = try await session.data(for: req); try check(response, data); return data
     }
     func close() { session.invalidateAndCancel() }
 }

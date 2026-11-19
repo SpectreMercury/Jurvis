@@ -4,6 +4,7 @@ import {
 } from './core.js';
 import * as ui from './ui.js';
 import * as connect from './connect.js';
+import * as voiceKit from './voice.js';
 
 const SKILL_TEMPLATE = `---
 name: 我的技能
@@ -28,11 +29,12 @@ function section(title, body, hint) {
 export function mount(container) {
   root = container;
   connect.onChange((next) => { if (next) { data.home = next; renderHome(); } });
-  for (const name of ['models', 'memory', 'skills', 'mcp', 'home', 'devices']) els[name] = h('div', { class: 'stack' }, h('p', { class: 'muted' }, '正在读取…'));
+  for (const name of ['models', 'voice', 'memory', 'skills', 'mcp', 'home', 'devices']) els[name] = h('div', { class: 'stack' }, h('p', { class: 'muted' }, '正在读取…'));
   els.about = h('p', { class: 'muted small' });
   container.append(h('div', { class: 'page' },
     h('header', { class: 'page-head' }, h('h1', null, '设置')),
     section('模型', els.models),
+    section('语音', els.voice, '语音识别和朗读都在这台 Mac 上完成，录音不会发到别处。'),
     section('记忆', els.memory),
     section('技能', els.skills, '技能是一份写给 Jurvis 的做法说明（SKILL.md），它会在合适的时候照着做。'),
     section('MCP 服务', els.mcp, '通过 MCP 给 Jurvis 接入外部工具。'),
@@ -56,6 +58,7 @@ function loadPart(name, path, pick, render) {
 
 export function activate() {
   loadSettings().then(() => { delete fail.settings; }).catch((err) => { if (!quiet(err)) fail.settings = err.message; }).then(() => { renderModels(); renderMemory(); renderHome(); });
+  voiceKit.status(true).then((result) => { data.voice = result; renderVoice(); });
   loadPart('skills', '/api/skills', (r) => r, renderSkills);
   loadPart('mcp', '/api/mcp', (r) => r.servers || [], renderMcp);
   loadPart('home', '/api/home', (r) => r, renderHome);
@@ -187,6 +190,27 @@ function addProvider() {
 }
 
 // ---------------------------------------------------------------- 记忆
+const VOICE_NAMES = { vivian: 'Vivian · 女声', serena: 'Serena · 女声', ono_anna: 'Anna · 女声（日语）', sohee: 'Sohee · 女声（韩语）', uncle_fu: '傅叔 · 男声', dylan: 'Dylan · 男声', eric: 'Eric · 男声', ryan: 'Ryan · 男声（英语）', aiden: 'Aiden · 男声（英语）' };
+
+function renderVoice() {
+  const el = els.voice;
+  const v = data.voice;
+  if (!v) return;
+  const line = (label, ok, name) => h('div', { class: 'control-row' }, h('span', { class: 'control-label grow' }, label),
+    h('span', { class: 'badge' + (ok ? ' ok' : '') }, ok ? name : '未安装'));
+  const out = [line('语音识别', v.stt, v.stt_model), line('语音合成', v.tts, v.tts_model)];
+  if (!v.stt || !v.tts) out.push(h('p', { class: 'muted small' }, '模型放在 Mac 上 Jurvis 目录的 models/speech/ 里，安装方法见 docs/MODELS.md。'));
+  if (v.tts && v.speakers.length) {
+    const current = (store.settings && store.settings.settings.voice.speaker) || (v.speakers.includes('vivian') ? 'vivian' : v.speakers[0]);   // the engine's default
+    const pick = ui.select({ 'aria-label': '朗读的声音', value: current, onchange: async () => {
+      await saveSettings({ voice: { speaker: pick.value } });
+    } }, v.speakers.map((id) => ({ value: id, label: VOICE_NAMES[id] || id })));
+    const sample = action('试听', async () => { voiceKit.unlock(); await voiceKit.speak('你好，我是 Jurvis。Hello, this is Jurvis.', 'sample'); }, { class: 'btn small' });
+    out.push(h('div', { class: 'field' }, h('span', null, '朗读的声音'), h('div', { class: 'row' }, pick, sample)));
+  }
+  fill(el, ...out);
+}
+
 function renderMemory() {
   const el = els.memory;
   if (failed(el, 'settings') || !store.settings) return;

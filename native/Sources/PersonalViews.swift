@@ -228,6 +228,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 26) {
                 connection
                 AssistantModelSettings()
+                VoiceSettings()
                 models
                 extensions
                 devices

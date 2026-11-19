@@ -2,12 +2,13 @@
 // so the composer never re-renders and scrolling/focus survive streaming.
 import {
   store, h, fill, api, get, post, patch, del, run, action, notify, emit, throttle, refreshState, jobsOf, isLive, jobById,
-  assetURL, releaseAssets, pickModel, modelLabel, dayGroup, shortTime, uuid, sheet, ApiError,
+  assetURL, releaseAssets, pickModel, modelLabel, dayGroup, shortTime, uuid, sheet, sleep, ApiError,
 } from './core.js';
 import { renderMarkdown } from './md.js';
 import { icon, toolIcon } from './icons.js';
 import * as workspace from './workspace.js';
 import { disclosure, ask } from './ui.js';
+import * as voice from './voice.js';
 
 const MODES = [
   ['goal', '目标', 'target', '目标：先列计划，自己一步步做完再汇报；写到一半被截断会自动续写。'],
@@ -24,6 +25,9 @@ const coarse = window.matchMedia && window.matchMedia('(pointer: coarse)').match
 
 const draft = { model: '', incognito: false }; // choices for a conversation that does not exist yet
 let mode = null;
+let speech = { stt: false, tts: false };   // what the Mac can do with voice
+let dictation = null;   // the recording in progress for the composer
+let transcribing = false;
 let attachments = [];   // {file, url, asset, ready}
 let sending = false;
 let lastRequest = null; // {key, id}: the same message retried after a network failure keeps its request id
@@ -79,10 +83,12 @@ export function mount(root) {
     const files = [...((event.clipboardData && event.clipboardData.files) || [])].filter((f) => f.type.startsWith('image/'));
     if (files.length) { event.preventDefault(); addFiles(files); }
   });
+  els.mic = h('button', { class: 'round-btn mic', type: 'button', hidden: true, 'aria-pressed': 'false', 'aria-label': '语音输入', title: '语音输入：说完自动转成文字', onclick: dictate }, icon('mic', 16));
+  els.talk = h('button', { class: 'round-btn talk', type: 'button', hidden: true, 'aria-label': '语音对话', title: '语音对话：你说，Jurvis 读出回答', onclick: talk }, icon('voice', 16));
   els.send = h('button', { class: 'round-btn solid send', type: 'button', 'aria-label': '发送', onclick: primary }, icon('send', 16, 1.6));
   els.workBar = h('button', { class: 'work-bar', type: 'button', hidden: true, onclick: () => toggleWork(true) });
   els.spacer = h('span', { class: 'spacer' });
-  els.toolRow = h('div', { class: 'composer-row' }, els.attach, els.file, els.modelBtn, els.modes, els.spacer, els.send);
+  els.toolRow = h('div', { class: 'composer-row' }, els.attach, els.file, els.modelBtn, els.modes, els.spacer, els.mic, els.talk, els.send);
   els.modeRow = h('div', { class: 'mode-row' });
   els.composer = h('div', { class: 'composer' }, els.thumbs, els.input, els.toolRow);
   els.composer.addEventListener('dragover', (event) => { event.preventDefault(); });
@@ -104,6 +110,75 @@ export function mount(root) {
   if (wide.addEventListener) wide.addEventListener('change', syncWork);
   renderHeader();
   updateSend();
+  voice.onSpeaking(() => renderMessages());
+  syncVoice();
+}
+
+/** Shows the voice controls the Mac and this browser can support. */
+export async function syncVoice(force = false) {
+  const can = await voice.status(force);
+  speech = can;
+  els.mic.hidden = !(can.stt && voice.canRecord());
+  els.talk.hidden = !(can.stt && can.tts && voice.canRecord());
+  renderMessages();
+}
+
+// ---------------------------------------------------------------- voice
+async function dictate() {
+  if (dictation) { dictation.stop(); return; }
+  if (transcribing) return;
+  try {
+    dictation = await voice.listen({ onLevel: (level) => { els.mic.style.setProperty('--level', level.toFixed(2)); } });
+  } catch (err) { notify(err.message); return; }
+  els.mic.setAttribute('aria-pressed', 'true');
+  els.mic.setAttribute('aria-label', '停止录音');
+  const blob = await dictation.result;
+  dictation = null;
+  els.mic.setAttribute('aria-pressed', 'false');
+  els.mic.setAttribute('aria-label', '语音输入');
+  if (!blob) return;
+  transcribing = true;
+  els.mic.classList.add('busy');
+  try {
+    const text = await voice.transcribe(blob);
+    if (text) {
+      const before = els.input.value;
+      els.input.value = (before && !/\s$/.test(before) ? before + ' ' : before) + text;
+      autogrow();
+      updateSend();
+      els.input.focus();
+    } else notify('没有听清，再说一次', 'info');
+  } catch (err) {
+    if (!(err instanceof ApiError && err.status === 401)) notify(err.message);
+  } finally {
+    transcribing = false;
+    els.mic.classList.remove('busy');
+  }
+}
+
+function talk() {
+  if (dictation) dictation.cancel();
+  voice.converse({ ask: askAloud });
+}
+
+/** Sends what was said and resolves to the reply's text once Jurvis has finished. */
+async function askAloud(text) {
+  while (sending || liveJob()) await sleep(300);
+  els.input.value = text;
+  const sid = await send({ spoken: true });
+  if (!sid) throw new Error('没有发出去');
+  for (;;) {
+    await sleep(400);
+    if (store.sessionId !== sid) throw new Error('已经换到别的任务，语音对话停在这里');
+    const live = jobsOf(sid).find(isLive);
+    if (live && String(live.phase || '').startsWith('等待你确认')) return '有一步需要你确认，请结束语音对话，在屏幕上处理。';
+    if (!live && !sending) break;
+  }
+  await loadMessages(false);
+  const last = [...store.messages].reverse().find((m) => m.role === 'assistant');
+  if (!last) return '';
+  if (last.status === 'failed') throw new Error((last.metadata && last.metadata.error) || '回复失败');
+  return stepsOf(last).map((step) => step.text || '').filter(Boolean).pop() || '';
 }
 
 /** Starts a new task with this text, as if it had been typed and sent. */
@@ -345,9 +420,9 @@ function primary() {
   } else send();
 }
 
-async function send() {
+async function send({ spoken = false } = {}) {
   const text = els.input.value.trim();
-  if (!text || sending || liveJob()) return;
+  if (!text || sending || liveJob()) return null;
   sending = true;
   updateSend();
   try {
@@ -367,7 +442,7 @@ async function send() {
     const key = JSON.stringify([sid, text, assetIds, mode]);
     if (!lastRequest || lastRequest.key !== key) lastRequest = { key, id: uuid() };
     const job = await post('/api/sessions/' + encodeURIComponent(sid) + '/messages',
-      { content: text, asset_ids: assetIds, request_id: lastRequest.id, mode });
+      { content: text, asset_ids: assetIds, request_id: lastRequest.id, mode, voice: spoken });
     lastRequest = null;
     if (store.state && job && job.id && !store.state.jobs.some((j) => j.id === job.id)) store.state.jobs.unshift(job);
     els.input.value = '';
@@ -380,8 +455,10 @@ async function send() {
     renderList();
     if (store.sessionId === sid) await loadMessages(false);
     refreshState();
+    return sid;
   } catch (err) {
     if (!(err instanceof ApiError && err.status === 401)) notify(err instanceof ApiError ? err.message : '发送失败：' + ((err && err.message) || err));
+    return null;
   } finally {
     sending = false;
     updateSend();
@@ -506,7 +583,7 @@ function renderMessages() {
           if (job && job.status === 'succeeded') for (const id of (job.result && job.result.asset_ids) || []) used.add(id);
         }
       }
-      sig = JSON.stringify([m, last, jobSig(chatJob(m)), related]);
+      sig = JSON.stringify([m, last, jobSig(chatJob(m)), related, speech.tts, voice.speakingKey() === m.id]);
     }
     if (sig !== node.sig) {
       node.sig = sig;
@@ -663,6 +740,12 @@ function renderAssistant(node, m, last) {
   } else {
     if (meta.truncated) parts.status.append(h('span', { class: 'muted small' }, '回复达到长度上限，可能不完整。'));
     if (meta.model) parts.status.append(h('span', { class: 'muted small' }, modelLabel(meta.model)));
+    const words = steps.map((step) => step.text || '').filter(Boolean).join('\n\n');
+    if (speech.tts && m.status === 'complete' && words) {
+      const reading = voice.speakingKey() === m.id;
+      parts.status.append(h('button', { class: 'icon-btn small read', type: 'button', 'aria-pressed': String(reading), 'aria-label': reading ? '停止朗读' : '朗读', title: reading ? '停止朗读' : '朗读',
+        onclick: () => { if (voice.speakingKey() === m.id) voice.stopSpeaking(); else { voice.unlock(); voice.speak(words, m.id).catch((err) => notify(err.message)); } } }, icon(reading ? 'stop' : 'volume', 15)));
+    }
   }
   parts.status.hidden = !parts.status.childNodes.length;
 

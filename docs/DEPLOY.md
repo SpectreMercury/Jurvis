@@ -54,6 +54,7 @@ cd Jurvis
 | `JURVIS_PORT` | `18777` | 引擎端口 |
 | `JURVIS_LLM_PORT` / `JURVIS_COMFY_PORT` | `18778` / `18779` | 本机模型和 ComfyUI 的端口 |
 | `JURVIS_LOCAL_MODEL` | 空 | 换用别的本机模型，见[本地模型](MODELS.md) |
+| `JURVIS_SPEECH_STT` / `JURVIS_SPEECH_TTS` | `speech/sensevoice-small` / `speech/qwen3-tts-0.6b` | 语音识别和合成模型的目录，见[本地模型](MODELS.md#语音模型) |
 | `JURVIS_SHARED_SKILLS` | `~/.claude/skills` | 额外读取的技能目录；留空关闭 |
 | `JURVIS_BROWSER_HEADLESS` | `false` | 浏览器不显示窗口（自动化测试用） |
 | `JURVIS_TEAM_ID` | 空 | Apple 开发团队 ID，只有上传 TestFlight 时用 |
