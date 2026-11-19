@@ -23,6 +23,7 @@ DEFAULTS = {
     "embed_model": "",        # "<provider>:<model>" for semantic memory search; empty = built-in lexical matching
     "web_search": True,
     "memory": {"enabled": True, "auto_extract": True, "auto_retrieve": True, "max_retrieved": 8, "threshold": 0.3},
+    "voice": {"speaker": "", "auto_speak": False},  # which voice reads replies aloud; auto_speak reads every reply in voice conversations
     "home": {"confirm": "sensitive"},  # "sensitive": locks, doors, alarms and cameras ask first; "always": every action asks
 }
 

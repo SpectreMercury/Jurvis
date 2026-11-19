@@ -8,15 +8,16 @@ from pathlib import Path
 from typing import Literal
 import psutil
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps, UnidentifiedImageError
 from . import __version__,drama
 from .config import Settings
 from .runtime import Runtime
-from .schemas import ChatCreate,CommandDecision,SessionCreate,SessionUpdate,ImageRequest,VideoRequest,ProjectCreate,ProjectProduce,ProjectUpdate,MemoryCreate,PairRequest,SettingsUpdate,ProviderUpdate,SkillSave,McpServerSave,ConnectorSave,HomeControl
+from .schemas import ChatCreate,CommandDecision,SessionCreate,SessionUpdate,ImageRequest,VideoRequest,ProjectCreate,ProjectProduce,ProjectUpdate,MemoryCreate,PairRequest,SettingsUpdate,SpeakRequest,ProviderUpdate,SkillSave,McpServerSave,ConnectorSave,HomeControl
 from .llm import LOCAL,split
+from .speech import Speech,SpeechError,MAX_AUDIO_BYTES,IDLE_SECONDS
 from .security import Security,lan_addresses,reach_addresses
 from .store import Store,dumps,new_id
 from .worker import Worker
@@ -33,12 +34,19 @@ def create_app(settings=None, *, run_worker=True):
     security=Security(settings,store)
     runtime=Runtime(settings)
     worker=Worker(settings,store,runtime)
+    speech=Speech(settings)
+    tidy={}
+    def tidy_later():
+        # give the speech models' memory back once they have sat unused for a while
+        if tidy.get("timer"):tidy["timer"].cancel()
+        tidy["timer"]=asyncio.get_running_loop().call_later(IDLE_SECONDS+5,lambda:asyncio.ensure_future(speech.tidy()))
 
     @asynccontextmanager
     async def lifespan(app):
         if run_worker: await worker.start()
         yield
         if run_worker: await worker.close()
+        speech.close()
 
     app=FastAPI(title="Jurvis Engine",version=__version__,lifespan=lifespan,docs_url=None,redoc_url=None,openapi_url=None)
     app.state.store,app.state.security,app.state.worker=store,security,worker
@@ -137,7 +145,7 @@ def create_app(settings=None, *, run_worker=True):
         now=time.time();user_id,message_id,job_id=new_id(),new_id(),new_id()
         payload={"session_id":ident,"message_id":message_id,"input":body.model_dump()}
         with store.connection() as db:
-            db.execute("INSERT INTO messages(id,session_id,role,content,status,created_at,metadata) VALUES(?,?,'user',?,'complete',?,?)",(user_id,ident,body.content,now,dumps({"asset_ids":body.asset_ids,"mode":body.mode})))
+            db.execute("INSERT INTO messages(id,session_id,role,content,status,created_at,metadata) VALUES(?,?,'user',?,'complete',?,?)",(user_id,ident,body.content,now,dumps({"asset_ids":body.asset_ids,"mode":body.mode,**({"voice":True} if body.voice else {})})))
             db.execute("INSERT INTO messages(id,session_id,role,content,status,created_at) VALUES(?,?,'assistant','','queued',?)",(message_id,ident,now+.0001))
             db.execute("INSERT INTO jobs(id,kind,status,payload,created_at,updated_at,idempotency_key) VALUES(?,'chat','queued',?,?,?,?)",(job_id,dumps(payload),now,now,key))
             db.execute("UPDATE sessions SET title=CASE WHEN title='新对话' THEN ? ELSE title END,updated_at=? WHERE id=?",(body.content[:40],now,ident))
@@ -310,6 +318,38 @@ def create_app(settings=None, *, run_worker=True):
     @app.delete("/api/memories/{ident}")
     async def delete_memory(ident:str):
         store.execute("DELETE FROM memories WHERE id=?",(ident,));return {"ok":True}
+
+    # ---- speech ----
+    @app.exception_handler(SpeechError)
+    async def speech_failed(request,exc):
+        return JSONResponse({"detail":str(exc)},status_code=409)
+
+    @app.get("/api/speech")
+    async def speech_status():
+        return {**speech.status(),"speaker":worker.prefs.get()["voice"].get("speaker") or ""}
+
+    @app.post("/api/speech/transcribe")
+    async def transcribe(file:UploadFile=File(...),language:str="auto"):
+        content=bytearray()
+        while chunk:=await file.read(65536):
+            content.extend(chunk)
+            if len(content)>MAX_AUDIO_BYTES:raise HTTPException(413,"录音太长了")
+        result=await speech.transcribe(content,language)
+        tidy_later()
+        return result
+
+    @app.post("/api/speech/warm")
+    async def speech_warm():
+        # load both models now, so the first sentence of a voice conversation does not wait for them
+        asyncio.ensure_future(speech.warm());tidy_later()
+        return {"ok":True}
+
+    @app.post("/api/speech/speak")
+    async def speak(body:SpeakRequest):
+        speaker=body.speaker if body.speaker is not None else worker.prefs.get()["voice"].get("speaker") or ""
+        audio=await speech.speak(body.text,speaker)
+        tidy_later()
+        return Response(audio,media_type="audio/wav")
 
     # ---- models and settings ----
     def check_model(model):

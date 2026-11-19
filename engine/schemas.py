@@ -14,6 +14,7 @@ class ChatCreate(BaseModel):
     asset_ids: list[str] = Field(default_factory=list, max_length=4)
     request_id: str = Field(min_length=8, max_length=80)
     mode: Literal["image", "video", "drama", "goal", "plan"] | None = None
+    voice: bool = False     # the message was spoken and the reply will be read aloud
 
     @field_validator("content")
     @classmethod
@@ -157,6 +158,12 @@ class SettingsUpdate(BaseModel):
     web_search: bool | None = None
     memory: dict | None = None
     home: dict | None = None
+    voice: dict | None = None
+
+
+class SpeakRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+    speaker: str | None = Field(default=None, max_length=60)
 
 
 class ProviderUpdate(BaseModel):

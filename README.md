@@ -29,6 +29,7 @@
 | **Code** | Reads and searches an authorised project, proposes diffs you apply and can undo, runs pytest / Swift / npm scripts. |
 | **Shell & browser** | Runs commands and drives a separate browser profile on the Mac, with per-action confirmation. |
 | **Media** | Text-to-image and image editing (Qwen Image), first/last-frame video, full short-drama pipeline with H.264/AAC export. |
+| **Voice** | Dictation, read-aloud and hands-free voice conversation. Recognition and synthesis run on the Mac with local models; clients only record and play. |
 | **Smart home** | 16 connectors, including Home Assistant, Philips Hue, SmartThings and Tuya. |
 | **Clients** | Mac, iPhone and iPad (one SwiftUI codebase) and an installable web app, all paired to the same engine. |
 | **Tasks** | Persistent SQLite queue with cancel, retry and idempotent submission. Local GPU jobs run one at a time, cloud conversations in parallel. |

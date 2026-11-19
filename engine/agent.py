@@ -153,6 +153,10 @@ Plan mode: the user wants a plan before anything is changed. Look into the reque
 - Reply with a short explanation of the approach, anything you are unsure about, and what you need decided.
 - Change nothing: no files written, no commands run, and no step is marked done. Do not try the steps to see if they work. The user will reply to approve or adjust the plan, and the work starts then.
 """
+SPOKEN = ("- The user is talking to you by voice and your reply will be read aloud. Answer the way you would speak: a few short sentences, "
+          "the answer first, under about 100 words (150 Chinese characters). No Markdown, lists, tables, code blocks, links or emoji. When the full answer "
+          "is longer than that, say the gist and offer to go on, or put the details into a file with save_file and say that you did. "
+          "What the user said was transcribed from speech, so a word may be misheard; go with the likely meaning, and ask only if it changes what you would do.\n")
 CHECKLIST = ("- For work with several distinct parts (three or more deliverables or stages), you may call update_plan first with the parts, "
              "and again with the finished numbers as you go, so the user can follow. Skip it for anything simpler.\n")
 BROWSER = ("- You can drive a browser window on this Mac: browser_open a page, browser_read its text, browser_elements to get refs for "
@@ -272,6 +276,7 @@ class Agent:
         self.request = latest["content"] if latest else ""
         self.chinese = bool(CJK.search(self.request))
         self.mode = latest and latest["metadata"].get("mode")
+        self.spoken = bool(latest and latest["metadata"].get("voice"))
         kept = self.window(p, session, scale)
         # Messages that no longer fit are folded into the conversation summary before answering, so nothing silently drops out.
         if self.memory and kept:
@@ -351,6 +356,8 @@ class Agent:
             system += PLAN
         elif "update_plan" in names:
             system += CHECKLIST
+        if getattr(self, "spoken", False):
+            system += SPOKEN
         return [{"role": "system", "content": system + coding}, *messages]
 
     @staticmethod

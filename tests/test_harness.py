@@ -154,3 +154,36 @@ def test_local_model_folder_can_be_replaced(tmp_path):
     named = Settings(data=tmp_path, local_model="mine/gemma-4b")
     assert named.llm_model == ROOT / "models/mine/gemma-4b" and named.llm_title == "gemma-4b（本机）"
     assert Settings(data=tmp_path, local_model=str(tmp_path / "m")).llm_model == tmp_path / "m"
+
+
+# ---- speech ----
+def test_speech_text_is_cleaned_and_split_for_reading():
+    from engine.speech import plain, sentences, language_of
+    spoken = plain("## 结果\n\n- **第一**：见 [文档](https://a.b/c)\n- 第二 `code`\n\n```py\nprint(1)\n```\n| a | b |\n|---|---|\nhttps://x.y/z 完。")
+    assert spoken == "结果 第一 ：见 文档 第二 code a b 完。"
+    parts = sentences("今天天气不错。" * 30 + "A long English sentence without any Chinese in it at all. " * 12, limit=120)
+    assert all(0 < len(p) <= 120 for p in parts) and "".join(parts).replace(" ", "") == ("今天天气不错。" * 30 + "A long English sentence without any Chinese in it at all. " * 12).replace(" ", "")
+    assert sentences("没有标点的很长一句话" * 40, limit=100) and max(map(len, sentences("没有标点的很长一句话" * 40, limit=100))) <= 100
+    assert [language_of(t) for t in ("你好", "hello", "こんにちは", "안녕", "123")] == ["chinese", "english", "japanese", "korean", "auto"]
+
+
+def test_speech_api_reports_missing_models_and_wraps_audio(tmp_path):
+    import io, wave
+    from fastapi.testclient import TestClient
+    from engine.app import create_app
+    from engine.config import Settings
+    from engine.speech import to_wav
+    with wave.open(io.BytesIO(to_wav([0.0, 0.5, -0.5, 2.0], 24000))) as audio:
+        assert (audio.getframerate(), audio.getnchannels(), audio.getnframes()) == (24000, 1, 4)
+    app = create_app(Settings(data=tmp_path / "data", speech_stt=str(tmp_path / "no-stt"), speech_tts=str(tmp_path / "no-tts")), run_worker=False)
+    with TestClient(app, headers={"Authorization": f"Bearer {app.state.security.local_token}"}) as client:
+        status = client.get("/api/speech").json()
+        assert status["stt"] is False and status["tts"] is False and status["speakers"] == [] and status["speaker"] == ""
+        answer = client.post("/api/speech/speak", json={"text": "你好"})
+        assert answer.status_code == 409 and "语音合成模型还没有安装" in answer.json()["detail"]
+        assert client.post("/api/speech/speak", json={"text": "```\ncode only\n```"}).status_code == 409
+        silent = client.post("/api/speech/transcribe", files={"file": ("a.wav", to_wav([0.0] * 800, 16000), "audio/wav")})
+        assert silent.status_code == 200 and silent.json()["text"] == ""
+        assert client.post("/api/speech/transcribe", files={"file": ("a.wav", b"not audio", "audio/wav")}).status_code == 409
+        assert client.patch("/api/settings", json={"voice": {"speaker": "Vivian"}}).json()["settings"]["voice"] == {"speaker": "Vivian", "auto_speak": False}
+        assert client.get("/api/speech").json()["speaker"] == "Vivian"
