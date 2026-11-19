@@ -78,7 +78,7 @@ func views<T: NSView>(_ type: T.Type, in root: NSView) -> [T] {
     await store.newChat(project: store.codeProjects.first?.id)
     let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: Double(CommandLine.arguments.dropFirst().first ?? "1180") ?? 1180, height: 800),
                           styleMask: [.titled, .resizable, .closable, .fullSizeContentView], backing: .buffered, defer: false)
-    let host = NSHostingView(rootView: RootView().environmentObject(store).tint(Color.jurvisAccent))
+    let host = NSHostingView(rootView: RootView().environmentObject(store).tint(Color.ink))
     window.contentView = host
     window.makeKeyAndOrderFront(nil)
     NSApp.activate()

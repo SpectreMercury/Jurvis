@@ -8,16 +8,22 @@ from pathlib import Path
 from typing import Literal
 import psutil
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps, UnidentifiedImageError
 from . import __version__,drama
 from .config import Settings
 from .runtime import Runtime
-from .schemas import ChatCreate,CommandDecision,SessionCreate,SessionUpdate,ImageRequest,VideoRequest,ProjectCreate,ProjectProduce,ProjectUpdate,MemoryCreate,PairRequest
-from .security import Security,lan_addresses
+from .schemas import ChatCreate,CommandDecision,SessionCreate,SessionUpdate,ImageRequest,VideoRequest,ProjectCreate,ProjectProduce,ProjectUpdate,MemoryCreate,PairRequest,SettingsUpdate,ProviderUpdate,SkillSave,McpServerSave,ConnectorSave,HomeControl
+from .llm import LOCAL,split
+from .security import Security,lan_addresses,reach_addresses
 from .store import Store,dumps,new_id
 from .worker import Worker
 from .coding import CodeConnect,CodeTask,CodeCommand
+
+
+MEMORY_COLUMNS="SELECT id,title,content,enabled,created_at,updated_at,importance,durable,tags,source,session_id,embed_model FROM memories"
 
 
 def create_app(settings=None, *, run_worker=True):
@@ -39,14 +45,16 @@ def create_app(settings=None, *, run_worker=True):
 
     @app.middleware("http")
     async def authenticate(request,call_next):
-        if request.url.path not in ("/health","/pair"):
+        path=request.url.path
+        if path=="/":return RedirectResponse("/app/")
+        if path not in ("/health","/pair") and not path.startswith("/app"):
             header=request.headers.get("authorization","")
             identity=security.authorize(header[7:] if header.startswith("Bearer ") else "")
             if not identity:return JSONResponse({"detail":"请先与 Mac 配对"},status_code=401)
             request.state.identity=identity
         response=await call_next(request)
         response.headers["X-Content-Type-Options"]="nosniff"
-        response.headers["Cache-Control"]="no-store"
+        response.headers["Cache-Control"]="no-cache" if path.startswith("/app") else "no-store"
         return response
 
     @app.exception_handler(ValueError)
@@ -62,7 +70,7 @@ def create_app(settings=None, *, run_worker=True):
 
     @app.get("/api/state")
     async def state():
-        jobs=store.all("SELECT * FROM jobs ORDER BY created_at DESC LIMIT 200")
+        jobs=store.all("SELECT * FROM jobs WHERE kind!='memory' ORDER BY created_at DESC LIMIT 200")  # memory upkeep is housekeeping, not a task the user started
         for job in jobs:
             job['result'].pop('workflow',None)
             changes=job['result'].pop('changes',None)
@@ -71,7 +79,8 @@ def create_app(settings=None, *, run_worker=True):
                 "jobs":jobs,
                 "assets":store.all("SELECT * FROM assets ORDER BY created_at DESC LIMIT 500"),
                 "projects":store.all("SELECT * FROM projects ORDER BY updated_at DESC LIMIT 100"),
-                "memories":store.all("SELECT * FROM memories ORDER BY updated_at DESC LIMIT 200"),
+                "memories":store.all(MEMORY_COLUMNS+" ORDER BY updated_at DESC LIMIT 500"),
+                "chat_model":worker.llm.chat_model(),
                 "runtime":{"active":runtime.active,"memory_used_gib":round(psutil.virtual_memory().used/2**30,1),"memory_total_gib":round(psutil.virtual_memory().total/2**30,1)},
                 "last_event":(store.one("SELECT MAX(id) AS id FROM events")["id"] or 0)}
 
@@ -79,7 +88,8 @@ def create_app(settings=None, *, run_worker=True):
     async def new_session(body:SessionCreate):
         if body.code_project_id:worker.coding.project(body.code_project_id)
         ident,now=new_id(),time.time()
-        store.execute("INSERT INTO sessions(id,title,created_at,updated_at,code_project_id) VALUES(?,?,?,?,?)",(ident,body.title,now,now,body.code_project_id))
+        store.execute("INSERT INTO sessions(id,title,created_at,updated_at,code_project_id,model,incognito) VALUES(?,?,?,?,?,?,?)",
+                      (ident,body.title,now,now,body.code_project_id,check_model(body.model),int(body.incognito)))
         return store.one("SELECT * FROM sessions WHERE id=?",(ident,))
 
     @app.get("/api/sessions/{ident}/messages")
@@ -89,7 +99,13 @@ def create_app(settings=None, *, run_worker=True):
 
     @app.patch("/api/sessions/{ident}")
     async def update_session(ident:str,body:SessionUpdate):
-        if not store.execute("UPDATE sessions SET allow_commands=? WHERE id=?",(int(body.allow_commands),ident)):raise HTTPException(404,"对话不存在")
+        if not store.one("SELECT id FROM sessions WHERE id=?",(ident,)):raise HTTPException(404,"对话不存在")
+        changes={}
+        if body.allow_commands is not None:changes["allow_commands"]=int(body.allow_commands)
+        if body.incognito is not None:changes["incognito"]=int(body.incognito)
+        if body.title is not None:changes["title"]=body.title
+        if body.model is not None:changes["model"]=check_model(body.model)
+        if changes:store.execute("UPDATE sessions SET "+",".join(f"{k}=?" for k in changes)+" WHERE id=?",(*changes.values(),ident))
         store.event("sessions",ident)
         return store.one("SELECT * FROM sessions WHERE id=?",(ident,))
 
@@ -254,35 +270,176 @@ def create_app(settings=None, *, run_worker=True):
 
     @app.post("/api/files")
     async def import_file(file:UploadFile=File(...)):
-        content=await file.read(100001)
-        if len(content)>100000:raise HTTPException(413,"文本文件不能超过100KB")
+        content=await file.read(400001)
+        if len(content)>400000:raise HTTPException(413,"文本文件不能超过400KB")
         try:text=content.decode("utf-8")
         except UnicodeDecodeError:raise HTTPException(400,"目前支持UTF-8文本文件：TXT、Markdown、CSV、JSON等")
-        return worker.tools.execute("save_file",{"name":Path(file.filename or "document.txt").name,"content":text})
+        return worker.tools.save_file(Path(file.filename or "document.txt").name,text,replace=False)
 
     @app.get("/api/files/{name}")
     async def read_file(name:str):return worker.tools.execute("read_file",{"name":name})
 
     @app.post("/api/memories")
     async def memory(body:MemoryCreate):
-        result=worker.tools.execute("remember",body.model_dump())
+        result=worker.memory.save(body.title,body.content,importance=body.importance,durable=body.durable,tags=body.tags)
         if not body.enabled:store.execute("UPDATE memories SET enabled=0 WHERE id=?",(result["saved"],))
-        return store.one("SELECT * FROM memories WHERE id=?",(result["saved"],))
+        await worker.memory.index([result["saved"]])
+        return store.one(MEMORY_COLUMNS+" WHERE id=?",(result["saved"],))
 
     @app.put("/api/memories/{ident}")
     async def update_memory(ident:str,body:MemoryCreate):
-        store.execute("UPDATE memories SET title=?,content=?,enabled=?,updated_at=? WHERE id=?",(body.title,body.content,int(body.enabled),time.time(),ident))
+        store.execute("UPDATE memories SET title=?,content=?,enabled=?,importance=?,durable=?,tags=?,updated_at=?,embedding=NULL,embed_model=NULL WHERE id=?",
+                      (body.title,body.content,int(body.enabled),body.importance,int(body.durable),dumps(body.tags),time.time(),ident))
+        await worker.memory.index([ident])
+        store.event("memories",ident)
         return {"ok":True}
+
+    @app.delete("/api/memories")
+    async def clear_memories():
+        store.execute("DELETE FROM memories");store.event("memories","all");return {"ok":True}
+
+    @app.get("/api/memories/search")
+    async def search_memories(q:str=""):
+        return {"memories":await worker.memory.retrieve(q,limit=20) if q.strip() else []}
+
+    @app.post("/api/memories/reindex")
+    async def reindex_memories():
+        store.execute("UPDATE memories SET embedding=NULL,embed_model=NULL")
+        return {"indexed":await worker.memory.index(),"embed_model":worker.prefs.get()["embed_model"]}
 
     @app.delete("/api/memories/{ident}")
     async def delete_memory(ident:str):
         store.execute("DELETE FROM memories WHERE id=?",(ident,));return {"ok":True}
+
+    # ---- models and settings ----
+    def check_model(model):
+        if not model or model==LOCAL:return None if not model else LOCAL
+        provider,slug=split(model)
+        if not provider or not slug or provider not in worker.prefs.providers():raise ValueError("模型需写成 local 或 服务名:模型名，且服务已添加")
+        return model
+
+    def settings_view():
+        return {"settings":worker.prefs.get(),"providers":worker.prefs.public_providers(),
+                "local":{"id":LOCAL,"title":settings.llm_title,"installed":settings.llm_model.is_dir()}}
+
+    @app.get("/api/settings")
+    async def get_settings():return settings_view()
+
+    @app.patch("/api/settings")
+    async def update_settings(body:SettingsUpdate):
+        changes=body.model_dump(exclude_none=True)
+        for key in ("chat_model","tool_model","embed_model"):
+            if changes.get(key):check_model(changes[key])
+        if changes.get("embed_model")==LOCAL:raise ValueError("本机模型不提供向量；留空则使用内置的关键词匹配")
+        worker.prefs.update(changes)
+        store.event("settings","settings")
+        return settings_view()
+
+    @app.put("/api/providers/{name}")
+    async def save_provider(name:str,body:ProviderUpdate):
+        worker.prefs.set_provider(name,**body.model_dump())
+        store.event("settings","providers")
+        return settings_view()
+
+    @app.delete("/api/providers/{name}")
+    async def delete_provider(name:str):
+        worker.prefs.remove_provider(name)
+        current=worker.prefs.get()
+        reset={k:(LOCAL if k=="chat_model" else "") for k in ("chat_model","tool_model","embed_model") if split(current[k])[0]==name and name not in worker.prefs.providers()}
+        if reset:worker.prefs.update(reset)
+        return settings_view()
+
+    @app.get("/api/providers/{name}/models")
+    async def provider_models(name:str):return {"models":await worker.llm.list_models(name)}
+
+    # ---- skills ----
+    @app.get("/api/skills")
+    async def skills():return {"skills":worker.skills.list(),"folder":str(worker.skills.folder)}
+
+    @app.get("/api/skills/{name}")
+    async def skill(name:str):
+        try:return {"name":name,"content":worker.skills.find(name)[1].read_text()}
+        except ValueError:return {"name":name,"content":""}
+
+    @app.put("/api/skills/{name}")
+    async def save_skill(name:str,body:SkillSave):return worker.skills.save(name,body.content)
+
+    @app.post("/api/skills/{name}/enabled")
+    async def switch_skill(name:str,body:dict):
+        try:return worker.skills.switch(name,bool(body.get("enabled")))
+        except ValueError as exc:raise HTTPException(400,str(exc))
+
+    @app.delete("/api/skills/{name}")
+    async def delete_skill(name:str):
+        worker.skills.delete(name);return {"ok":True}
+
+    # ---- MCP servers ----
+    @app.get("/api/mcp")
+    async def mcp_servers():return {"servers":worker.mcp.status()}
+
+    @app.put("/api/mcp/{name}")
+    async def save_mcp(name:str,body:McpServerSave,request:Request):
+        if body.command:local_only(request)  # a command runs on the Mac, so only the Mac may add one
+        worker.mcp.save(name,{k:v for k,v in body.model_dump().items() if v not in (None,[],{})} | {"enabled":body.enabled,"trusted":body.trusted})
+        await worker.mcp.connect()
+        return {"servers":worker.mcp.status()}
+
+    @app.delete("/api/mcp/{name}")
+    async def delete_mcp(name:str):
+        worker.mcp.remove(name);await worker.mcp.connect()
+        return {"servers":worker.mcp.status()}
+
+    @app.post("/api/mcp/reconnect")
+    async def reconnect_mcp():
+        await worker.mcp.connect();return {"servers":worker.mcp.status()}
+
+    # ---- smart home ----
+    @app.get("/api/home")
+    async def home():return {"catalog":worker.home.catalog(),"connectors":worker.home.public()}
+
+    @app.put("/api/home/connectors/{ident}")
+    async def save_connector(ident:str,body:ConnectorSave):
+        worker.home.save(ident,body.kind,body.settings,body.title,body.enabled)
+        devices=await worker.home.devices(refresh=True)
+        return {"connectors":worker.home.public(),"devices":len(devices)}
+
+    @app.delete("/api/home/connectors/{ident}")
+    async def delete_connector(ident:str):
+        worker.home.remove(ident);await worker.home.devices(refresh=True)
+        return {"connectors":worker.home.public()}
+
+    @app.get("/api/home/devices")
+    async def home_devices(refresh:bool=False):
+        return {"devices":await worker.home.devices(refresh),"errors":worker.home.errors}
+
+    @app.post("/api/home/devices/control")
+    async def home_control(body:HomeControl):
+        # The user pressed the control themself, so there is nothing further to confirm.
+        return await worker.home.control(body.device_id,body.action,body.value)
+
+    # ---- change feed ----
+    @app.get("/api/events")
+    async def events(request:Request,after:int=0):
+        """Server-sent events: one line per change (entity, id), so clients need not poll."""
+        async def feed():
+            last,idle=after,0
+            yield "retry: 2000\n\n"
+            while not await request.is_disconnected():
+                rows=store.all("SELECT id,entity,entity_id FROM events WHERE id>? ORDER BY id LIMIT 200",(last,))
+                for row in rows:
+                    last=row["id"]
+                    yield f"id: {row['id']}\ndata: {dumps({'entity':row['entity'],'id':row['entity_id']})}\n\n"
+                idle=0 if rows else idle+1
+                if idle%50==49:yield ": keep-alive\n\n"
+                await asyncio.sleep(.1 if rows else .3)
+        return StreamingResponse(feed(),media_type="text/event-stream",headers={"X-Accel-Buffering":"no"})
 
     @app.get("/api/models")
     async def models():
         result=[]
         for ident,title,relative,kind in [("qwen","Qwen 3.8 · 27B","qwen/aeon-mxfp4-mtplx","chat"),("image","Qwen Image 2.1","qwen-image/qwen-image-2.1-UC-Q4_K_M.gguf","image"),("video","MiniMax H3","minimax-h3/MiniMax-H3-FL2VA-Pruned-Q5_K_M.gguf","video")]:
             path=settings.root/"models"/relative
+            if ident=="qwen":title,path=settings.llm_title.removesuffix("（本机）"),settings.llm_model
             verified=store.one("SELECT id FROM jobs WHERE kind=? AND status='succeeded' LIMIT 1",(kind,)) is not None
             result.append({"id":ident,"title":title,"installed":path.exists(),"verified":verified,"active":runtime.active==("llm" if ident=="qwen" else "comfy"),"kind":kind})
         return {"models":result,"media_runtime_installed":(settings.comfy/"venv/bin/python").exists(),"addresses":lan_addresses()}
@@ -342,9 +499,14 @@ def create_app(settings=None, *, run_worker=True):
     @app.post("/api/pairing")
     async def invitation(request:Request):
         local_only(request)
-        addresses=lan_addresses()
-        if not addresses:raise HTTPException(409,"未找到局域网地址，请连接Wi-Fi或以太网")
-        return security.pairing(addresses[0])
+        addresses=reach_addresses()
+        if not addresses:raise HTTPException(409,"未找到可用的网络地址，请连接 Wi-Fi、以太网或 Tailscale")
+        return security.pairing(addresses[0],addresses[1:])
+
+    @app.get("/api/reach")
+    async def reach():
+        # Paired devices ask for this so they learn a new address (Tailscale switched on later) without pairing again.
+        return {"urls":[f"https://{address}:{settings.port}" for address in reach_addresses()]}
 
     @app.get("/api/devices")
     async def devices():return store.all("SELECT id,name,created_at,last_seen,revoked FROM devices ORDER BY created_at DESC")
@@ -354,4 +516,12 @@ def create_app(settings=None, *, run_worker=True):
         local_only(request)
         store.execute("UPDATE devices SET revoked=1 WHERE id=?",(ident,));return {"ok":True}
 
+    web=settings.root/"web"
+    class Fresh(StaticFiles):
+        """The web client's files: always revalidated, so a browser never runs a stale script against a new page."""
+        async def get_response(self,path,scope):
+            response=await super().get_response(path,scope)
+            response.headers["Cache-Control"]="no-cache"
+            return response
+    if web.is_dir():app.mount("/app",Fresh(directory=web,html=True),name="app")
     return app

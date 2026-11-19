@@ -4,6 +4,8 @@ struct Connection: Codable {
     var url: String
     var token: String
     var fingerprint: String
+    /// Further addresses of the same Mac, such as its Tailscale address, tried when `url` does not answer.
+    var others: [String]? = nil
 }
 
 enum JSONValue: Codable, Hashable {
@@ -60,6 +62,17 @@ struct Message: Codable, Identifiable, Equatable {
         return (try? JSONDecoder().decode([TraceStep].self, from: data)) ?? []
     }
 }
+/// One line of a goal's plan, as the engine keeps it in the message metadata.
+struct PlanStep: Hashable { var step: String; var done: Bool }
+extension Message {
+    var plan: [PlanStep] {
+        metadata["plan"].array.compactMap { item in
+            item["step"].string.isEmpty ? nil : PlanStep(step: item["step"].string, done: item["status"].string == "done")
+        }
+    }
+    /// A tool call that is waiting for the user's yes or no.
+    var awaitingCall: ToolCall? { isLive ? steps.flatMap(\.calls).first(where: \.awaiting) : nil }
+}
 struct TraceStep: Codable, Hashable {
     var text: String
     var calls: [ToolCall]
@@ -78,13 +91,17 @@ struct Job: Codable, Identifiable, Equatable {
     var id: String; var kind: String; var status: String; var phase: String; var progress: Double
     var payload: JSONValue; var result: JSONValue; var error: String?; var created_at: Double; var updated_at: Double
     var isActive: Bool { ["queued", "running"].contains(status) }
-    var title: String { ["chat":"对话", "image":"生成图片", "video":"生成视频", "rewrite":"提示词编排", "plan":"短剧分镜", "export":"成片导出", "frames":"提取首尾帧", "install":"安装创作扩展", "code":"代码建议", "code_test":"构建与测试"][kind] ?? kind }
+    var title: String { ["chat":"对话", "image":"生成图片", "video":"生成视频", "rewrite":"提示词编排", "plan":"短剧分镜", "export":"成片导出", "frames":"提取首尾帧", "install":"安装创作扩展", "code":"代码建议", "code_test":"构建与测试", "memory":"整理记忆"][kind] ?? kind }
     var statusLabel: String { ["queued":"排队中", "running":"进行中", "succeeded":"已完成", "failed":"未完成", "cancelled":"已取消", "interrupted":"已中断"][status] ?? status }
 }
 struct Asset: Codable, Identifiable, Hashable {
     var id: String; var name: String; var path: String; var mime: String; var kind: String; var size: Int
     var created_at: Double; var job_id: String?; var metadata: JSONValue
     var isVideo: Bool { mime.hasPrefix("video/") }
+}
+struct MediaViewing: Equatable {
+    var assets: [Asset]; var index: Int
+    var current: Asset { assets[index] }
 }
 struct Character: Codable, Identifiable, Hashable {
     var id: String; var name: String; var description: String; var appearance: String?; var image_prompt: String
@@ -132,24 +149,66 @@ struct MediaComponent: Codable, Identifiable {
     var bytes: Int; var sha256: String; var source: String; var installed: Bool
 }
 struct Device: Codable, Identifiable { var id: String; var name: String; var created_at: Double; var last_seen: Double; var revoked: Int }
-struct Invitation: Codable { var link: String; var url: String; var code: String; var fingerprint: String; var expires_at: Double }
+struct Invitation: Codable { var link: String; var url: String; var urls: [String]? = nil; var code: String; var fingerprint: String; var expires_at: Double }
+struct Reach: Codable { var urls: [String] }
 struct PairResult: Codable { var token: String; var device_id: String; var fingerprint: String }
 struct FileList: Codable { var files: [WorkspaceFile] }
 struct WorkspaceFile: Codable, Identifiable { var name: String; var bytes: Int; var id: String { name } }
 struct WorkspaceContent: Codable, Identifiable { var name: String; var content: String; var id: String { name } }
 
 enum Section: String, CaseIterable, Identifiable {
-    case assistant = "对话", drama = "短剧", library = "素材", tasks = "任务", memory = "记忆", files = "文件", settings = "设置"
+    case assistant = "对话", drama = "短剧", library = "素材", tasks = "任务", home = "家居", memory = "记忆", files = "文件", settings = "设置"
+    var id: String { rawValue }
+    /// The name shown in navigation. Conversations are "任务" there, so the job queue is "后台任务".
+    var title: String {
+        switch self {
+        case .assistant: return "新任务"
+        case .tasks: return "后台任务"
+        default: return rawValue
+        }
+    }
+    var icon: String {
+        switch self {
+        case .assistant: return "square.and.pencil"
+        case .drama: return "film.stack"
+        case .library: return "photo.on.rectangle"
+        case .tasks: return "list.bullet.rectangle"
+        case .home: return "house"
+        case .memory: return "brain"
+        case .files: return "doc.text"
+        case .settings: return "gearshape"
+        }
+    }
+    /// The four places of the app; the other sections are tabs inside two of them.
+    var hub: Hub {
+        switch self {
+        case .assistant: return .tasks
+        case .library, .drama, .files: return .library
+        case .home: return .home
+        case .settings, .memory, .tasks: return .settings
+        }
+    }
+}
+
+enum Hub: String, CaseIterable, Identifiable {
+    case tasks = "任务", library = "作品库", home = "家居", settings = "设置"
     var id: String { rawValue }
     var icon: String {
         switch self {
-        case .assistant: return "sparkle"
-        case .drama: return "film.stack"
-        case .library: return "square.grid.2x2"
         case .tasks: return "checklist"
-        case .memory: return "brain"
-        case .files: return "folder"
-        case .settings: return "slider.horizontal.3"
+        case .library: return "square.grid.2x2"
+        case .home: return "house"
+        case .settings: return "gearshape"
+        }
+    }
+    /// The section a hub opens on.
+    var first: Section { sections[0] }
+    var sections: [Section] {
+        switch self {
+        case .tasks: return [.assistant]
+        case .library: return [.library, .drama, .files]
+        case .home: return [.home]
+        case .settings: return [.settings, .memory, .tasks]
         }
     }
 }

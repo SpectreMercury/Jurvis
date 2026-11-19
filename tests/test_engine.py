@@ -113,14 +113,22 @@ def test_upload_rejects_non_images_and_sanitizes_metadata(client):
     with Image.open(io.BytesIO(out.content)) as image:assert image.size==(80,60)
 
 
-def test_workspace_is_scoped_and_never_overwrites(app):
+def test_workspace_is_scoped_and_keeps_replaced_versions(app):
     tools=app.state.worker.tools
     for bad in ('../secret','/etc/passwd','.env','nested/file'):
         with pytest.raises(ValueError):tools.execute('read_file',{'name':bad})
     one=tools.execute('save_file',{'name':'note.md','content':'first'})
     two=tools.execute('save_file',{'name':'note.md','content':'second'})
-    assert one['saved']!=two['saved']
-    assert tools.execute('read_file',{'name':one['saved']})['content']=='first'
+    assert one['saved']==two['saved']=='note.md' and two['replaced']
+    assert tools.execute('read_file',{'name':'note.md'})['content']=='second'
+    history=list((app.state.worker.settings.data/'workspace/.history').iterdir())
+    assert [p.read_text() for p in history]==['first']
+    assert tools.save_file('note.md','imported',replace=False)['saved']!='note.md'  # an upload never replaces a document
+    assert [f['name'] for f in tools.execute('list_files',{})['files'] if f['name'].startswith('.')]==[]
+    tools.execute('append_file',{'name':'note.md','content':'third'})
+    edited=tools.execute('edit_file',{'name':'note.md','old_text':'second','new_text':'2nd'})
+    assert edited['replacements']==1 and tools.execute('read_file',{'name':'note.md'})['content']=='2nd\n\nthird'
+    with pytest.raises(ValueError):tools.execute('edit_file',{'name':'note.md','old_text':'missing','new_text':'x'})
     outside=app.state.worker.settings.data.parent/'outside.txt';outside.write_text('private')
     (app.state.worker.settings.data/'workspace/link.txt').symlink_to(outside)
     with pytest.raises(ValueError):tools.execute('read_file',{'name':'link.txt'})
@@ -227,3 +235,24 @@ async def test_new_character_sheet_invalidates_frames_and_takes(client,app):
     assert [p['shot_id'] for _,p in calls]==['s1']
     doc=app.state.store.one('SELECT document FROM projects WHERE id=?',(project['id'],))['document']
     assert doc['shots'][0]['video_asset'] is None and doc['shots'][0]['versions'] and doc['shots'][1]['video_asset']
+
+
+def test_pairing_invitation_carries_the_tailscale_address(client,app,monkeypatch):
+    from urllib.parse import urlparse,parse_qs
+    import engine.app,engine.security
+    assert engine.security.ipaddress.ip_address('100.101.102.103') in engine.security.TAILNET
+    assert engine.security.ipaddress.ip_address('100.63.0.1') not in engine.security.TAILNET
+    monkeypatch.setattr(engine.app,'reach_addresses',lambda:['192.168.1.20','100.101.102.103'])
+    invite=client.post('/api/pairing').json()
+    port=app.state.security.settings.port
+    assert invite['url']==f'https://192.168.1.20:{port}'
+    assert invite['urls']==[f'https://192.168.1.20:{port}',f'https://100.101.102.103:{port}']
+    query=parse_qs(urlparse(invite['link']).query)
+    assert query['url']==[invite['url']] and query['alt']==[invite['urls'][1]]
+    # a paired device can ask again later, and an unpaired one cannot
+    assert client.get('/api/reach').json()=={'urls':invite['urls']}
+    with TestClient(app) as stranger:
+        assert stranger.get('/api/reach').status_code==401
+    # with only Tailscale up there is still an invitation
+    monkeypatch.setattr(engine.app,'reach_addresses',lambda:['100.101.102.103'])
+    assert client.post('/api/pairing').json()['urls']==[f'https://100.101.102.103:{port}']

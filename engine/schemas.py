@@ -5,13 +5,15 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 class SessionCreate(BaseModel):
     title: str = Field(default="新对话", min_length=1, max_length=100)
     code_project_id: str | None = Field(default=None, max_length=64)
+    model: str | None = Field(default=None, max_length=200, description='"local", "<provider>:<model>", or empty for the default')
+    incognito: bool = False
 
 
 class ChatCreate(BaseModel):
     content: str = Field(min_length=1, max_length=16000)
     asset_ids: list[str] = Field(default_factory=list, max_length=4)
     request_id: str = Field(min_length=8, max_length=80)
-    mode: Literal["image", "video", "drama", "goal"] | None = None
+    mode: Literal["image", "video", "drama", "goal", "plan"] | None = None
 
     @field_validator("content")
     @classmethod
@@ -127,6 +129,9 @@ class MemoryCreate(BaseModel):
     title: str = Field(min_length=1, max_length=100)
     content: str = Field(min_length=1, max_length=4000)
     enabled: bool = True
+    importance: float = Field(default=0.7, ge=0, le=1)
+    durable: bool = True
+    tags: list[str] = Field(default_factory=list, max_length=8)
 
 
 class PairRequest(BaseModel):
@@ -139,4 +144,50 @@ class CommandDecision(BaseModel):
 
 
 class SessionUpdate(BaseModel):
-    allow_commands: bool
+    allow_commands: bool | None = None
+    model: str | None = Field(default=None, max_length=200, description='"" resets to the default model')
+    incognito: bool | None = None
+    title: str | None = Field(default=None, min_length=1, max_length=100)
+
+
+class SettingsUpdate(BaseModel):
+    chat_model: str | None = Field(default=None, max_length=200)
+    tool_model: str | None = Field(default=None, max_length=200)
+    embed_model: str | None = Field(default=None, max_length=200)
+    web_search: bool | None = None
+    memory: dict | None = None
+    home: dict | None = None
+
+
+class ProviderUpdate(BaseModel):
+    base_url: str | None = Field(default=None, max_length=500)
+    api_key: str | None = Field(default=None, max_length=500)
+    title: str | None = Field(default=None, max_length=60)
+    web_search: bool | None = None
+
+
+class SkillSave(BaseModel):
+    content: str = Field(min_length=1, max_length=200000)
+
+
+class McpServerSave(BaseModel):
+    command: str | None = Field(default=None, max_length=500)
+    args: list[str] = Field(default_factory=list, max_length=40)
+    env: dict[str, str] = Field(default_factory=dict)
+    url: str | None = Field(default=None, max_length=1000)
+    headers: dict[str, str] = Field(default_factory=dict)
+    enabled: bool = True
+    trusted: bool = False
+
+
+class ConnectorSave(BaseModel):
+    kind: str = Field(max_length=40)
+    title: str | None = Field(default=None, max_length=60)
+    enabled: bool = True
+    settings: dict[str, str] = Field(default_factory=dict)
+
+
+class HomeControl(BaseModel):
+    device_id: str = Field(max_length=300)
+    action: str = Field(max_length=40)
+    value: str | float | None = None

@@ -286,11 +286,11 @@ def _(c):
     assert "牛奶" in ok(api.get(f"/api/files/{v2}"))["content"], "v2 lacks 牛奶"
     assert ok(api.get(f"/api/files/{saved}"))["content"] == content, "original was modified"
     step("list", lambda: c.send("工作区现在有哪些文件？").uses("list_files").says("shopping"))
-    t = step("no overwrite", lambda: c.send("把 shopping.md 的内容改成只有一行“鸡蛋”"))
-    assert ok(api.get(f"/api/files/{saved}"))["content"] == content, "existing document was overwritten"
-    if "save_file" in t.names:  # a copy was made: the reply must name it, not claim shopping.md changed
-        copy = json.loads(t.call("save_file")["output"])["saved"]
-        step("no overwrite", lambda: t.says(copy))
+    step("edit in place", lambda: c.send("把 shopping.md 里再加一行“鸡蛋”，直接改这个文件").avoids("create_image").all_ok())
+    changed = ok(api.get(f"/api/files/{saved}"))["content"]
+    assert "鸡蛋" in changed and changed != content, "shopping.md was not updated"
+    names = [f["name"] for f in ok(api.get("/api/files"))["files"]]
+    assert sorted(n for n in names if n.startswith("shopping")) == sorted({saved, v2}), f"an update made a stray copy: {names}"
 
 
 @scenario("instructions inside documents are ignored")
@@ -487,6 +487,68 @@ def _(c):
     assert goal.get("status") in ("blocked", "incomplete"), goal
     assert not any(cmd for cmd, d in t.approvals if d == "run")
     step("vague goal", lambda: t.says(("?", "？", "哪个", "哪一个")))
+
+
+# ---- files, plan mode, browser, background commands, pages ----
+
+@scenario("search across workspace files")
+def _(c):
+    for name, text in (("店庆方案.md", "# 三周年店庆\n\n预算：两万元，其中场地布置八千。\n"), ("采购清单.txt", "气球 200 个\n彩带 30 卷\n"), ("会议纪要.md", "周三讨论了预算超支的风险。\n")):
+        ok(api.post("/api/files", files={"file": (name, text.encode(), "text/plain")}))
+    t = step("search", lambda: c.send("工作区里哪些文件提到了“预算”？分别是怎么说的？").uses("search_files").all_ok().says("店庆方案", "会议纪要"))
+    step("no stray match", lambda: t.never_says("采购清单.txt 提到"))
+
+
+@scenario("plan mode proposes and changes nothing")
+def _(c):
+    ok(api.post("/api/files", files={"file": ("周计划.md", "周一 写方案\n周二 开会\n周三 采购\n".encode(), "text/plain")}))
+    before = ok(api.get("/api/files/周计划.md"))["content"]
+    t = step("plan", lambda: c.send("把周计划.md 改成按上午、下午分开的版本，再另外生成一份给同事看的简版", mode="plan")
+             .uses("update_plan"))
+    changed = [call["name"] for call in t.calls if call["status"] == "ok" and call["name"] in ("save_file", "edit_file", "append_file", "write_document", "run_command")]
+    assert not changed, f"plan mode let these run: {changed}"
+    assert ok(api.get("/api/files/周计划.md"))["content"] == before, "plan mode changed the file"
+    plan = t.message["metadata"].get("plan", [])
+    assert len(plan) >= 2 and all(item["status"] == "pending" for item in plan), f"a proposed plan has nothing done in it: {plan}"
+    step("plan", lambda: t.chinese())
+
+
+@scenario("browser opens a page and reads it")
+def _(c):
+    step("open", lambda: c.send("用浏览器打开 https://example.com ，告诉我页面的标题，以及页面上那个链接指向哪里").uses("browser_open").all_ok()
+         .says("Example Domain").says(("iana", "IANA")))
+
+
+@scenario("browser click asks first")
+def _(c):
+    t = step("click", lambda: c.send("用浏览器打开 https://example.com ，点一下页面上的那个链接，然后告诉我跳到了哪个网站", approve="run")
+             .uses("browser_open", "browser_click").says(("iana", "IANA")))
+    assert any("点击" in cmd for cmd, d in t.approvals), f"the click was not put to the user: {t.approvals}"
+    t = step("declined", lambda: c.send("再打开 https://example.com 点一次那个链接", approve="deny"))
+    assert all(call["status"] != "ok" for call in t.calls if call["name"] == "browser_click"), "a declined click still ran"
+
+
+@scenario("background command is started, checked and stopped")
+def _(c):
+    t = step("start", lambda: c.send("在后台启动这个命令：python3 -m http.server 18999 --bind 127.0.0.1 。启动后告诉我它是不是在运行。", approve="run").uses("run_command"))
+    started = t.call("run_command")
+    assert started["arguments"].get("background") is True, f"not started in the background: {started['arguments']}"
+    assert httpx.get("http://127.0.0.1:18999", timeout=5).status_code == 200, "the server is not answering"
+    step("stop", lambda: c.send("把刚才那个后台命令停掉", approve="run").uses("stop_command").all_ok())
+    try:
+        httpx.get("http://127.0.0.1:18999", timeout=3)
+        raise AssertionError("the server still answers after stop_command")
+    except httpx.HTTPError:
+        pass
+
+
+@scenario("a small web page is written as a file")
+def _(c):
+    t = step("page", lambda: c.send("做一个网页：一个按钮，每点一次数字加一。保存成 counter.html").uses("save_file").all_ok())
+    saved = json.loads(t.call("save_file")["output"])["saved"]
+    page = ok(api.get(f"/api/files/{saved}"))["content"]
+    assert saved.endswith(".html") and "<script" in page.lower() and "<button" in page.lower(), f"{saved}: {page[:200]!r}"
+    assert "http://" not in page and "https://" not in page.replace("https://www.w3.org", ""), "the page loads something from the network, which the preview blocks"
 
 
 # ---- report ----
