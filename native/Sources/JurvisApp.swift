@@ -34,9 +34,7 @@ struct JurvisApp: App {
 
 struct RootView: View {
     @EnvironmentObject var store: AppStore
-    @AppStorage("workspaceOpen") private var workspaceOpen = true
     @AppStorage("sidebarOpen") private var sidebarOpen = true
-    @State private var width: CGFloat = 1180
 
     var body: some View {
         Group {
@@ -55,11 +53,9 @@ struct RootView: View {
     }
 
     #if os(macOS)
-    /// Three panes on a grey ground: navigation, the task, and Jurvis's workspace.
+    /// Two panes on a grey ground: navigation and the task.
     var desktop: some View {
         let section = store.section ?? .assistant
-        let running = section == .assistant && (store.selectedSession != nil || !store.visibleMessages.isEmpty)
-        let showWorkspace = running && workspaceOpen && width >= 1040
         return HStack(spacing: 8) {
             if sidebarOpen { Sidebar().frame(width: 244).padding(.trailing, -8) }
             NavigationStack {
@@ -79,14 +75,9 @@ struct RootView: View {
                 .toolbarBackgroundVisibility(.visible, for: .windowToolbar)
             }
             .panel()
-            if showWorkspace {
-                WorkspacePanel().frame(width: min(440, max(340, width * 0.3))).panel()
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
-            }
         }
         .padding(.leading, sidebarOpen ? 0 : 8).padding(.trailing, 8).padding(.bottom, 8)
         .background(Color.chrome)
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
     }
 
     var navigationTitle: String {
@@ -373,7 +364,7 @@ struct ConnectionIndicator: View {
 #endif
 
 #if os(iOS)
-/// iPhone and iPad: four places behind a tab bar; a task opens over the list, with its workspace arranged by the room there is.
+/// iPhone and iPad: four places behind a tab bar; a task opens over the list.
 struct PhoneRoot: View {
     @EnvironmentObject var store: AppStore
     @State private var path: [String] = []
@@ -413,7 +404,7 @@ struct PhoneRoot: View {
                     PhoneTasksView(open: { path = ["run"] })
                         .safeAreaInset(edge: .bottom, spacing: 0) { if !rail { TabBar() } }
                         .navigationDestination(for: String.self) { _ in
-                            TaskRunView().toolbar { ToolbarItem(placement: .topBarTrailing) { runMenu } }
+                            ChatView().toolbar { ToolbarItem(placement: .topBarTrailing) { runMenu } }
                         }
                 }
             default:
@@ -427,13 +418,13 @@ struct PhoneRoot: View {
         }
     }
 
-    /// For UI checks in the simulator, where nothing can tap: `SIMCTL_CHILD_JURVIS_UI_START=task|workspace|new|<section>`
+    /// For UI checks in the simulator, where nothing can tap: `SIMCTL_CHILD_JURVIS_UI_START=task|new|<section>`
     /// opens that screen at launch. Unset in normal use.
     func openForUICheck() async {
         guard let start = AppStore.checkStart else { return }
         for _ in 0..<40 where store.snapshot == nil { try? await Task.sleep(for: .milliseconds(250)) }
         if let section = Section.allCases.first(where: { $0.rawValue == start }), section != .assistant { store.section = section; return }
-        guard ["new", "task", "workspace"].contains(start) else { return }
+        guard ["new", "task"].contains(start) else { return }
         if start == "new" { await store.newChat() }
         else if let session = store.snapshot?.sessions.first { await store.selectSession(session.id) }
         path = ["run"]

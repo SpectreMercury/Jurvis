@@ -19,8 +19,6 @@ enum ComposerMode: String, CaseIterable, Identifiable {
 /// A task: an empty one is a headline and a composer; a running one is the conversation with its steps.
 struct ChatView: View {
     @EnvironmentObject var store: AppStore
-    /// On a narrow phone the workspace opens from a bar above the composer.
-    var onWorkspace: (() -> Void)? = nil
     @State private var input = ""
     @State private var sending = false
     @State private var importing = false
@@ -35,7 +33,6 @@ struct ChatView: View {
     @State private var talking = false
     @ObservedObject private var voice = Voice.shared
     @FocusState private var focused: Bool
-    @AppStorage("workspaceOpen") private var workspaceOpen = true
     #if os(macOS)
     @State private var pasteMonitor: Any?
     #endif
@@ -237,17 +234,14 @@ struct ChatView: View {
                 }
                 .font(.jSmall).foregroundStyle(Color.inkSoft).padding(.top, 6)
             }
-            VStack(spacing: 8) {
-                if let onWorkspace { WorkspaceBar(action: onWorkspace) }
-                composer
-            }
-            .frame(maxWidth: Metrics.readable)
+            composer
+                .frame(maxWidth: Metrics.readable)
             .padding(.horizontal, narrow ? 12 : 24).padding(.bottom, narrow ? 8 : 18).padding(.top, 8)
         }
     }
 
     #if os(macOS)
-    /// The task's name and where it stands, with the switch for the workspace.
+    /// The task's name and where it stands.
     var header: some View {
         HStack(spacing: 10) {
             Text(store.currentSession?.title ?? "新任务").font(.jSection).lineLimit(1).truncationMode(.tail)
@@ -257,9 +251,6 @@ struct ChatView: View {
                 Button { Task { await store.cancel(job) } } label: { Image(systemName: "stop.circle") }
                     .buttonStyle(.jurvisIcon(.ghost, .regular)).help("停止").accessibilityLabel("停止任务")
             }
-            Button { withAnimation(.easeOut(duration: 0.18)) { workspaceOpen.toggle() } } label: { Image(systemName: "sidebar.right") }
-                .buttonStyle(.jurvisIcon(.ghost, .regular))
-                .help(workspaceOpen ? "收起工作台" : "打开工作台").accessibilityLabel(workspaceOpen ? "收起工作台" : "打开工作台")
         }
         .padding(.leading, 24).padding(.trailing, 12).frame(height: 52)
     }

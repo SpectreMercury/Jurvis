@@ -6,7 +6,6 @@ import {
 } from './core.js';
 import { renderMarkdown } from './md.js';
 import { icon, toolIcon } from './icons.js';
-import * as workspace from './workspace.js';
 import { disclosure, ask } from './ui.js';
 import * as voice from './voice.js';
 
@@ -19,7 +18,6 @@ const MODES = [
 ];
 const MODE_NAMES = Object.fromEntries(MODES.map(([id, label]) => [id, label]));
 const MODE_HINTS = Object.fromEntries(MODES.map(([id, , , hint]) => [id, hint]));
-const wide = window.matchMedia ? window.matchMedia('(min-width: 700px) and (max-width: 859px), (min-width: 1160px), (vertical-viewport-segments: 2)') : { matches: false };
 const MAX_IMAGES = 4;
 const coarse = window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
 
@@ -38,9 +36,6 @@ const nodes = new Map();     // message id -> {el, sig, parts}
 const extraJobs = new Map(); // jobs older than the 200 in /api/state, fetched once
 const els = {};
 let open = false;        // phone: the conversation is on screen (otherwise the task list)
-let workOpen = null;     // null = automatic: open beside the conversation when there is room and something to show
-let workView = workspace.derive([], false, '');
-let workTimer = null;
 let waitingId = null;
 
 // ---------------------------------------------------------------- mount
@@ -52,7 +47,6 @@ export function mount(root) {
   els.state = h('div', { class: 'conv-state' });
   els.modelBtn = h('button', { class: 'chip', type: 'button', onclick: chooseModel, title: '这个任务使用的模型' });
   els.incognito = action(icon('eyeoff', 18), toggleIncognito, { class: 'icon-btn', 'aria-pressed': 'false', 'aria-label': '无痕', title: '无痕：这个任务不读取也不写入记忆' });
-  els.workBtn = h('button', { class: 'icon-btn', type: 'button', 'aria-pressed': 'false', 'aria-label': '工作台', title: '工作台：文档、文件和来源', onclick: () => toggleWork() }, icon('panel', 18));
   els.msgs = h('div', { class: 'msgs' });
   els.empty = h('div', { class: 'empty' }, h('p', { class: 'empty-title' }, '今天交给 Jurvis 什么？'),
     h('p', { class: 'muted' }, '说清楚想要的结果，它会自己列计划、分步做完，需要你时再来找你。'));
@@ -86,7 +80,6 @@ export function mount(root) {
   els.mic = h('button', { class: 'round-btn mic', type: 'button', hidden: true, 'aria-pressed': 'false', 'aria-label': '语音输入', title: '语音输入：说完自动转成文字', onclick: dictate }, icon('mic', 16));
   els.talk = h('button', { class: 'round-btn talk', type: 'button', hidden: true, 'aria-label': '语音对话', title: '语音对话：你说，Jurvis 读出回答', onclick: talk }, icon('voice', 16));
   els.send = h('button', { class: 'round-btn solid send', type: 'button', 'aria-label': '发送', onclick: primary }, icon('send', 16, 1.6));
-  els.workBar = h('button', { class: 'work-bar', type: 'button', hidden: true, onclick: () => toggleWork(true) });
   els.spacer = h('span', { class: 'spacer' });
   els.toolRow = h('div', { class: 'composer-row' }, els.attach, els.file, els.modelBtn, els.modes, els.spacer, els.mic, els.talk, els.send);
   els.modeRow = h('div', { class: 'mode-row' });
@@ -101,13 +94,12 @@ export function mount(root) {
     h('header', { class: 'conv-head' },
       h('button', { class: 'icon-btn back', type: 'button', 'aria-label': '任务列表', onclick: showList }, icon('left', 20, 1.6)),
       h('div', { class: 'conv-heading' }, els.title, els.state),
-      h('div', { class: 'conv-actions' }, els.incognito, els.workBtn)),
+      h('div', { class: 'conv-actions' }, els.incognito)),
     els.scroller,
-    h('div', { class: 'composer-wrap' }, els.workBar, els.composer, els.modeRow, els.modeHint));
+    h('div', { class: 'composer-wrap' }, els.composer, els.modeRow, els.modeHint));
 
-  els.screen = h('div', { class: 'chat-screen' }, els.conv, workspace.mount(() => toggleWork(false)));
+  els.screen = h('div', { class: 'chat-screen' }, els.conv);
   root.append(els.screen);
-  if (wide.addEventListener) wide.addEventListener('change', syncWork);
   renderHeader();
   updateSend();
   voice.onSpeaking(() => renderMessages());
@@ -197,30 +189,6 @@ export function where() { return { open, blank: !store.sessionId }; }
 export function showList() { open = false; emit('conv'); }
 function showConversation() { open = true; emit('conv'); }
 
-// ---- workspace
-function toggleWork(force) {
-  const shown = els.screen.classList.contains('work-open');
-  workOpen = typeof force === 'boolean' ? force : !shown;
-  syncWork();
-}
-
-function syncWork() {
-  const has = workspace.hasContent(workView);
-  const shown = workOpen === null ? wide.matches && has : workOpen;
-  els.screen.classList.toggle('work-open', shown);
-  els.workBtn.setAttribute('aria-pressed', String(shown));
-  els.workBar.hidden = !has;
-  if (has) {
-    const line = workspace.summary(workView);
-    fill(els.workBar, h('span', { class: 'tile' }, icon(line.glyph)),
-      h('span', { class: 'work-bar-text' }, h('span', null, line.title), h('span', null, line.sub)), icon('right', 16));
-    els.workBar.setAttribute('aria-label', '打开工作台：' + line.title);
-  }
-  if (shown) workspace.update(workView);
-  clearInterval(workTimer);
-  workTimer = shown && workView.live ? setInterval(() => workspace.update(workView, true), 4000) : null;
-}
-
 /** Called when signing out or pairing again. */
 export function reset() {
   store.sessionId = null;
@@ -228,8 +196,6 @@ export function reset() {
   draft.model = '';
   draft.incognito = false;
   mode = null;
-  workOpen = null;
-  workspace.reset();
   clearAttachments();
   if (els.input) { els.input.value = ''; autogrow(); }
   listSig = '';
@@ -308,8 +274,6 @@ function clearMessages() {
   for (const node of nodes.values()) node.el.remove();
   nodes.clear();
   stick = true;
-  workOpen = null;
-  workspace.reset();
 }
 
 export function newConversation(focus) {
@@ -603,9 +567,6 @@ function renderMessages() {
   releaseAssets(used);
   if (stick) scrollBottom();
   updateSend();
-  const live = liveJob();
-  workView = workspace.derive(list, !!live, live ? live.phase : '');
-  syncWork();
 }
 
 function media(id) {
@@ -685,7 +646,7 @@ function renderAssistant(node, m, last) {
   }
   const plan = Array.isArray(meta.plan) ? meta.plan : [];
   parts.plan.hidden = !plan.length;
-  if (plan.length) fill(parts.plan, workspace.planRows(plan, live));
+  if (plan.length) fill(parts.plan, planRows(plan, live));
 
   // steps, in place
   const steps = stepsOf(m);
@@ -847,4 +808,16 @@ function updateCall(cn, call, m, job) {
     cn.mediaEl.hidden = !ids.length;
     fill(cn.mediaEl, ...ids.map(media));
   }
+}
+
+/** The plan as rows with status marks. */
+function planRows(plan, live) {
+  const next = plan.findIndex((item) => item.status !== 'done');
+  return h('div', { class: 'plan' }, plan.map((item, index) => {
+    const done = item.status === 'done';
+    const now = !done && index === next && live;
+    return h('div', { class: 'plan-row' + (done ? '' : now ? ' now' : ' pending') },
+      h('span', { class: 'mark' + (done ? ' ok' : now ? ' running' : ''), role: 'img', 'aria-label': done ? '完成' : now ? '进行中' : '未开始' }, done ? icon('check', 11, 1.8) : null),
+      h('span', null, String(item.step || '')));
+  }));
 }
