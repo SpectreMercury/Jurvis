@@ -43,7 +43,7 @@ struct GoalsView: View {
         Page(title: "目标", subtitle: "告诉 Jurvis 你想长期跟踪的事，或者让它按周、按月帮你做一件事，它们会出现在这里。", width: 860) { EmptyView() } content: {
             if let agenda {
                 Eyebrow(text: "长期目标")
-                if agenda.goals.isEmpty { EmptyState(icon: "scope", title: "还没有长期目标", detail: "比如「我想长期跟踪 L2 的进展」。") }
+                if agenda.goals.isEmpty { EmptyState(icon: "scope", title: "还没有长期目标", detail: "比如「我想坚持每周跑步三次」。") }
                 ForEach(agenda.goals) { goal in
                     Card {
                         Label(goal.title, systemImage: "scope").font(.jHeading).lineLimit(2)
