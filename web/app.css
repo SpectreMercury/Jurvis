@@ -440,15 +440,6 @@ input[type="search"]::-webkit-search-decoration, input[type="search"]::-webkit-s
 /* composer: one card (Geist material, radius 12), text on top, tools underneath */
 .composer-wrap { padding: 8px 12px calc(12px + env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 8px; flex: none; }
 .composer-wrap > * { max-width: 768px; width: 100%; margin: 0 auto; }
-.work-bar {
-  display: flex; align-items: center; gap: 12px; height: 48px; padding: 0 12px 0 8px; border: 1px solid var(--line); border-radius: var(--r);
-  background: var(--bg); text-align: left; white-space: normal;
-}
-.work-bar .tile { background: var(--surface); border: 1px solid var(--line); }
-.work-bar-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.work-bar-text span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.work-bar-text span:first-child { font-size: 14px; line-height: 20px; }
-.work-bar-text span:last-child { font-size: 12px; line-height: 16px; color: var(--ink-faint); }
 .composer { border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 12px; display: flex; flex-direction: column; gap: 12px; box-shadow: var(--shadow); }
 .composer:hover { border-color: var(--line-strong); }
 .composer:focus-within { border-color: var(--ring); }
@@ -487,24 +478,9 @@ input[type="search"]::-webkit-search-decoration, input[type="search"]::-webkit-s
 .thumb-note { position: absolute; left: 0; right: 0; bottom: 2px; text-align: center; font-size: 12px; line-height: 16px; }
 .thumb-remove { position: absolute; top: 2px; right: 2px; width: 20px; height: 20px; border-radius: 50%; border: 0; background: rgba(0, 0, 0, .6); color: #fff; font-size: 14px; line-height: 1; padding: 0; }
 
-/* ---- workspace: what Jurvis is producing. A full-screen sheet on a phone, a right pane when there is room ---- */
-.workspace { display: none; flex-direction: column; min-width: 0; min-height: 0; background: var(--surface); font-size: 14px; line-height: 20px; }
-.chat-screen.work-open .workspace { display: flex; position: fixed; inset: 0; z-index: 15; padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
-.work-head { display: flex; align-items: center; gap: 8px; height: 56px; padding: 0 8px; flex: none; }
-.work-heading { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.work-heading > span:first-child { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.work-sub { font-size: 12px; line-height: 16px; color: var(--ink-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.work-tabs { padding: 0 16px 12px; display: flex; }
-.work-tabs .seg { flex: 1; }
-.work-tabs .seg button { flex: 1; justify-content: center; }
-.work-body { flex: 1; min-height: 0; margin: 0 16px; border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; display: flex; flex-direction: column; }
-.work-file { display: flex; align-items: center; gap: 8px; height: 40px; flex: none; padding: 0 16px; background: var(--bg); border-bottom: 1px solid var(--line); color: var(--ink-soft); }
-.work-file .file-name { flex: 1; color: var(--ink); }
-.work-file .small { font-size: 12px; line-height: 16px; color: var(--ink-faint); white-space: nowrap; }
-.work-scroll { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 16px 20px; }
-.work-scroll .md, .doc-view .md { font-size: 14px; line-height: 24px; }
-.work-scroll .md > * + *, .doc-view .md > * + * { margin-top: 12px; }
-.work-scroll pre.plain, .doc-view pre.plain { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/20px var(--mono); }
+.doc-view .md { font-size: 14px; line-height: 24px; }
+.doc-view .md > * + * { margin-top: 12px; }
+.doc-view pre.plain { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/20px var(--mono); }
 /* ---- preview of an HTML page or SVG image Jurvis wrote (preview.js) ---- */
 .pv { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
 .pv-bar { display: flex; align-items: center; gap: 4px; padding: 8px 12px; flex: none; }
@@ -518,19 +494,6 @@ input[type="search"]::-webkit-search-decoration, input[type="search"]::-webkit-s
 .pv-note { margin: auto; padding: 24px; text-align: center; max-width: 320px; }
 .sheet.pv-sheet { max-width: 1120px; height: 88vh; height: 88dvh; }
 .sheet.pv-sheet .sheet-body { flex: 1; min-height: 0; padding: 4px 4px 4px; overflow: hidden; display: flex; flex-direction: column; }
-.work-empty { margin: auto; padding: 24px; text-align: center; color: var(--ink-soft); font-size: 14px; line-height: 20px; display: flex; flex-direction: column; align-items: center; gap: 12px; max-width: 300px; }
-.work-list { display: flex; flex-direction: column; }
-.work-item { display: flex; align-items: center; gap: 12px; height: 40px; padding: 0 8px; border: 0; border-radius: var(--r-small); background: none; text-align: left; width: 100%; color: var(--ink); text-decoration: none; }
-.work-item:hover { color: var(--ink); background: var(--fill); }
-.work-item .icon { color: var(--ink-soft); }
-.work-item .file-name, .work-item .work-item-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.work-item .small { color: var(--ink-faint); font-size: 12px; line-height: 16px; white-space: nowrap; }
-.work-scroll .group-title { padding: 8px 8px 8px; }
-.work-plan { margin: 12px 16px 16px; border: 1px solid var(--line); border-radius: var(--r); background: var(--bg); flex: none; }
-.work-plan > .disc-head { display: flex; align-items: center; gap: 12px; height: 48px; width: 100%; padding: 0 12px 0 16px; }
-.work-plan[open] > .disc-head .icon:last-child { transform: rotate(180deg); }
-.work-plan > .disc-head .icon { color: var(--ink-soft); }
-.work-plan .plan { padding: 0 16px 12px; max-height: 220px; overflow-y: auto; }
 
 /* ---- pages (作品库 / 家居 / 记忆 / 设置) ---- */
 .page {
@@ -733,20 +696,6 @@ input[type="search"]::-webkit-search-decoration, input[type="search"]::-webkit-s
   .overlay { align-items: center; padding: 24px; }
   .sheet { border-radius: var(--r); }
   .page { padding: 32px 32px 48px; gap: 32px; }
-}
-/* two panes: conversation beside the workspace. Wide desktops, and an unfolded phone or small tablet (no sidebar there) */
-@media (min-width: 700px) and (max-width: 859px), (min-width: 1160px) {
-  .chat-screen.work-open .workspace { position: static; z-index: auto; flex: 0 0 46%; max-width: 560px; min-width: 320px; border-left: 1px solid var(--line); padding: 0; }
-  .work-head { padding: 0 8px 0 16px; }
-  .work-tabs { padding-top: 4px; }
-  .work-head .work-close-phone { display: none; }
-  .work-bar { display: none; }
-}
-/* a foldable held half open: the document on the top half, steps and the composer on the bottom half */
-@media (vertical-viewport-segments: 2) {
-  .chat-screen.work-open { flex-direction: column-reverse; }
-  .chat-screen.work-open .workspace { position: static; z-index: auto; flex: 0 0 env(viewport-segment-height 0 0, 50%); max-width: none; min-width: 0; border-left: 0; border-bottom: 1px solid var(--line); padding: 0; }
-  .work-bar { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; }

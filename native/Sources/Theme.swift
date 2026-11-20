@@ -99,7 +99,6 @@ enum Metrics {
     static let wide: CGFloat = 1080
     /// Widths that pick the layout. Size decides, never the device.
     static let phoneWidth: CGFloat = 500
-    static let twoPaneWidth: CGFloat = 700
 }
 
 // MARK: - Layout
