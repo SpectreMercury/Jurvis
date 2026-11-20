@@ -40,6 +40,8 @@
 	</dict>
 	<key>NSCameraUsageDescription</key>
 	<string>扫描 Mac 上的配对二维码。</string>
+	<key>NSHealthShareUsageDescription</key>
+	<string>读取睡眠、运动、心率和经期记录，只发送到你自己的 Mac，用来回答你的健康问题。</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>

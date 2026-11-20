@@ -229,6 +229,8 @@ struct SettingsView: View {
                 connection
                 AssistantModelSettings()
                 VoiceSettings()
+                MailSettings()
+                CareSettings()
                 models
                 extensions
                 devices

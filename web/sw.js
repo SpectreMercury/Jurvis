@@ -1,6 +1,6 @@
 // Jurvis service worker: caches the app shell only, network-first so updates arrive; the cache is the offline fallback.
 // API calls (/api/, /pair, …) are never handled here.
-const CACHE = 'jurvis-shell-v11';
+const CACHE = 'jurvis-shell-v12';
 const SHELL = [
   './',
   './index.html',
@@ -20,6 +20,7 @@ const SHELL = [
   './memory.js',
   './goals.js',
   './ledger.js',
+  './health.js',
   './settings.js',
   './manifest.webmanifest',
   './icon.svg',

@@ -19,7 +19,8 @@ from pydantic import ValidationError
 from .agenda import make_rule
 from .runtime import strip_markup
 from .shell import excerpt
-from .store import dumps
+from .store import dumps, new_id
+from .llm import LOCAL
 from .tools import Outcome
 
 MAX_STEPS = 24
@@ -179,6 +180,25 @@ LEDGER = """- The user's spending ledger (bookkeeping, not investing): when they
 """
 LEDGER_CLOUD = "- Single payments and payee names stay on the user's Mac and are not available to you: for which payments make up a figure, tell the user to open 账本.\n"
 PRIVATE = "[Kept on the user's Mac: this result held single payments and was not sent to you.]"
+HEALTH = """- The user's health data (sleep, activity and workouts, heart rate, HRV, recovery, an estimated body-stress signal, mood) comes from Apple Health, WHOOP and Google Health. For questions about how they slept, moved, recovered or are holding up, call health_summary; quote its figures exactly and never estimate. One call is enough: the result already compares with the period before. Reply in two to four plain sentences without headings or bold: what stands out (a short night, a lower HRV than usual, a good training week) and, when it helps, one concrete suggestion; the card already shows the figures. The stress signal is an estimate from their own baseline, not a measurement: say so if you mention it. You are not a doctor: for symptoms that worry them, suggest seeing one.
+- Their menstrual cycle: when they tell you their period started, ended or how it is going, record it with log_period or end_period without asking for confirmation; for when it is due or where they are in the cycle, call cycle_status. Predictions are estimates from their own records and never a method of contraception.
+"""
+COMPANION = (Path(__file__).parent / "prompts" / "companion.md").read_text()
+HEALTH_CLOUD = "- The menstrual cycle record stays on the user's Mac and is not available to you: for when the next period is due, tell the user to open 健康. You can still record what they tell you with log_period.\n"
+PRIVATE_CYCLE = "[Kept on the user's Mac: this result held the user's cycle record and was not sent to you.]"
+COMPANION_OPEN = """- When the user starts sharing something that is weighing on them (stress, low mood, anxiety, grief, a relationship or family conflict, loneliness, burnout, self-doubt, feeling lost) and wants to talk about it, call open_session right away, without asking, with a gentle title, a brief of what they shared and an opening message that picks it up. The app moves them to that conversation. Then reply here in one short sentence that you opened a quiet conversation for this and will continue there; say nothing else here.
+- A passing word inside a practical request ("好累，帮我查下明天天气") is not that: do what they asked and, if it fits, ask gently whether they want to talk about it.
+- If they say anything about wanting to die or hurting themselves or someone else, do not open a new conversation: respond here and now, warmly, ask whether they are safe right now, and give a crisis line (mainland China: 12356 or 希望24热线 400-161-9995; in immediate danger 120 / 110; elsewhere the local emergency number).
+"""
+MAIL = "- You can read the user's recent email (mail_recent, then mail_read for one message). Read-only: you cannot send, move or mark anything. Quote senders and subjects as they are; never invent a message.\n"
+CHECKIN = """
+Reaching out: the user did not write to you. You are checking in on your own, because their body data shows a change: {signals}.
+Before you write, look quietly: call health_summary for the last few days, mail_recent for the last three days, and recent_conversations for what they told you lately. See whether something there plausibly explains it (a deadline, a hard email, a conflict, travel, a worry they mentioned).
+Then write one short, warm message, like a friend texting, in the language they use with you:
+- If you found a plausible link, mention it gently and as a guess ("这几天好像一直在为那个方案收尾？"), never as a conclusion and never by listing their emails or data.
+- If nothing explains it, simply care: say you noticed they seem to have had a tiring few days, and that you are here.
+- Mention at most one figure, only if it helps. No advice list, no diagnosis, no headings. End with a low-pressure invitation they can ignore.
+"""
 AGENDA = """- When the user tells you about something they want to follow or keep doing over time, call agenda to see what is already tracked, then track_goal if it is new, and tell them it is saved under Goals.
 - Work that should happen by itself later or regularly (a weekly brief, a monthly review, a reminder) is set up with schedule_task. How often is the user's decision: if they have not said, ask first (offer a few cadences) and schedule only after they answer. After scheduling, tell them when the first run is, exactly as the result gives it.
 """
@@ -305,6 +325,8 @@ class Agent:
         self.tokens = CLOUD_TOKENS if self.cloud else LOCAL_TOKENS
         self.part = self.tokens // 3  # characters of written content that safely fit one tool call (CJK text, JSON escaping)
         self.incognito = bool(session.get("incognito"))
+        self.persona = session.get("persona")
+        self.checkin = p.get("checkin")
         latest = self.store.one("SELECT content,metadata FROM messages WHERE session_id=? AND role='user' ORDER BY created_at DESC LIMIT 1", (p["session_id"],))
         self.request = latest["content"] if latest else ""
         self.mode = latest and latest["metadata"].get("mode")
@@ -313,6 +335,10 @@ class Agent:
         if self.task:
             # A background task is a goal whose request is its brief; the conversation so far is its background.
             self.request, self.mode, self.spoken = f"{self.task['title']}\n\n{self.task['brief']}", "goal", False
+        if self.checkin:
+            # Reaching out on its own reads the user's email, health and other conversations: that stays with the local model.
+            self.model = LOCAL if self.llm else None
+            self.request, self.mode, self.spoken = "[Jurvis: check in on the user now.]", None, False
         self.chinese = bool(CJK.search(self.request))
         kept = self.window(p, session, scale)
         # Messages that no longer fit are folded into the conversation summary before answering, so nothing silently drops out.
@@ -353,7 +379,7 @@ class Agent:
         if excerpts:
             note += NOTE_EXCERPTS.format(excerpts="\n---\n".join(f"User: {e['user']}\nAssistant: {e['assistant']}" for e in excerpts))
         note += "</jurvis_context>"
-        if self.task or not messages or messages[-1]["role"] != "user":
+        if self.task or self.checkin or not messages or messages[-1]["role"] != "user":
             messages.append({"role": "user", "content": self.request})
         last = messages[-1]
         if isinstance(last["content"], str):
@@ -395,6 +421,16 @@ class Agent:
             system += LEDGER + ("" if "ledger_transactions" in names else LEDGER_CLOUD)
         if "schedule_task" in names:
             system += AGENDA
+        if "health_summary" in names:
+            system += HEALTH + ("" if "cycle_status" in names else HEALTH_CLOUD)
+        if "open_session" in names:
+            system += COMPANION_OPEN
+        if "mail_recent" in names:
+            system += MAIL
+        if self.persona == "companion":
+            system += "\n" + COMPANION.format(brief=(session.get("brief") or "(nothing before this conversation)").strip()) + "\n"
+        if self.checkin:
+            system += CHECKIN.format(signals="; ".join(self.checkin.get("signals") or ["a tiring stretch"]))
         if self.mode == "goal":
             system += GOAL + (GOAL_PLAN if "update_plan" in self.tool_names(p["session_id"], goal=True) else "") + (SCHEDULED.format(title=self.task["title"], when=self.task["scheduled"]) if self.task and self.task.get("scheduled") else TASK if self.task else "")
         elif self.mode == "plan":
@@ -444,6 +480,7 @@ class Agent:
             names = self.tools.default_names(self.model)
         if self.cloud:
             names.discard("ledger_transactions")  # single payments are for the local model only (engine/ledger.py)
+            names.discard("cycle_status")  # so is the menstrual cycle (engine/health.py)
         if getattr(self, "incognito", False):
             names -= {"remember", "track_goal", "schedule_task"}  # nothing from a private conversation is kept
         if plan:
@@ -458,6 +495,17 @@ class Agent:
             names.add("ask_user")  # a goal asks through finish_goal; a spoken reply has no buttons
         if not goal and not coding and self.llm:
             names.add("start_task")  # a goal is already the long work, and a code project has its own loop
+        if not goal and not coding and not getattr(self, "persona", None):
+            names.add("open_session")  # a conversation of its own for what the user is going through; a companion conversation is already that
+        if getattr(self, "persona", None) == "companion":
+            names -= {"ask_user", "start_task", "update_plan"}  # a companion talks; it does not hand out option buttons or start projects
+            if not self.cloud:
+                names.add("recent_conversations")
+        if not self.tools.mail.accounts(self.cloud):
+            names -= {"mail_recent", "mail_read"}  # no mailbox this model may read
+        if getattr(self, "checkin", None):
+            names &= {"health_summary", "cycle_status", "mail_recent", "mail_read", "recent_conversations"}
+            names.add("recent_conversations")
         return names
 
     def replay(self, row):
@@ -487,7 +535,7 @@ class Agent:
             out.append({"role": "assistant", "content": step.get("text", ""), "tool_calls": [
                 {"id": c["id"], "type": "function", "function": {"name": c["name"], "arguments": dumps(shorten_arguments(c.get("arguments", {})))}} for c in calls]})
             # What the local model read of the ledger earlier is not replayed to a cloud model the conversation was switched to.
-            out.extend({"role": "tool", "tool_call_id": c["id"], "content": PRIVATE if self.cloud and c["name"] == "ledger_transactions"
+            out.extend({"role": "tool", "tool_call_id": c["id"], "content": PRIVATE if self.cloud and c["name"] == "ledger_transactions" else PRIVATE_CYCLE if self.cloud and c["name"] == "cycle_status"
                         else clip(c.get("output", ""), HISTORY_RESULT_CHARS)} for c in calls)
         return out
 
@@ -726,8 +774,14 @@ class Agent:
                         outcome = self.update_plan(arguments, meta, proposing=plan)
                     elif call["name"] == "finish_goal":
                         outcome, ended = await self.finish_goal(arguments, goal, steps, meta)
+                    elif call["name"] == "cycle_status" and call["name"] not in allowed:
+                        outcome = Outcome(False, {"error": "The cycle record stays on my Mac and is not available to you. Tell me to open 健康 to see it."}, "经期记录只在本机")
                     elif call["name"] == "start_task":
                         outcome = self.start_task(p, arguments)
+                    elif call["name"] == "open_session":
+                        outcome = self.open_session(p, arguments, meta)
+                    elif tool and tool.effect == "mail":
+                        outcome = await self.mail_call(tool, arguments, call["name"] in allowed)
                     elif tool and tool.effect == "agenda":
                         outcome = self.agenda_call(p, tool, arguments)
                     elif call["name"] == "ask_user":
@@ -814,6 +868,45 @@ class Agent:
         job = self.store.create_job("chat", {"session_id": p["session_id"], "message_id": mid, "task": task, "background": True})
         return Outcome(True, {"job_id": job["id"], "started": True, "note": "Running in the background; the result will be posted in this conversation. "
                               "Do not do this work yourself and do not check on it. Tell me briefly that it is under way and what you are assuming."}, f"已开始 · {task['title']}"[:60])
+
+    async def mail_call(self, tool, arguments, allowed):
+        """Email is read for the model that may see it: cloud models only get the accounts the user opened to them."""
+        if not allowed:
+            return Outcome(False, {"error": "No mailbox is open to you. The user connects one, or allows cloud models for it, under 设置 → 邮件."}, "邮箱未开放")
+        try:
+            args = tool.args.model_validate(arguments if isinstance(arguments, dict) else {})
+            if tool.name == "mail_read":
+                result = await asyncio.to_thread(self.tools.mail.read, args.id, self.cloud)
+            else:
+                result = await asyncio.to_thread(self.tools.mail.recent, args.days, args.query, args.unread, 30, self.cloud)
+        except ValidationError as exc:
+            return Outcome(False, {"error": str(exc)[:500]}, "参数无效")
+        except ValueError as exc:
+            return Outcome(False, {"error": str(exc)}, str(exc)[:60])
+        return Outcome(True, result, tool.summary(result) if tool.summary else "")
+
+    def open_session(self, p, arguments, meta):
+        """A conversation of its own for what the user is going through: it opens with the assistant's first message, and the app moves them there."""
+        if self.persona or self.task or self.mode == "goal":
+            return Outcome(False, {"error": "This is already that conversation: keep talking with me here."}, "已在这里")
+        if meta.get("switch_session"):
+            return Outcome(False, {"error": "You already opened a conversation for this in this reply."}, "已开过")
+        try:
+            args = self.tools.tools["open_session"].args.model_validate(arguments if isinstance(arguments, dict) else {})
+        except ValidationError as exc:
+            return Outcome(False, {"error": str(exc)[:500]}, "参数无效")
+        parent = self.store.one("SELECT model,incognito FROM sessions WHERE id=?", (p["session_id"],)) or {}
+        ident, now = new_id(), time.time()
+        self.store.execute("INSERT INTO sessions(id,title,created_at,updated_at,model,incognito,persona,brief,parent_id) VALUES(?,?,?,?,?,?,?,?,?)",
+                           (ident, args.title.strip(), now, now, parent.get("model"), int(parent.get("incognito") or 0), args.kind, args.brief.strip(), p["session_id"]))
+        self.store.add_message(ident, "assistant", args.opening.strip(), "complete", {"opened_from": p["session_id"]})
+        self.store.event("sessions", ident)
+        meta["switch_session"] = ident
+        card = {"kind": "session", "title": args.title.strip(), "subtitle": "新对话 · 陪你聊聊", "session_id": ident, "icon": "leaf",
+                "note": args.opening.strip()[:120]}
+        return Outcome(True, {"session_id": ident, "opened": True, "card": card,
+                              "note": "Opened, and the app is moving me there now; your opening message is waiting for me. Reply here with one short sentence "
+                                      "that you opened a quiet conversation for this and we will continue there. Nothing else."}, f"已开新对话 · {args.title.strip()}"[:60])
 
     @staticmethod
     def made(name, arguments, outcome):

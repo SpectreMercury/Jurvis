@@ -9,6 +9,7 @@ import ImageIO
     @Published var messages: [Message] = []
     @Published var section: Section? = .assistant
     @Published var selectedSession: String?
+    private var followed = Set<String>()  // replies whose opened conversation the user was already taken to
     @Published var selectedProject: String?
     /// Code project the next new conversation is bound to (picked in the composer).
     @Published var codeProjectID: String?
@@ -146,6 +147,11 @@ import ImageIO
         guard let api, let id = selectedSession else { return }
         if let list: [Message] = try? await api.request("/api/sessions/\(id)/messages"), selectedSession == id {
             if list != messages { messages = list }
+            // A reply that opened a conversation of its own (a quiet one for what the user is going through) takes the user there, once, as it happens.
+            if let opened = list.last(where: { !$0.metadata["switch_session"].string.isEmpty && $0.status == "complete" }), !followed.contains(opened.id) {
+                followed.insert(opened.id)
+                if Date().timeIntervalSince1970 - opened.created_at < 300 { await refresh(); await selectSession(opened.metadata["switch_session"].string); return }
+            }
             // Pick up job/state changes (new images, finished jobs) when the reply completes.
             if !list.contains(where: \.isLive) && chatStreaming { if let state: Snapshot = try? await api.request("/api/state"), state != snapshot { snapshot = state } }
         }

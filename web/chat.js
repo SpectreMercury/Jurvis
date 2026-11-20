@@ -497,6 +497,21 @@ async function loadMessages(loud) {
   if (sid !== store.sessionId || seq !== loadSeq) return;
   store.messages = rows;
   renderMessages();
+  followSwitch(rows);
+}
+
+// A reply that opened a conversation of its own (a quiet one for what the user is going through) takes the user there, once, as it happens.
+const switched = new Set();
+function followSwitch(rows) {
+  for (const m of rows) {
+    const to = m.metadata && m.metadata.switch_session;
+    if (!to || switched.has(m.id)) continue;
+    switched.add(m.id);
+    if (m.status === 'complete' && Date.now() / 1000 - m.created_at < 300) {
+      Promise.resolve(refreshState()).finally(() => openSession(to));
+      return;
+    }
+  }
 }
 export const refreshMessages = throttle(() => loadMessages(false), 250);
 
@@ -811,15 +826,15 @@ function approval(call, m) {
 
 // Cards: what a tool call made or found, shown as the thing itself instead of as a tool call.
 // A made thing (goal, schedule, memory, document, task) is one row that opens where it lives; a lookup (weather, price…) shows its figures.
-const MADE = { goal: ['target', 'goals'], schedule: ['clock', 'goals'], memory: ['bookmark', 'memory'], file: ['doc', 'library'], task: ['tasks', null] };
-const GLYPH = { sun: '☀️', moon: '🌙', partly: '⛅', cloud: '☁️', fog: '🌫️', drizzle: '🌦️', rain: '🌧️', snow: '❄️', storm: '⛈️', coin: '🪙', exchange: '💱', calendar: '📅', wallet: '🧾' };
+const MADE = { goal: ['target', 'goals'], schedule: ['clock', 'goals'], memory: ['bookmark', 'memory'], file: ['doc', 'library'], task: ['tasks', null], session: ['leaf', null] };
+const GLYPH = { sun: '☀️', moon: '🌙', partly: '⛅', cloud: '☁️', fog: '🌫️', drizzle: '🌦️', rain: '🌧️', snow: '❄️', storm: '⛈️', coin: '🪙', exchange: '💱', calendar: '📅', wallet: '🧾', heart: '❤️', drop: '🌸' };
 
-function sparkline(series, trend) {
+function sparkline(series, trend, label) {
   const points = series.map(Number).filter(Number.isFinite);
   if (points.length < 3) return null;
   const low = Math.min(...points), span = Math.max(...points) - low || 1;
   const path = points.map((p, i) => `${(i / (points.length - 1) * 100).toFixed(2)},${(30 - (p - low) / span * 28 - 1).toFixed(2)}`).join(' ');
-  const box = h('div', { class: 'spark ' + (trend || 'flat'), role: 'img', 'aria-label': '近 7 天走势' });
+  const box = h('div', { class: 'spark ' + (trend || 'flat'), role: 'img', 'aria-label': label || '近 7 天走势' });
   box.innerHTML = `<svg viewBox="0 0 100 30" preserveAspectRatio="none"><polyline points="${path}" fill="none" stroke="currentColor" stroke-width="1.5" vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>`;
   return box;
 }
@@ -845,12 +860,18 @@ function cardView(card, job) {
       h('span', { class: 'made-text' }, h('strong', null, card.title), h('span', { class: 'muted small' }, card.subtitle || ''),
         card.note ? h('span', { class: 'made-note' }, card.note) : null),
       tab ? icon('right', 16) : null];
+    if (card.kind === 'session' && card.session_id) {
+      inner[2] = icon('right', 16);
+      return h('button', { class: 'made-card companion', type: 'button', onclick: () => { Promise.resolve(refreshState()).finally(() => openSession(card.session_id)); } }, inner);
+    }
     return tab ? h('button', { class: 'made-card', type: 'button', onclick: () => emit('goto', tab) }, inner) : h('div', { class: 'made-card still' }, inner);
   }
   const rows = Array.isArray(card.rows) ? card.rows : [];
   const days = Array.isArray(card.days) ? card.days : [];
   const money = card.kind === 'ledger' || card.kind === 'expense';
-  return h(money ? 'button' : 'div', { class: 'info-card ' + String(card.kind || ''), type: money ? 'button' : null, onclick: money ? () => emit('goto', 'ledger') : null },
+  const body = card.kind === 'health' || card.kind === 'cycle' || card.kind === 'mood';
+  const go = money ? 'ledger' : body ? 'health' : null;
+  return h(go ? 'button' : 'div', { class: 'info-card ' + String(card.kind || ''), type: go ? 'button' : null, onclick: go ? () => emit('goto', go) : null },
     h('div', { class: 'info-head' },
       h('div', { class: 'made-text' }, h('strong', null, card.title), card.subtitle ? h('span', { class: 'muted small' }, card.subtitle) : null),
       GLYPH[card.icon] ? h('span', { class: 'info-glyph', 'aria-hidden': 'true' }, GLYPH[card.icon]) : null),
@@ -862,7 +883,7 @@ function cardView(card, job) {
           h('div', { class: 'chips' }, card.outfit.wear.map((item) => h('span', { class: 'chip static' }, String(item)))),
           card.outfit.tip ? h('div', { class: 'small' }, card.outfit.tip) : null) : null),
       card.kind === 'weather' ? cardArt(card, job) : null),
-    Array.isArray(card.series) ? sparkline(card.series, card.trend) : null,
+    Array.isArray(card.series) ? sparkline(card.series, card.trend, card.series_label) : null,
     Array.isArray(card.bars) && card.bars.length ? bars(card.bars) : null,
     rows.length ? h('dl', { class: 'info-rows' }, rows.map((row) => h('div', { class: String(row.label || '').length + String(row.value).length > 13 ? 'wide' : null }, row.label ? h('dt', null, row.label) : null, h('dd', null, String(row.value))))) : null,
     days.length ? h('div', { class: 'info-days' }, days.map((day) => h('div', { class: 'info-day' },

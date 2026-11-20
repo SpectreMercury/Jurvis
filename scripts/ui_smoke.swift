@@ -119,6 +119,22 @@ extension AppStore {
             await capture("assistant-cards-\(index + 1)-dark", size: CGSize(width: 390, height: 900), dark: true, wait: 1.5, column)
         }
     } else { print("FAIL assistant sample did not decode") }
+    // Health, cycle and the quiet conversation the assistant opens for what the user is going through.
+    let health = #"""
+    {"id":"h1","session_id":"s","role":"assistant","content":"","status":"complete","created_at":0,"metadata":{"steps":[
+      {"text":"这周平均睡了 6 个多小时，最近三晚都偏短。","calls":[
+        {"id":"c1","name":"health_summary","label":"看健康数据","status":"ok","card":{"kind":"health","title":"最近 7 天 · 健康","subtitle":"11/14 – 11/20","value":"6 小时 55 分","icon":"heart",
+          "rows":[{"label":"平均睡眠","value":"6 小时 55 分"},{"label":"不足 6 小时","value":"3 晚"},{"label":"日均步数","value":"8,412"},{"label":"静息心率","value":"60 次/分"},{"label":"身体压力","value":"偏高"}],
+          "series":[7.5,7.8,7.1,7.6,5.8,5.6,5.9],"note":"估算：根据心率变异性、静息心率和睡眠与你自己 30 天的平均相比，不是医学测量"}},
+        {"id":"c2","name":"cycle_status","label":"看经期","status":"ok","card":{"kind":"cycle","title":"经期","subtitle":"周期第 13 天 · 卵泡期","value":"17 天后","icon":"drop",
+          "rows":[{"label":"下次预计","value":"12/07"},{"label":"平均周期","value":"29 天"},{"label":"上次经期","value":"11/08 · 5 天"}],"note":"根据你自己的记录估算，不能用于避孕"}},
+        {"id":"c3","name":"open_session","label":"开新对话","status":"ok","card":{"kind":"session","title":"最近的压力","subtitle":"新对话 · 陪你聊聊","session_id":"x","note":"连着一个月加班，回家还要吵架，这真的很耗人。想先从哪一件说起都可以。"}}]}]}}
+    """#
+    if let message = try? JSONDecoder().decode(Message.self, from: Data(health.utf8)) {
+        let column = ScrollView { AssistantMessage(message: message, open: { _ in }).padding(24).frame(maxWidth: .infinity, alignment: .leading) }.background(Color.canvas).environmentObject(store)
+        await capture("health-cards", size: CGSize(width: 640, height: 900), wait: 1.5, column)
+        await capture("health-cards-dark", size: CGSize(width: 390, height: 900), dark: true, wait: 1.5, column)
+    } else { print("FAIL health sample did not decode") }
     await store.loadCodeProjects()
     await store.newChat(project: store.codeProjects.first?.id)
     await capture("home-with-project", root)

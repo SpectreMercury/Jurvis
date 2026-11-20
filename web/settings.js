@@ -17,7 +17,7 @@ description: 一句话说明什么时候应该使用这个技能
 2. 第二步……
 `;
 
-const data = { skills: null, mcp: null, home: null, devices: null };
+const data = { skills: null, mcp: null, home: null, devices: null, mail: null, care: null };
 const fail = {};
 const els = {};
 let root = null;
@@ -29,13 +29,15 @@ function section(title, body, hint) {
 export function mount(container) {
   root = container;
   connect.onChange((next) => { if (next) { data.home = next; renderHome(); } });
-  for (const name of ['models', 'voice', 'memory', 'skills', 'mcp', 'home', 'devices']) els[name] = h('div', { class: 'stack' }, h('p', { class: 'muted' }, '正在读取…'));
+  for (const name of ['models', 'voice', 'memory', 'mail', 'care', 'skills', 'mcp', 'home', 'devices']) els[name] = h('div', { class: 'stack' }, h('p', { class: 'muted' }, '正在读取…'));
   els.about = h('p', { class: 'muted small' });
   container.append(h('div', { class: 'page' },
     h('header', { class: 'page-head' }, h('h1', null, '设置')),
     section('模型', els.models),
     section('语音', els.voice, '语音识别和朗读都在这台 Mac 上完成，录音不会发到别处。'),
     section('记忆', els.memory),
+    section('邮件', els.mail, '只读：Jurvis 只看、不发、不标已读。密码只存在这台 Mac 上。默认只有本机模型能读邮件。'),
+    section('主动关心', els.care, '睡眠、压力或恢复明显变差时，Jurvis 会用本机模型看看最近的邮件和对话，然后主动问候你一句。每天最多一次。'),
     section('技能', els.skills, '技能是一份写给 Jurvis 的做法说明（SKILL.md），它会在合适的时候照着做。'),
     section('MCP 服务', els.mcp, '通过 MCP 给 Jurvis 接入外部工具。'),
     section('智能家居', els.home),
@@ -60,6 +62,8 @@ export function activate() {
   loadSettings().then(() => { delete fail.settings; }).catch((err) => { if (!quiet(err)) fail.settings = err.message; }).then(() => { renderModels(); renderMemory(); renderHome(); });
   voiceKit.status(true).then((result) => { data.voice = result; renderVoice(); });
   loadPart('skills', '/api/skills', (r) => r, renderSkills);
+  loadPart('mail', '/api/mail', (r) => r, renderMail);
+  loadPart('care', '/api/checkin', (r) => r, renderCare);
   loadPart('mcp', '/api/mcp', (r) => r.servers || [], renderMcp);
   loadPart('home', '/api/home', (r) => r, renderHome);
   loadPart('devices', '/api/devices', (r) => r, renderDevices);
@@ -351,6 +355,64 @@ function editMcp(server, apply) {
     });
     if (ok) close();
   });
+}
+
+// ---------------------------------------------------------------- 邮件
+function renderMail() {
+  const el = els.mail;
+  if (failed(el, 'mail') || !data.mail) return;
+  const apply = (result) => { data.mail.accounts = result.accounts; renderMail(); };
+  fill(el,
+    ...data.mail.accounts.map((a) => h('article', { class: 'card' },
+      h('div', { class: 'device-head' }, h('strong', null, a.address), h('span', { class: 'badge ok' }, '已连接')),
+      h('div', { class: 'muted small break' }, `${a.host} · ${a.cloud ? '本机和云端模型都能读' : '只有本机模型能读'}`),
+      h('div', { class: 'row end' },
+        action(a.cloud ? '只给本机模型' : '也允许云端模型', async () => apply(await put('/api/mail/' + encodeURIComponent(a.id), { kind: a.kind, address: a.address, host: a.host, cloud: !a.cloud })), { class: 'btn small' }),
+        action('移除', async () => { if (!await ui.ask(`移除邮箱 ${a.address}？`)) return; apply(await del('/api/mail/' + encodeURIComponent(a.id))); }, { class: 'btn small' })))),
+    data.mail.accounts.length ? null : h('p', { class: 'muted' }, '还没有连接邮箱。'),
+    h('div', { class: 'row' }, h('button', { class: 'btn small', type: 'button', onclick: () => addMail(apply) }, '添加邮箱')));
+}
+
+function addMail(apply) {
+  const presets = data.mail.presets || [];
+  const kind = ui.select({ value: 'gmail', 'aria-label': '邮箱类型' }, presets.map((p) => ({ value: p.kind, label: { gmail: 'Gmail', icloud: 'iCloud', outlook: 'Outlook', qq: 'QQ 邮箱', 163: '163 邮箱', 126: '126 邮箱', imap: '其他（IMAP）' }[p.kind] || p.kind })));
+  const hint = h('p', { class: 'muted small' });
+  const address = h('input', { class: 'input', type: 'email', placeholder: 'you@example.com', autocomplete: 'off', autocapitalize: 'off' });
+  const password = h('input', { class: 'input', type: 'password', placeholder: '应用专用密码或授权码', autocomplete: 'off' });
+  const host = h('input', { class: 'input', placeholder: 'imap.example.com', autocapitalize: 'off', autocomplete: 'off' });
+  const hostRow = h('label', { class: 'field' }, h('span', null, 'IMAP 服务器'), host);
+  const sync = () => { const p = presets.find((x) => x.kind === kind.value) || {}; hint.textContent = p.hint || ''; hostRow.hidden = kind.value !== 'imap'; };
+  kind.addEventListener('change', sync);
+  sync();
+  const save = h('button', { class: 'btn primary', type: 'submit' }, '连接');
+  const form = h('form', { class: 'stack' }, h('label', { class: 'field' }, h('span', null, '邮箱'), kind), hint,
+    h('label', { class: 'field' }, h('span', null, '地址'), address), h('label', { class: 'field' }, h('span', null, '密码'), password), hostRow, h('div', { class: 'row end' }, save));
+  const close = sheet('添加邮箱', form);
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const id = (address.value.split('@')[0] || 'mail').toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 24) || 'mail';
+    const ok = await run(save, async () => apply(await put('/api/mail/' + encodeURIComponent(id), { kind: kind.value, address: address.value.trim(), password: password.value, host: host.value.trim() })));
+    if (ok) close();
+  });
+}
+
+// ---------------------------------------------------------------- 主动关心
+function renderCare() {
+  const el = els.care;
+  if (failed(el, 'care') || !data.care) return;
+  const c = data.care;
+  const time = (key) => {
+    const input = h('input', { class: 'input small-select', type: 'time', value: c[key] });
+    input.addEventListener('change', async () => { data.care = await put('/api/checkin', { [key]: input.value }); });
+    return input;
+  };
+  fill(el,
+    toggle('身体数据变差时主动问候我', c.enabled, async (want) => { data.care = await put('/api/checkin', { enabled: want }); }),
+    h('div', { class: 'control-row' }, h('span', { class: 'control-label grow' }, '安静时段（不打扰）'), time('quiet_start'), h('span', { class: 'muted' }, '到'), time('quiet_end')),
+    c.last_at ? h('p', { class: 'muted small' }, '上一次问候：' + new Date(c.last_at * 1000).toLocaleString('zh-CN')) : null,
+    h('div', { class: 'row' }, action('现在看看', async () => {
+      try { await post('/api/checkin/now'); notify('Jurvis 正在看看你最近怎么样，写好了会出现在对话里', 'info'); } catch (err) { notify(err.message, 'info'); }
+    }, { class: 'btn small' })));
 }
 
 // ---------------------------------------------------------------- 智能家居

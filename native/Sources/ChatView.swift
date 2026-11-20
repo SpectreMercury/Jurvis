@@ -775,12 +775,12 @@ struct ToolTrace: View {
 struct CardView: View {
     var card: JSONValue
     @EnvironmentObject var store: AppStore
-    static let made = ["goal": "scope", "schedule": "calendar.badge.clock", "memory": "bookmark", "file": "doc.text", "task": "checklist"]
+    static let made = ["goal": "scope", "schedule": "calendar.badge.clock", "memory": "bookmark", "file": "doc.text", "task": "checklist", "session": "leaf"]
     /// Where the thing a card stands for lives; a tap goes there.
-    static let places: [String: Section] = ["goal": .goals, "schedule": .goals, "memory": .memory, "file": .files, "ledger": .ledger, "expense": .ledger]
+    static let places: [String: Section] = ["goal": .goals, "schedule": .goals, "memory": .memory, "file": .files, "ledger": .ledger, "expense": .ledger, "health": .health, "cycle": .health, "mood": .health]
     static let glyphs = ["sun": "sun.max.fill", "moon": "moon.stars.fill", "partly": "cloud.sun.fill", "cloud": "cloud.fill", "fog": "cloud.fog.fill",
                          "drizzle": "cloud.drizzle.fill", "rain": "cloud.rain.fill", "snow": "snowflake", "storm": "cloud.bolt.rain.fill",
-                         "coin": "bitcoinsign.circle.fill", "exchange": "arrow.left.arrow.right.circle.fill", "calendar": "calendar", "wallet": "list.bullet.rectangle.portrait.fill"]
+                         "coin": "bitcoinsign.circle.fill", "exchange": "arrow.left.arrow.right.circle.fill", "calendar": "calendar", "wallet": "list.bullet.rectangle.portrait.fill", "heart": "heart.fill", "drop": "drop.fill"]
     var kind: String { card["kind"].string }
     var trendColor: Color { card["trend"].string == "up" ? .signal : card["trend"].string == "down" ? .danger : .inkFaint }
 
@@ -790,7 +790,10 @@ struct CardView: View {
         }
         .surface(radius: 16)
         .accessibilityElement(children: .combine)
-        if let place = Self.places[kind] {
+        if kind == "session", !card["session_id"].string.isEmpty {
+            // A conversation the assistant opened for what the user is going through: a tap goes there.
+            Button { Task { await store.selectSession(card["session_id"].string) } } label: { content.contentShape(Rectangle()) }.buttonStyle(.plain).accessibilityHint("打开这个对话")
+        } else if let place = Self.places[kind] {
             Button { store.section = place } label: { content.contentShape(Rectangle()) }.buttonStyle(.plain).accessibilityHint("打开" + place.rawValue)
         } else {
             content
@@ -808,7 +811,7 @@ struct CardView: View {
                 if !card["note"].string.isEmpty { Text(card["note"].string).font(.jCallout).foregroundStyle(Color.inkSoft).lineLimit(2).padding(.top, 2) }
             }
             Spacer(minLength: 0)
-            if Self.places[kind] != nil { Image(systemName: "chevron.right").font(.system(size: 11, weight: .medium)).foregroundStyle(Color.inkFaint).padding(.top, 10) }
+            if Self.places[kind] != nil || kind == "session" { Image(systemName: "chevron.right").font(.system(size: 11, weight: .medium)).foregroundStyle(Color.inkFaint).padding(.top, 10) }
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
         .frame(maxWidth: 360, alignment: .leading)
@@ -835,7 +838,7 @@ struct CardView: View {
               VStack(alignment: .leading, spacing: 10) {
             if !card["value"].string.isEmpty {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(card["value"].string).font(.system(size: ["price", "currency", "ledger", "expense"].contains(kind) ? 28 : 38, weight: .semibold)).monospacedDigit()
+                    Text(card["value"].string).font(.system(size: ["price", "currency", "ledger", "expense", "health", "cycle"].contains(kind) ? 28 : 38, weight: .semibold)).monospacedDigit()
                         .lineLimit(1).minimumScaleFactor(0.6)
                     if kind == "countdown", card["value"].string != "今天" { Text("天").font(.jBody).foregroundStyle(Color.inkSoft) }
                 }

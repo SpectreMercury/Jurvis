@@ -21,6 +21,8 @@ from pydantic import BaseModel, Field, ValidationError
 from . import cards, web
 from .agenda import Agenda
 from .ledger import CATEGORIES, TOTAL, Ledger
+from .health import Health
+from .mail import Mail
 from .coding import Coding, CodeEdit, CodeTask
 from .home import ACTIONS as HOME_ACTIONS, TYPES as HOME_TYPES, ConnectorError
 from .mcp import McpError
@@ -193,6 +195,49 @@ class SpendingArgs(BaseModel):
 class BudgetArgs(BaseModel):
     category: Literal["总计", "餐饮", "交通", "购物", "日用", "住房", "娱乐", "医疗", "教育", "通讯", "旅行", "订阅", "转账", "其他"] = Field(description="总计 for all spending in a month, or one category")
     amount: float = Field(ge=0, le=1e9, description="The monthly limit in yuan; 0 removes the budget")
+
+
+class HealthArgs(BaseModel):
+    period: Literal["today", "yesterday", "last_7_days", "last_14_days", "last_30_days", "this_week", "this_month"] = Field(default="last_7_days", description="Which days to sum up")
+    focus: Literal["all", "sleep", "activity", "heart", "recovery", "stress", "mood"] = Field(default="all", description="What the user asked about; all for an overview")
+
+
+class PeriodLogArgs(BaseModel):
+    start: str = Field(description="YYYY-MM-DD the period started (today when they say it started today)")
+    end: str = Field(default="", description="YYYY-MM-DD it ended, when they say so; empty while it is ongoing (only the start day is recorded)")
+    flow: Literal["spotting", "light", "medium", "heavy", "unspecified"] = Field(default="unspecified", description="How heavy, if they said")
+    symptoms: list[str] = Field(default_factory=list, max_length=8, description="Symptoms they mentioned, a few words each in their language, e.g. 痛经, 腰酸, 头痛")
+    note: str = Field(default="", max_length=200)
+
+
+class PeriodEndArgs(BaseModel):
+    day: str = Field(default="", description="YYYY-MM-DD of the last day of the period; empty for today")
+
+
+class MoodArgs(BaseModel):
+    score: int = Field(ge=1, le=5, description="How they feel: 1 very bad, 2 low, 3 okay, 4 good, 5 very good")
+    note: str = Field(default="", max_length=200, description="What it is about, in a few words of their own")
+
+
+class MailArgs(BaseModel):
+    days: int = Field(default=3, ge=1, le=30, description="How many days back")
+    query: str = Field(default="", max_length=100, description="Only messages containing these words; empty for all")
+    unread: bool = Field(default=False, description="Only unread messages")
+
+
+class MailReadArgs(BaseModel):
+    id: str = Field(min_length=3, max_length=80, description="The id of a message from mail_recent")
+
+
+class ConversationsArgs(BaseModel):
+    days: int = Field(default=3, ge=1, le=14, description="How many days back")
+
+
+class OpenSessionArgs(BaseModel):
+    kind: Literal["companion"] = Field(default="companion", description="companion: a quiet conversation of its own for what the user is going through")
+    title: str = Field(min_length=1, max_length=30, description="A gentle short name for the conversation in the user's language, e.g. 最近的压力, 和妈妈的关系; never a diagnosis")
+    brief: str = Field(min_length=10, max_length=2000, description="What the user has shared so far and what they seem to need, in a few sentences, so the new conversation continues without asking again")
+    opening: str = Field(min_length=5, max_length=600, description="The first message in the new conversation, in the user's language: warm, short, picks up exactly what they said and invites them to go on")
 
 
 class TransactionsArgs(BaseModel):
@@ -448,6 +493,8 @@ class ToolRegistry:
         self.settings, self.store = settings, store
         self.agenda = Agenda(store)
         self.ledger = Ledger(store)
+        self.health = Health(store)
+        self.mail = Mail(settings)
         self.coding = Coding(settings, store)
         self.llm = self.memory = self.skills = self.home = self.mcp = None  # attached by the worker; tools that need them are offered only then
         self.shell = self.browser = self.media = None
@@ -614,6 +661,29 @@ class ToolRegistry:
               self.set_budget, "write", summary=lambda r: r["summary"]),
             T("ledger_transactions", "看账单明细", "List the single payments in a period: time, amount, category, payee, note. Use it when the user asks which payments make up a figure.",
               TransactionsArgs, self.ledger_transactions, summary=lambda r: f"{len(r['transactions'])} 笔"),
+            T("health_summary", "看健康数据", "The user's sleep, activity and workouts, resting heart rate, HRV, recovery, an estimated body-stress signal and mood for a period, "
+              "from Apple Health, WHOOP and Google Health. All figures are computed for you: quote them, never estimate. The user is shown a card.",
+              HealthArgs, lambda a: self.health.summary(a.period, a.focus), summary=lambda r: f"{r['period']} · {r['days_with_data']} 天有数据"),
+            T("cycle_status", "看经期", "Where the user is in their menstrual cycle: the last period, average cycle length, the next period estimate and common symptoms. "
+              "Estimated from their own records; never a method of contraception. The user is shown a card.", NoArgs,
+              lambda a: self.health.cycle(), summary=lambda r: f"周期第 {r['cycle_day_today']} 天 · {r['phase']}" if r.get("periods_recorded") else "还没有记录"),
+            T("log_period", "记经期", "Record the user's period when they tell you it started, how heavy it is, or the days it ran. The user is shown a cycle card.",
+              PeriodLogArgs, lambda a: self.health.log_period(a.start, a.end, a.flow, a.symptoms, a.note), "write",
+              summary=lambda r: f"已记录 · {r['recorded']['start'][5:]}" + (f" – {r['recorded']['end'][5:]}" if r['recorded']['end'] != r['recorded']['start'] else "")),
+            T("end_period", "经期结束", "Record that the user's period has ended (today or on the day they say).", PeriodEndArgs,
+              lambda a: self.health.end_period(a.day), "write", summary=lambda r: "已记录结束"),
+            T("log_mood", "记心情", "Note how the user feels today on a 1-5 scale with a few words, when they tell you or agree to note it. Kept on this Mac.",
+              MoodArgs, lambda a: self.health.mood(a.score, a.note), "write", summary=lambda r: f"心情 {r['recorded']['score']}/5"),
+            T("mail_recent", "看邮件", "The user's recent emails across their connected mailboxes: sender, subject, time, unread, and the first lines. Read-only.",
+              MailArgs, None, "mail", summary=lambda r: f"{len(r['messages'])} 封"),
+            T("mail_read", "读邮件", "One email in full, by its id from mail_recent. Read-only.", MailReadArgs, None, "mail",
+              summary=lambda r: r["subject"][:40]),
+            T("recent_conversations", "看最近的对话", "What the user said to you in other conversations over the last few days (their own messages, with the conversation title and time). "
+              "Kept on this Mac.", ConversationsArgs, self.recent_conversations, summary=lambda r: f"{len(r['messages'])} 条"),
+            T("open_session", "开新对话", "Open a separate, quiet conversation for what the user is going through (stress, low mood, anxiety, grief, a relationship, loneliness, "
+              "burnout, self-doubt) when they start sharing it in a conversation that is about something else. The app switches them to it right away and "
+              "your opening message is waiting there. Not when this conversation is already that conversation, and not when they are in danger right now.",
+              OpenSessionArgs, None, "session"),
             T("agenda", "查看目标和定时任务", "List what you are already tracking and running for the user: their long-term goals and the scheduled work, each with its id. "
               "Call it before saving a goal or a schedule, so nothing is saved twice.", NoArgs,
               lambda a: self.agenda.overview(), summary=lambda r: f"{len(r['goals'])} 个目标 · {len(r['schedules'])} 个定时任务"),
@@ -634,7 +704,7 @@ class ToolRegistry:
     OPTIONAL = {"web_fetch", "web_search", "load_skill", "home_devices", "home_control", "delegate", "command_output", "stop_command", "find_tools"} | BROWSER_TOOLS
 
     def default_names(self, model=None):
-        return {n for n in self.tools if n not in ("finish_goal", "update_plan", "ask_user", "start_task") and n not in self.OPTIONAL and n not in self.dynamic} | self.available(model)
+        return {n for n in self.tools if n not in ("finish_goal", "update_plan", "ask_user", "start_task", "open_session", "recent_conversations") and n not in self.OPTIONAL and n not in self.dynamic} | self.available(model)
 
     def schemas(self, names=None):
         names = names or self.default_names()
@@ -983,6 +1053,13 @@ class ToolRegistry:
         return {"period": found["period"], "currency": "CNY", "transactions": [
             {"time": datetime.fromtimestamp(t["at"]).strftime("%Y-%m-%d %H:%M"), "amount": t["amount_cents"] / 100, "direction": t["direction"], "category": t["category"],
              "payee": t["merchant"], "note": t["note"]} for t in found["transactions"]]}
+
+    def recent_conversations(self, a):
+        since = time.time() - a.days * 86400
+        rows = self.store.all("SELECT m.content,m.created_at,s.title FROM messages m JOIN sessions s ON s.id=m.session_id "
+                              "WHERE m.role='user' AND m.created_at>=? AND s.incognito=0 ORDER BY m.created_at DESC LIMIT 60", (since,))
+        return {"days": a.days, "messages": [{"time": datetime.fromtimestamp(r["created_at"]).strftime("%m-%d %H:%M"), "conversation": r["title"],
+                                              "said": " ".join(r["content"].split())[:300]} for r in rows]}
 
     def remember(self, title, content):
         if self.memory:

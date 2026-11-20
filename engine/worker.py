@@ -9,6 +9,8 @@ from .media import Media
 from pydantic import ValidationError
 from .schemas import DramaDocument
 from .store import dumps
+from .health_sync import HealthSync
+from .checkin import Checkin
 from .tools import ToolRegistry
 from .agent import Agent
 from .workflows import video_frames
@@ -61,11 +63,14 @@ class Worker:
         self.catalog=MediaCatalog(settings)
         self.coding=Coding(settings,store)
         self.agent=Agent(settings,store,runtime,self.tools,self.media,self.shell,self.llm,self.memory,self.skills)
+        self.health_sync=HealthSync(settings,self.tools.health,store)
+        self.checkin=Checkin(settings,store,self.tools.health)
         self.task=None
         self.running={}      # job id -> (task, lane)
         self.active=None     # the local-lane task and its job id
         self.active_id=None
         self.connecting=None
+        self.syncing=None
 
     async def start(self):
         self.store.recover()
@@ -150,6 +155,12 @@ class Worker:
                     self.tools.agenda.fire()
                 except Exception:
                     log.exception("Scheduled tasks could not be started")
+                if not self.syncing or self.syncing.done():
+                    self.syncing=asyncio.create_task(self.health_sync.tick())  # connected health accounts, about once an hour
+                try:
+                    self.checkin.tick()  # body data turned: check in on the user, at most once a day
+                except Exception:
+                    log.exception("Check-in could not be started")
             await asyncio.sleep(.2 if self.running else .4)
 
     async def execute(self,job,lane):

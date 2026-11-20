@@ -5,11 +5,16 @@ import SwiftUI
 #endif
 struct JurvisApp: App {
     @StateObject private var store = AppStore()
+    @Environment(\.scenePhase) private var phase
     var body: some Scene {
         WindowGroup {
             RootView().environmentObject(store).tint(Color.ink)
                 .task { await store.start() }
                 .onOpenURL { url in Task { await store.pair(url.absoluteString) } }
+                #if os(iOS) && canImport(HealthKit)
+                // Apple Health is read on the phone and sent to the Mac whenever the app comes to the front (once the user turned it on).
+                .onChange(of: phase) { _, now in if now == .active { Task { await HealthKitSync.shared.syncIfDue(store: store) } } }
+                #endif
                 #if os(macOS)
                 .frame(minWidth: 820, minHeight: 600)
                 #endif
@@ -121,6 +126,7 @@ struct HubView: View {
             case .memory: MemoryView()
             case .goals: GoalsView()
             case .ledger: LedgerView()
+            case .health: HealthView()
             case .files: FilesView()
             case .settings: SettingsView()
             case .assistant: ChatView()

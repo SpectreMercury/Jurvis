@@ -800,3 +800,27 @@ button.info-card:focus-visible { outline: 2px solid var(--ink); outline-offset: 
 @keyframes voice-pulse { 0%, 100% { transform: scale(1.05); } 50% { transform: scale(1.4); } }
 @keyframes voice-wait { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .voice-ring, .round-btn.mic.busy { animation: none !important; transition: none; } }
+
+/* 健康 */
+.health-accounts { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 12px; }
+.health-account { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; min-height: 52px; }
+.health-account + .health-account { border-top: 1px solid var(--line); }
+.health-account .made-text { min-width: 0; }
+.health-account .muted { overflow-wrap: anywhere; }
+.health-summary .info-rows { margin-top: 8px; }
+.health-stress { display: flex; flex-direction: column; gap: 2px; margin-top: 12px; padding: 10px 12px; border-radius: 10px; background: var(--fill); }
+.health-stress.high strong { color: var(--danger); }
+.page-subhead { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.health-chart { display: flex; align-items: flex-end; gap: 3px; height: 120px; }
+.health-bar { flex: 1; height: 100%; display: flex; align-items: flex-end; }
+.health-bar span { display: block; width: 100%; border-radius: 3px 3px 1px 1px; background: var(--ink); opacity: .55; }
+.health-bar.today span { opacity: 1; }
+.health-axis { display: flex; justify-content: space-between; margin-top: 4px; }
+.health-cycle .info-value { font-size: 28px; line-height: 36px; margin: 4px 0; }
+.cycle-strip { display: flex; gap: 3px; margin: 12px 0 8px; }
+.cycle-day { flex: 1; height: 14px; border-radius: 4px; background: var(--line); }
+.cycle-day.flow { background: #e11d48; }
+.cycle-day.predicted { background: #fda4af; }
+.cycle-day.today { outline: 2px solid var(--ink); outline-offset: 1px; }
+.made-card.companion { border-color: var(--green); }
+.info-card.health .info-value, .info-card.cycle .info-value { font-size: 28px; line-height: 36px; }

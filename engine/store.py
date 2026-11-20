@@ -64,7 +64,9 @@ class Store:
                 db.execute("ALTER TABLE sessions ADD COLUMN allow_commands INTEGER NOT NULL DEFAULT 0")
             # Per-conversation model, memory bookkeeping and the rolling summary of older messages.
             for name, kind in (("model", "TEXT"), ("incognito", "INTEGER NOT NULL DEFAULT 0"), ("summary", "TEXT"),
-                               ("summary_upto", "REAL NOT NULL DEFAULT 0"), ("memory_upto", "REAL NOT NULL DEFAULT 0"), ("tools", "TEXT")):
+                               ("summary_upto", "REAL NOT NULL DEFAULT 0"), ("memory_upto", "REAL NOT NULL DEFAULT 0"), ("tools", "TEXT"),
+                               # A conversation opened by the assistant for one subject: what it is for, what led to it, and where it came from.
+                               ("persona", "TEXT"), ("brief", "TEXT"), ("parent_id", "TEXT")):
                 if name not in columns:
                     db.execute(f"ALTER TABLE sessions ADD COLUMN {name} {kind}")
             columns = [r[1] for r in db.execute("PRAGMA table_info(memories)")]
