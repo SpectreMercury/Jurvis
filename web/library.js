@@ -102,7 +102,7 @@ function render() {
   const q = els.search.value.trim().toLowerCase();
   const match = (name) => !q || String(name || '').toLowerCase().includes(q);
   const docs = (files || []).filter((f) => match(f.name)).sort((a, b) => (b.modified || 0) - (a.modified || 0));
-  const assets = ((store.state && store.state.assets) || []).filter((a) => /^(image|video)/.test(String(a.mime || '')) && match(a.name))
+  const assets = ((store.state && store.state.assets) || []).filter((a) => /^(image|video)/.test(String(a.mime || '')) && a.kind !== 'card' && match(a.name))
     .sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
   const images = assets.filter((a) => String(a.mime).startsWith('image'));
   const videos = assets.filter((a) => String(a.mime).startsWith('video'));

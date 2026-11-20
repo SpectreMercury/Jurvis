@@ -159,3 +159,41 @@ async def test_things_the_assistant_makes_leave_a_card(app):
     assert memory == {"kind": "memory", "title": "过敏", "subtitle": "已记住", "note": "用户对花生过敏"}
     assert (saved["kind"], saved["title"], saved["note"]) == ("file", "note.md", "# 周会 - 下周三上线 - 预算待批") and saved["subtitle"].startswith("文档")
     assert task == {"kind": "task", "title": "供应商报价对比", "subtitle": "后台任务 · 做完发在这里"}
+
+
+def test_what_to_wear_follows_how_it_feels_and_the_sky():
+    snow = cards.outfit(-3, "snow", 10, 0, 1, -6)
+    assert snow["art"] == "freezing-snow" and snow["wear"][0] == "羽绒服" and "防滑靴" in snow["wear"] and "雪" in snow["tip"]
+    rain = cards.outfit(12, "cloud", 8, 80, 15, 9)  # a cloudy sky with rain very likely is dressed for rain
+    assert rain["art"] == "cool-rain" and "雨伞" in rain["wear"] and "umbrella" in rain["art_prompt"]
+    assert "防风" in cards.outfit(5, "sun", 35)["tip"] and "温差 12°" in cards.outfit(19, "partly", 5, 0, 24, 12)["tip"]
+    assert cards.outfit(33, "sun")["art"] == "hot-clear" and cards.outfit(22, "cloud")["art"] == "mild-cloud" and cards.outfit(23, "moon")["art"] == "warm-clear"
+    assert all("Japanese minimalist manga" in cards.outfit(t, "sun")["art_prompt"] for t in (-10, 5, 12, 20, 25, 35))
+
+
+@pytest.mark.asyncio
+async def test_each_kind_of_weather_is_drawn_once_and_the_picture_is_kept_out_of_the_library(app, services, monkeypatch):
+    tools, store = app.state.worker.tools, app.state.store
+    monkeypatch.setattr(tools, "can_draw", lambda: True)
+    model = ScriptedModel([Completion("", [call("weather", place="北京")], "tool_calls"), Completion("有小雨，带伞。", [], "stop")])
+    _, message = await run(app, model, "北京天气")
+    entry = message["metadata"]["steps"][0]["calls"][0]
+    card = entry["card"]
+    assert card["outfit"] == {"wear": ["厚外套", "毛衣", "长裤", "雨伞"], "tip": "有雨，带伞，鞋子选不怕湿的"} and "art_prompt" not in card and "art" not in card
+    job = store.get_job(card["image_job"])
+    assert entry["job_id"] == job["id"] and job["kind"] == "image" and job["payload"]["outfit_art"] == "cold-rain" and "umbrella" in job["payload"]["prompt"]
+    assert json.loads(entry["output"])["what_to_wear"]["clothes"] == card["outfit"]["wear"]  # the model is told the same advice the card shows
+    # asked again while it is being drawn: the same drawing, not a second one
+    again = (await tools.call("weather", {"place": "北京"})).result["card"]
+    assert again["image_job"] == job["id"] and len(store.all("SELECT id FROM jobs WHERE kind='image'")) == 1
+    # once drawn, the picture is on every later card for this kind of weather
+    path = app.state.worker.settings.data / "assets" / "art.png"
+    path.write_bytes(b"png")
+    asset = app.state.worker.media.record(path, "x", "image/png", "image", job["id"])
+    store.update_job(job["id"], status="succeeded", result={"asset_ids": [asset]})
+    drawn = (await tools.call("weather", {"place": "北京"})).result["card"]
+    assert drawn["image"] == asset and "image_job" not in drawn
+    # without the image engine the card simply has no picture
+    monkeypatch.setattr(tools, "can_draw", lambda: False)
+    plain = (await tools.call("weather", {"place": "北京"})).result["card"]
+    assert "image" not in plain and "image_job" not in plain and plain["outfit"]["wear"]

@@ -39,7 +39,8 @@ import ImageIO
     private var engineProcess: Process?
     #endif
     var activeJobs: [Job] { snapshot?.jobs.filter(\.isActive) ?? [] }
-    var images: [Asset] { snapshot?.assets.filter { !$0.isVideo } ?? [] }
+    /// Pictures the user made or added. Illustrations drawn for cards (kind "card") are not theirs to browse.
+    var images: [Asset] { snapshot?.assets.filter { !$0.isVideo && $0.kind != "card" } ?? [] }
     var chatBusy: Bool { chatJob != nil }
     func requireAPI() throws -> API {
         guard let api else {throw APIError.message("请先连接 Mac")}

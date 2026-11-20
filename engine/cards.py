@@ -20,6 +20,43 @@ WMO = {0: ("sun", "晴"), 1: ("partly", "晴间多云"), 2: ("partly", "多云")
        95: ("storm", "雷阵雨"), 96: ("storm", "雷阵雨伴冰雹"), 99: ("storm", "强雷阵雨伴冰雹")}
 
 
+# What to wear, by how the air feels (°C). Each band: its key, the warmest temperature it covers, the clothes, and how the illustration is dressed.
+WEAR = [("freezing", 0, ["羽绒服", "毛衣", "围巾手套", "保暖裤"], "a thick long down jacket, a knitted scarf, a beanie, mittens and warm trousers, breath visible in the cold air"),
+        ("cold", 8, ["厚外套", "毛衣", "长裤"], "a warm wool coat over a sweater, long trousers and boots"),
+        ("cool", 15, ["风衣或夹克", "卫衣", "长裤"], "a light jacket over a hoodie, long trousers and sneakers"),
+        ("mild", 22, ["长袖", "薄外套备用", "长裤"], "a long-sleeved shirt with a thin cardigan, long trousers and sneakers"),
+        ("warm", 28, ["短袖", "薄长裤或短裤"], "a short-sleeved t-shirt and light trousers"),
+        ("hot", 99, ["短袖短裤", "遮阳帽", "防晒"], "a sleeveless top, shorts, sandals and a sun hat, holding a cold drink")]
+SKY = {"clear": "a small simple sun in the corner", "cloud": "a few simple soft clouds", "rain": "holding a transparent umbrella, a few simple raindrops and a small puddle",
+       "snow": "simple snowflakes falling, a little snow on the ground"}
+ART_STYLE = ("Japanese minimalist manga illustration, simple clean thin line art, the clothes filled with soft flat pastel colors (cream, dusty blue, warm beige, sage green), "
+             "rosy cheeks, lots of white space, plain white background, one cute young person with short brown hair standing, full body, facing the viewer, gentle smile, "
+             "hand-drawn everyday comic style, no text, no letters, no frame")
+
+
+def outfit(feels_like, icon, wind_kmh=0, rain_chance=0, high=None, low=None):
+    """What to wear for this weather: the clothes, one tip, and the key and prompt of the illustration that goes with it."""
+    key, _, clothes, dressed = next(band for band in WEAR if feels_like <= band[1])
+    sky = "snow" if icon == "snow" else "rain" if icon in ("rain", "drizzle", "storm") or (rain_chance or 0) >= 60 else "cloud" if icon in ("cloud", "fog") else "clear"
+    wear, tips = list(clothes), []
+    if sky == "rain":
+        wear.append("雨伞")
+        tips.append("有雨，带伞，鞋子选不怕湿的")
+    elif sky == "snow":
+        wear.append("防滑靴")
+        tips.append("有雪，路滑，穿防滑的鞋")
+    if wind_kmh >= 30:
+        tips.append("风大，外层选防风的")
+    if high is not None and low is not None and high - low >= 10 and key not in ("freezing", "hot"):
+        tips.append(f"早晚温差 {high - low}°，带件能穿脱的外套")
+    if key == "hot" and sky == "clear":
+        tips.append("日晒强，注意补水")
+    if not tips:
+        tips.append({"freezing": "很冷，露在外面的手和耳朵也要护住", "cold": "偏冷，里面加一层保暖", "cool": "微凉，外套别省",
+                     "mild": "舒服的天气，薄外套备着就行", "warm": "暖和，穿轻便些", "hot": "很热，穿透气的"}[key])
+    return {"wear": wear, "tip": "；".join(tips[:2]), "art": f"{key}-{sky}", "art_prompt": f"{ART_STYLE}, wearing {dressed}, {SKY[sky]}"}
+
+
 async def fetch_json(url):
     """JSON from one of the services above; ValueError with a reason the model can relay."""
     try:
@@ -89,11 +126,15 @@ async def weather(place, days=3):
                          "rain_chance": daily["precipitation_probability_max"][n]})
     current = {"temperature": round(now["temperature_2m"]), "feels_like": round(now["apparent_temperature"]), "sky": sky,
                "humidity": now["relative_humidity_2m"], "wind_kmh": round(now["wind_speed_10m"])}
+    today = forecast[0]
+    dress = outfit(current["feels_like"], icon, current["wind_kmh"], today["rain_chance"], today["high"], today["low"])
     card = {"kind": "weather", "title": spot["name"], "subtitle": spot["region"], "value": f"{current['temperature']}°", "icon": icon,
             "rows": [{"label": "天气", "value": sky}, {"label": "体感", "value": f"{current['feels_like']}°"},
                      {"label": "湿度", "value": f"{current['humidity']}%"}, {"label": "风", "value": f"{current['wind_kmh']} km/h"}],
-            "days": [{k: d[k] for k in ("label", "icon", "high", "low")} for d in forecast], "note": "Open-Meteo · " + now["time"].replace("T", " ")}
-    return {"place": spot["name"], "region": spot["region"], "local_time": now["time"], "unit": "°C", "now": current, "days": forecast, "card": card}
+            "days": [{k: d[k] for k in ("label", "icon", "high", "low")} for d in forecast], "note": "Open-Meteo · " + now["time"].replace("T", " "),
+            "outfit": {"wear": dress["wear"], "tip": dress["tip"]}, "art": dress["art"], "art_prompt": dress["art_prompt"]}
+    return {"place": spot["name"], "region": spot["region"], "local_time": now["time"], "unit": "°C", "now": current, "days": forecast,
+            "what_to_wear": {"clothes": dress["wear"], "tip": dress["tip"]}, "card": card}
 
 
 async def crypto_price(asset):

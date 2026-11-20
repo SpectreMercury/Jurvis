@@ -830,12 +830,25 @@ struct CardView: View {
                     Image(systemName: glyph).symbolRenderingMode(.multicolor).font(.system(size: 24)).foregroundStyle(Color.inkSoft)
                 }
             }
+            // The figure and what to wear sit beside the temperature: the picture is the advice at a glance.
+            HStack(alignment: .top, spacing: 12) {
+              VStack(alignment: .leading, spacing: 10) {
             if !card["value"].string.isEmpty {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(card["value"].string).font(.system(size: ["price", "currency", "ledger", "expense"].contains(kind) ? 28 : 38, weight: .semibold)).monospacedDigit()
                         .lineLimit(1).minimumScaleFactor(0.6)
                     if kind == "countdown", card["value"].string != "今天" { Text("天").font(.jBody).foregroundStyle(Color.inkSoft) }
                 }
+            }
+            if !card["outfit"]["wear"].array.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    FlowChips(items: card["outfit"]["wear"].array.map(\.string))
+                    if !card["outfit"]["tip"].string.isEmpty { Text(card["outfit"]["tip"].string).font(.jCallout).fixedSize(horizontal: false, vertical: true) }
+                }
+            }
+              }
+              .frame(maxWidth: .infinity, alignment: .leading)
+              if kind == "weather" { art }
             }
             if series.count > 2 { Sparkline(points: series).stroke(trendColor, style: StrokeStyle(lineWidth: 1.5, lineJoin: .round)).frame(height: 34) }
             if !shares.isEmpty { ShareBars(items: shares) }
@@ -868,6 +881,60 @@ struct CardView: View {
         }
         .padding(.horizontal, 16).padding(.vertical, 14)
         .frame(maxWidth: 360, alignment: .leading)
+    }
+}
+
+extension CardView {
+    /// The outfit illustration of a weather card: the picture once it is drawn, a quiet note while it is being drawn.
+    @ViewBuilder var art: some View {
+        let job = store.job(card["image_job"].string.isEmpty ? nil : card["image_job"].string)
+        let drawn = card["image"].string.isEmpty ? job.flatMap { store.outputs(of: $0).first } : store.asset(card["image"].string)
+        if let drawn {
+            // The drawing is a square with the figure in its middle: the frame keeps the figure and trims the empty sides.
+            MediaThumb(asset: drawn, fill: true).frame(width: 116, height: 164)
+        } else if let job, job.isActive {
+            VStack(spacing: 8) {
+                BusyRing(size: 14)
+                Text("正在画穿搭").font(.jSmall).foregroundStyle(Color.inkSoft)
+            }
+            .frame(width: 116, height: 164).background(Color.bubble, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+    }
+}
+
+/// Short labels that wrap onto as many lines as they need.
+struct FlowChips: View {
+    var items: [String]
+    var body: some View {
+        FlowLayout(spacing: 6) {
+            ForEach(items, id: \.self) { item in
+                Text(item).font(.jSmall).padding(.horizontal, 10).frame(height: 24).background(Color.bubble, in: Capsule())
+            }
+        }
+    }
+}
+
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 6
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        arrange(width: proposal.width ?? .infinity, subviews: subviews).size
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for (subview, point) in zip(subviews, arrange(width: bounds.width, subviews: subviews).points) {
+            subview.place(at: CGPoint(x: bounds.minX + point.x, y: bounds.minY + point.y), proposal: .unspecified)
+        }
+    }
+    func arrange(width: CGFloat, subviews: Subviews) -> (size: CGSize, points: [CGPoint]) {
+        var points: [CGPoint] = [], x: CGFloat = 0, y: CGFloat = 0, row: CGFloat = 0, widest: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > width { x = 0; y += row + spacing; row = 0 }
+            points.append(CGPoint(x: x, y: y))
+            x += size.width + spacing
+            row = max(row, size.height)
+            widest = max(widest, x - spacing)
+        }
+        return (CGSize(width: widest, height: y + row), points)
     }
 }
 

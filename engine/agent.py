@@ -761,6 +761,8 @@ class Agent:
                     card = card or self.made(call["name"], arguments, outcome)
                     if card:
                         entry["card"] = card
+                        if card.get("image_job"):
+                            entry["job_id"] = card["image_job"]  # the UI follows the drawing and puts it in the card when it is done
                     output = outcome.for_model(RESULT_CHARS)
                     if tool and tool.effect == "read" and (call["name"], output) in outputs and len(output) < 400:
                         # Rewording a search that keeps coming back the same (usually empty) is a loop, not progress.

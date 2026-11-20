@@ -285,7 +285,7 @@ struct LibraryView: View {
     @State private var filter = "全部"
     @State private var importing = false
     @State private var uploading = false
-    var all: [Asset] { store.snapshot?.assets ?? [] }
+    var all: [Asset] { (store.snapshot?.assets ?? []).filter { $0.kind != "card" } }
     var assets: [Asset] {
         all.filter { filter == "全部" || (filter == "图片" && !$0.isVideo) || (filter == "视频" && $0.isVideo) }
     }

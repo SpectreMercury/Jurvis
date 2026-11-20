@@ -556,6 +556,9 @@ function renderMessages() {
           related.push(jobSig(job));
           if (job && job.status === 'succeeded') for (const id of (job.result && job.result.asset_ids) || []) used.add(id);
         }
+        for (const call of step.calls || []) {
+          if (call.card && call.card.image) used.add(call.card.image);
+        }
       }
       const after = list[index + 1];
       node.answer = after && after.role === 'user' ? after.content : null; // what the user answered, when this reply ended on a question
@@ -821,7 +824,20 @@ function sparkline(series, trend) {
   return box;
 }
 
-function cardView(card) {
+/** The outfit illustration of a weather card: the picture once it is drawn, a quiet note while it is being drawn. */
+function cardArt(card, job) {
+  const done = job && job.status === 'succeeded' && job.result && Array.isArray(job.result.asset_ids) ? job.result.asset_ids[0] : null;
+  const id = card.image || done;
+  if (id) {
+    const box = h('div', { class: 'info-art' });
+    assetURL(id).then((url) => fill(box, h('img', { src: url, alt: '今天的穿搭插画' })), () => box.remove());
+    return box;
+  }
+  if (card.image_job && job && isLive(job)) return h('div', { class: 'info-art drawing' }, h('span', { class: 'spinner', 'aria-hidden': 'true' }), h('span', { class: 'muted small' }, '正在画穿搭'));
+  return null;
+}
+
+function cardView(card, job) {
   const made = MADE[card.kind];
   if (made) {
     const [glyph, tab] = made;
@@ -838,7 +854,14 @@ function cardView(card) {
     h('div', { class: 'info-head' },
       h('div', { class: 'made-text' }, h('strong', null, card.title), card.subtitle ? h('span', { class: 'muted small' }, card.subtitle) : null),
       GLYPH[card.icon] ? h('span', { class: 'info-glyph', 'aria-hidden': 'true' }, GLYPH[card.icon]) : null),
-    card.value ? h('div', { class: 'info-value ' + (card.trend || '') }, String(card.value), card.kind === 'countdown' && card.value !== '今天' ? h('span', { class: 'info-unit' }, '天') : null) : null,
+    // The figure and what to wear sit beside the temperature: the picture is the advice at a glance.
+    h('div', { class: 'info-split' },
+      h('div', { class: 'info-left' },
+        card.value ? h('div', { class: 'info-value ' + (card.trend || '') }, String(card.value), card.kind === 'countdown' && card.value !== '今天' ? h('span', { class: 'info-unit' }, '天') : null) : null,
+        card.outfit && Array.isArray(card.outfit.wear) ? h('div', { class: 'info-outfit' },
+          h('div', { class: 'chips' }, card.outfit.wear.map((item) => h('span', { class: 'chip static' }, String(item)))),
+          card.outfit.tip ? h('div', { class: 'small' }, card.outfit.tip) : null) : null),
+      card.kind === 'weather' ? cardArt(card, job) : null),
     Array.isArray(card.series) ? sparkline(card.series, card.trend) : null,
     Array.isArray(card.bars) && card.bars.length ? bars(card.bars) : null,
     rows.length ? h('dl', { class: 'info-rows' }, rows.map((row) => h('div', { class: String(row.label || '').length + String(row.value).length > 13 ? 'wide' : null }, row.label ? h('dt', null, row.label) : null, h('dd', null, String(row.value))))) : null,
@@ -852,7 +875,7 @@ function updateCall(cn, call, m, job) {
   const wasOpen = !!(cn.details && cn.details.open);
   cn.details = null;
   if (call.status === 'awaiting') fill(cn.main, approval(call, m));
-  else if (call.card && call.card.title) fill(cn.main, cardView(call.card));
+  else if (call.card && call.card.title) fill(cn.main, cardView(call.card, job));
   else {
     const body = callBody(call);
     if (body.length) {
@@ -866,6 +889,11 @@ function updateCall(cn, call, m, job) {
   }
   // the linked job: live progress, then its output
   fill(cn.jobEl);
+  if (call.card && call.card.image_job) {  // the drawing for a card is shown inside the card
+    cn.jobEl.hidden = true;
+    cn.mediaEl.hidden = true;
+    return;
+  }
   if (job && isLive(job)) {
     const percent = Math.max(0, Math.min(100, Math.round((job.progress || 0) * 100)));
     cn.jobEl.append(h('span', { class: 'muted small' }, (job.phase || (job.status === 'queued' ? '排队中' : '进行中')) + ' · ' + percent + '%'),

@@ -259,7 +259,12 @@ class Worker:
                 return {"prompt":await self.rewrite(p,ident)}
             return await self.render_video(p,ident)
         if kind=="image":
-            return await self.render_image(self.directed(p),ident)
+            result=await self.render_image(self.directed(p),ident)
+            if p.get("outfit_art"):
+                # An illustration drawn for weather cards belongs to the cards, not to the user's library.
+                for asset in result.get("asset_ids",[]):
+                    self.store.execute("UPDATE assets SET kind='card',name=? WHERE id=?",("穿衣插画 · "+p["outfit_art"],asset))
+            return result
         if kind=="produce":
             return await self.produce(p,ident)
         if kind=="export":

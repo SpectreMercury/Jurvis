@@ -595,7 +595,7 @@ class ToolRegistry:
               "anything that needs many steps. It runs on its own while the conversation goes on, and its result is posted in this conversation when it is done. "
               "Not for a question you can answer now or an action that takes a step or two.", StartTaskArgs, None, "task"),
             T("weather", "查天气", "Current weather and the forecast for a city. The user is shown a weather card with the figures.", WeatherArgs,
-              lambda a: cards.weather(a.place, a.days), summary=lambda r: f"{r['place']} · {r['now']['temperature']}° {r['now']['sky']}"),
+              self.weather, summary=lambda r: f"{r['place']} · {r['now']['temperature']}° {r['now']['sky']}"),
             T("crypto_price", "查币价", "The current USD price of one crypto asset with its 24-hour and 7-day change. The user is shown a price card with a 7-day chart.", CryptoArgs,
               lambda a: cards.crypto_price(a.asset), summary=lambda r: f"{r['symbol']} · ${r['price_usd']:,} · {r['change_24h_percent']:+.2f}%"),
             T("convert_currency", "换算汇率", "Convert an amount between two currencies at the latest reference rate. The user is shown a card with the result and the rate.", CurrencyArgs,
@@ -929,6 +929,34 @@ class ToolRegistry:
                     self.store.all(f"SELECT id,title,content FROM memories WHERE enabled=1 AND ({memory_where}) ORDER BY updated_at DESC LIMIT 20", pairs))
         return {"memories": memories,
                 "assets": self.store.all(f"SELECT id,name,kind,mime,created_at FROM assets WHERE {asset_where} ORDER BY created_at DESC LIMIT 20", pairs)}
+
+    async def weather(self, a):
+        result = await cards.weather(a.place, a.days)
+        self.outfit_art(result["card"])
+        return result
+
+    def can_draw(self):
+        """True when the image engine is installed on this Mac."""
+        return (self.settings.comfy / "main.py").exists()
+
+    def outfit_art(self, card):
+        """Gives a weather card its outfit illustration: the one already drawn for this kind of weather, or a drawing queued for it.
+        Each kind of weather (how cold, and clear, cloudy, rain or snow) is drawn once by the local image model and kept."""
+        key, prompt = card.pop("art", None), card.pop("art_prompt", None)
+        if not key or not prompt or not self.can_draw():
+            return
+        jobs = self.store.all("SELECT id,status,result FROM jobs WHERE kind='image' AND json_extract(payload,'$.outfit_art')=? AND status IN ('queued','running','succeeded') "
+                              "ORDER BY created_at DESC LIMIT 1", (key,))
+        if jobs and jobs[0]["status"] == "succeeded" and jobs[0]["result"].get("asset_ids"):
+            asset = jobs[0]["result"]["asset_ids"][0]
+            if self.store.one("SELECT id FROM assets WHERE id=?", (asset,)):
+                card["image"] = asset
+                return
+            jobs = []  # the picture was deleted: draw it again
+        if not jobs:
+            request = ImageRequest(prompt=prompt, width=768, height=768, steps=20, seed=7)
+            jobs = [self.store.create_job("image", {**request.model_dump(), "outfit_art": key})]
+        card["image_job"] = jobs[0]["id"]
 
     def log_expense(self, a):
         when = None
