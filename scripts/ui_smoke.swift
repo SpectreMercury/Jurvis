@@ -83,6 +83,42 @@ extension AppStore {
             VStack(alignment: .leading, spacing: 30) { ForEach(messages) { AssistantMessage(message: $0, open: { _ in }) } }.padding(24)
         }.background(Color.canvas).environmentObject(store))
     } else { print("FAIL goal sample did not decode") }
+    // Assistant replies: bubbles, a question with options, and every kind of card.
+    let assistant = #"""
+    [{"id":"a1","session_id":"s","role":"assistant","content":"","status":"complete","created_at":0,"metadata":{"steps":[
+      {"text":"记下了，存到 Goals 里了。上海这几天转凉，出门加件外套。","calls":[
+        {"id":"k1","name":"weather","label":"查天气","status":"ok","card":{"kind":"weather","title":"上海","subtitle":"上海市 · 中国","value":"11°","icon":"partly","rows":[{"label":"天气","value":"晴间多云"},{"label":"体感","value":"7°"},{"label":"湿度","value":"40%"},{"label":"风","value":"12 km/h"}],"days":[{"label":"今天","icon":"partly","high":12,"low":4},{"label":"明天","icon":"sun","high":13,"low":4},{"label":"周日","icon":"rain","high":15,"low":6},{"label":"周一","icon":"snow","high":8,"low":1}],"note":"Open-Meteo · 2026-11-20 14:00"}},
+        {"id":"k2","name":"crypto_price","label":"查币价","status":"ok","card":{"kind":"price","title":"Bitcoin","subtitle":"BTC · USD","value":"$61,874","icon":"coin","trend":"down","rows":[{"label":"24 小时","value":"-2.37%"},{"label":"7 天","value":"-9.78%"},{"label":"市值","value":"$1,244.6B"}],"series":[68,67.5,67,66,66.4,65,64.2,64.8,63.9,64,63.1,62.8,63.3,62.4,62,61.9],"note":"CoinGecko · 2026-11-20 06:05 UTC"}},
+        {"id":"k3","name":"convert_currency","label":"换算汇率","status":"ok","card":{"kind":"currency","title":"100 USD","subtitle":"USD → CNY","value":"666.67 CNY","icon":"exchange","rows":[{"label":"汇率","value":"1 USD = 6.6667 CNY"}],"note":"欧洲央行参考汇率 · 2026-11-19"}}]}]}},
+     {"id":"a1b","session_id":"s","role":"assistant","content":"","status":"complete","created_at":0,"metadata":{"steps":[
+      {"text":"","calls":[
+        {"id":"k4","name":"world_time","label":"查当地时间","status":"ok","card":{"kind":"clock","title":"纽约","subtitle":"纽约州 · 美国","value":"01:06","icon":"moon","rows":[{"label":"日期","value":"11月20日 周五"},{"label":"时差","value":"比你晚 13 小时"}],"note":"你这里现在 14:06"}},
+        {"id":"k5","name":"countdown","label":"倒计时","status":"ok","card":{"kind":"countdown","title":"春节","subtitle":"2027-02-06 周六","value":"78","icon":"calendar","rows":[{"label":"","value":"还有 78 天"},{"label":"约","value":"11 周 1 天"}],"note":"从今天 11月20日 算起"}},
+        {"id":"k6","name":"spending_summary","label":"看支出","status":"ok","card":{"kind":"ledger","title":"11 月支出","subtitle":"11/01 – 11/30","value":"¥3,280.50","icon":"wallet","bars":[{"label":"餐饮","value":"¥1,420","share":0.43},{"label":"购物","value":"¥980","share":0.30},{"label":"交通","value":"¥560.50","share":0.17},{"label":"订阅","value":"¥320","share":0.10}],"rows":[{"label":"笔数","value":"64 笔"},{"label":"日均","value":"¥164"},{"label":"较上期","value":"+12.4%"}],"note":"每一笔明细在「账本」里，只存在这台 Mac 上"}},
+        {"id":"k7","name":"log_expense","label":"记一笔","status":"ok","card":{"kind":"expense","title":"午饭","subtitle":"已记一笔 · 餐饮","value":"¥35","icon":"wallet","rows":[{"label":"本月餐饮","value":"¥1,455"},{"label":"本月合计","value":"¥3,315.50"}],"note":"11月20日 12:10"}}]}]}},
+     {"id":"a1c","session_id":"s","role":"assistant","content":"","status":"complete","created_at":0,"metadata":{"steps":[
+      {"text":"这些是我存下和在做的：","calls":[
+        {"id":"m1","name":"track_goal","label":"保存长期目标","status":"ok","card":{"kind":"goal","title":"L2 长期跟踪","subtitle":"长期目标"}},
+        {"id":"m2","name":"schedule_task","label":"设置定时任务","status":"ok","card":{"kind":"schedule","title":"L2 每月深度复盘","subtitle":"定时任务 · 每月 1 号 09:00"}},
+        {"id":"m3","name":"remember","label":"保存记忆","status":"ok","card":{"kind":"memory","title":"过敏","subtitle":"已记住","note":"用户对花生过敏"}},
+        {"id":"m4","name":"save_file","label":"保存文件","status":"ok","card":{"kind":"file","title":"il.md","subtitle":"文档 · 8557 字","note":"# 集中流动性 IL 对照表 同一笔钱，区间选多窄，价格动多少，就亏多少。"}},
+        {"id":"m5","name":"start_task","label":"开始后台任务","status":"ok","card":{"kind":"task","title":"供应商报价对比","subtitle":"后台任务 · 做完发在这里"}},
+        {"id":"m6","name":"ask_user","label":"向你提问","status":"ok"}]},
+      {"text":"你想按什么节奏跟？","calls":[]}],
+      "ask":{"question":"你想按什么节奏跟？","options":["每周一次","每月一次","先不用，需要时再问"]}}},
+     {"id":"a2","session_id":"s","role":"assistant","content":"","status":"streaming","created_at":1,"metadata":{"task":{"title":"IL 对照表"},"goal":{"status":"running","steps":2,"reviews":0},"steps":[
+      {"text":"先把公式列出来。","calls":[{"id":"t1","name":"calculate","label":"计算","status":"ok","summary":"= 2"}]}]}}]
+    """#
+    if let messages = try? JSONDecoder().decode([Message].self, from: Data(assistant.utf8)) {
+        // One message per screenful: a window cannot be taller than the screen.
+        for (index, message) in messages.enumerated() {
+            let column = ScrollView {
+                AssistantMessage(message: message, open: { _ in }).padding(24).frame(maxWidth: .infinity, alignment: .leading)
+            }.background(Color.canvas).environmentObject(store)
+            await capture("assistant-cards-\(index + 1)", size: CGSize(width: 640, height: 900), wait: 1.5, column)
+            await capture("assistant-cards-\(index + 1)-dark", size: CGSize(width: 390, height: 900), dark: true, wait: 1.5, column)
+        }
+    } else { print("FAIL assistant sample did not decode") }
     await store.loadCodeProjects()
     await store.newChat(project: store.codeProjects.first?.id)
     await capture("home-with-project", root)

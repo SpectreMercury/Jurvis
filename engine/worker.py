@@ -133,6 +133,7 @@ class Worker:
         return picked
 
     async def loop(self):
+        checked=0.0
         while True:
             for queued,lane in self.startable():
                 job=self.store.claim(queued["id"])
@@ -143,6 +144,12 @@ class Worker:
                 self.running[job["id"]]=(task,lane)
                 if lane=="local":
                     self.active,self.active_id=task,job["id"]
+            if time.monotonic()-checked>15:  # schedules are to the minute: looking a few times a minute is enough
+                checked=time.monotonic()
+                try:
+                    self.tools.agenda.fire()
+                except Exception:
+                    log.exception("Scheduled tasks could not be started")
             await asyncio.sleep(.2 if self.running else .4)
 
     async def execute(self,job,lane):
@@ -203,6 +210,10 @@ class Worker:
             return await self.coding.run(p,progress)
         if kind=="chat":
             return await self.chat(job)
+        if kind=="ledger":
+            # Sorting imported payments reads payee names: always the local model, whatever model the conversations use.
+            self.store.update_job(ident,phase="正在整理账单分类",progress=.2)
+            return await self.tools.ledger.classify(self.runtime)
         if kind=="memory":
             self.store.update_job(ident,phase="正在整理记忆",progress=.2)
             return await self.memory.process(p["session_id"])

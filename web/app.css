@@ -361,6 +361,65 @@ input[type="search"]::-webkit-search-decoration, input[type="search"]::-webkit-s
 .mode-tag { font-size: 12px; line-height: 16px; color: var(--ink-faint); }
 .msg.assistant { display: flex; flex-direction: column; gap: 12px; }
 .steps, .step, .calls { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+/* What the assistant says is a message of its own, one per step; tool traces sit between them. */
+.md.said { align-self: flex-start; max-width: 100%; background: var(--surface); border: 1px solid var(--line); padding: 10px 14px; border-radius: 18px; border-bottom-left-radius: 6px; }
+.made-card { display: flex; align-items: center; gap: 12px; width: 360px; max-width: 100%; min-height: 56px; padding: 10px 14px; text-align: left; font: inherit; color: var(--ink);
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-large); cursor: pointer; }
+.made-card:hover { border-color: var(--line-strong); }
+.made-card:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.made-icon { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 8px; background: var(--fill); flex: none; }
+.made-text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.made-text strong { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.made-card.still { cursor: default; }
+.made-card.still:hover { border-color: var(--line); }
+.made-note { font-size: 13px; line-height: 18px; color: var(--ink-soft); margin-top: 4px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+/* A lookup's figures: title, one big value, a few facts, and for weather the days ahead. */
+.info-card { display: flex; flex-direction: column; gap: 10px; width: 360px; max-width: 100%; padding: 14px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-large); }
+.info-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.info-glyph { font-size: 28px; line-height: 32px; flex: none; }
+.info-value { font-size: 40px; line-height: 44px; font-weight: 600; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
+.info-card.currency .info-value, .info-card.price .info-value { font-size: 28px; line-height: 36px; }
+.info-unit { font-size: 15px; font-weight: 400; letter-spacing: 0; color: var(--ink-soft); margin-left: 6px; }
+.spark { height: 36px; color: var(--ink-faint); }
+.spark svg { display: block; width: 100%; height: 100%; }
+.spark.up { color: var(--green-solid); }
+.spark.down { color: var(--danger); }
+.info-rows { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 16px; margin: 0; }
+.info-rows > div { display: flex; justify-content: space-between; gap: 8px; min-width: 0; font-size: 13px; line-height: 18px; }
+.info-rows > div.wide { grid-column: 1 / -1; }
+.info-rows dt { color: var(--ink-faint); flex: none; }
+.info-rows dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.info-days { display: flex; gap: 4px; padding-top: 10px; border-top: 1px solid var(--line); }
+.info-day { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 0; }
+.info-note { padding-top: 2px; }
+button.info-card { font: inherit; color: var(--ink); text-align: left; cursor: pointer; }
+button.info-card:hover { border-color: var(--line-strong); }
+button.info-card:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.info-card.ledger .info-value, .info-card.expense .info-value { font-size: 32px; line-height: 40px; }
+/* Shares of a total: label, bar, amount. */
+.bars { display: flex; flex-direction: column; gap: 6px; }
+.bar-row { display: grid; grid-template-columns: 3em 1fr auto; align-items: center; gap: 10px; font-size: 13px; line-height: 18px; }
+.bar-label { color: var(--ink-soft); white-space: nowrap; }
+.bar-track { height: 6px; border-radius: 3px; background: var(--fill); overflow: hidden; }
+.bar-fill { display: block; height: 100%; border-radius: 3px; background: var(--ink); }
+.bar-value { font-variant-numeric: tabular-nums; text-align: right; }
+.ledger-summary { gap: 8px; max-width: 560px; }
+.ledger-summary .bars { margin-top: 8px; }
+.ledger-list { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); }
+.ledger-list:empty { display: none; }
+.ledger-list > .empty { padding: 32px 16px; }
+.ledger-row { display: flex; align-items: center; gap: 12px; padding: 10px 14px; min-height: 52px; }
+.ledger-row + .ledger-row { border-top: 1px solid var(--line); }
+.ledger-amount { font-variant-numeric: tabular-nums; font-weight: 500; min-width: 84px; text-align: right; }
+.ledger-amount.income { color: var(--green); }
+.small-select { width: auto; height: 28px; padding: 0 8px; font-size: 13px; flex: none; }
+.options { display: flex; flex-direction: column; gap: 8px; align-items: stretch; max-width: 520px; }
+.option { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 44px; padding: 10px 14px; text-align: left; font: inherit; color: var(--ink);
+  background: transparent; border: 1px dashed var(--line-strong); border-radius: var(--r); cursor: pointer; }
+.option:hover:not(:disabled) { background: var(--fill); border-style: solid; }
+.option:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.option:disabled { cursor: default; color: var(--ink-faint); border-color: var(--line); }
+.option.chosen { color: var(--ink); border: 1px solid var(--line-strong); }
 .md { min-width: 0; }
 .md > * + * { margin-top: 8px; }
 .md ul, .md ol { margin: 0; padding-left: 20px; }

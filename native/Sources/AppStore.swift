@@ -102,7 +102,7 @@ import ImageIO
             var tick = 0
             while !Task.isCancelled {
                 // Stream replies quickly; keep the full snapshot at a calmer pace.
-                let streaming = await self?.chatBusy ?? false
+                let streaming = await self?.chatStreaming ?? false
                 try? await Task.sleep(for: .milliseconds(streaming ? 350 : 2000))
                 if Task.isCancelled { break }
                 tick += 1
@@ -146,7 +146,7 @@ import ImageIO
         if let list: [Message] = try? await api.request("/api/sessions/\(id)/messages"), selectedSession == id {
             if list != messages { messages = list }
             // Pick up job/state changes (new images, finished jobs) when the reply completes.
-            if !(list.last?.isLive ?? false) && chatBusy { if let state: Snapshot = try? await api.request("/api/state"), state != snapshot { snapshot = state } }
+            if !list.contains(where: \.isLive) && chatStreaming { if let state: Snapshot = try? await api.request("/api/state"), state != snapshot { snapshot = state } }
         }
     }
     /// Show an error to the user, except cancellations caused by leaving a screen.
@@ -297,7 +297,10 @@ import ImageIO
     func job(_ id: String?) -> Job? { guard let id else { return nil }; return snapshot?.jobs.first { $0.id == id } }
     func asset(_ id: String?) -> Asset? { guard let id else { return nil }; return snapshot?.assets.first { $0.id == id } }
     func outputs(of job: Job) -> [Asset] { job.result["asset_ids"].array.compactMap { asset($0.string) } }
-    var chatJob: Job? { activeJobs.first { $0.kind == "chat" && $0.payload["session_id"].string == selectedSession } }
+    /// The reply this conversation is waiting for. Background work does not count: you can keep talking while it runs.
+    var chatJob: Job? { activeJobs.first { $0.kind == "chat" && $0.payload["session_id"].string == selectedSession && !$0.isBackground } }
+    /// Any reply being written in this conversation, background work included: it is what keeps the messages refreshing.
+    var chatStreaming: Bool { activeJobs.contains { $0.kind == "chat" && $0.payload["session_id"].string == selectedSession } }
     func cancel(_ job: Job) async {
         cancelling.insert(job.id); defer { cancelling.remove(job.id) }
         await perform { let _: Job = try await self.requireAPI().request("/api/jobs/\(job.id)/cancel", method: "POST") }

@@ -119,6 +119,8 @@ struct HubView: View {
             case .tasks: TasksView()
             case .home: HomeView()
             case .memory: MemoryView()
+            case .goals: GoalsView()
+            case .ledger: LedgerView()
             case .files: FilesView()
             case .settings: SettingsView()
             case .assistant: ChatView()
@@ -195,7 +197,7 @@ struct Sidebar: View {
             VStack(spacing: 2) {
                 newTaskRow
                 searchRow
-                ForEach([Hub.library, .home, .settings]) { hubRow($0) }
+                ForEach([Hub.library, .agenda, .home, .settings]) { hubRow($0) }
             }
             .padding(.horizontal, 10)
             Eyebrow(text: "任务").padding(.horizontal, 20).padding(.top, 18).padding(.bottom, 6)

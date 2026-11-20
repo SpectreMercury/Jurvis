@@ -8,6 +8,7 @@ import { renderMarkdown } from './md.js';
 import { icon, toolIcon } from './icons.js';
 import { disclosure, ask } from './ui.js';
 import * as voice from './voice.js';
+import { bars } from './ledger.js';
 
 const MODES = [
   ['goal', '目标', 'target', '目标：先列计划，自己一步步做完再汇报；写到一半被截断会自动续写。'],
@@ -171,6 +172,14 @@ async function askAloud(text) {
   if (!last) return '';
   if (last.status === 'failed') throw new Error((last.metadata && last.metadata.error) || '回复失败');
   return stepsOf(last).map((step) => step.text || '').filter(Boolean).pop() || '';
+}
+
+/** Sends one of the offered options as the user's reply in this conversation. */
+function answer(option) {
+  if (sending || liveJob()) return;
+  els.input.value = option;
+  autogrow();
+  send();
 }
 
 /** Starts a new task with this text, as if it had been typed and sent. */
@@ -357,8 +366,9 @@ function renderModes() {
   els.modeHint.textContent = mode ? MODE_HINTS[mode] : '';
 }
 
+/** The reply this conversation is waiting for. Background work does not count: you can keep talking while it runs. */
 function liveJob() {
-  return store.sessionId ? jobsOf(store.sessionId).find(isLive) || null : null;
+  return store.sessionId ? jobsOf(store.sessionId).find((job) => isLive(job) && !(job.payload && job.payload.background)) || null : null;
 }
 
 function updateSend() {
@@ -547,7 +557,9 @@ function renderMessages() {
           if (job && job.status === 'succeeded') for (const id of (job.result && job.result.asset_ids) || []) used.add(id);
         }
       }
-      sig = JSON.stringify([m, last, jobSig(chatJob(m)), related, speech.tts, voice.speakingKey() === m.id]);
+      const after = list[index + 1];
+      node.answer = after && after.role === 'user' ? after.content : null; // what the user answered, when this reply ended on a question
+      sig = JSON.stringify([m, last, node.answer, jobSig(chatJob(m)), related, speech.tts, voice.speakingKey() === m.id]);
     }
     if (sig !== node.sig) {
       node.sig = sig;
@@ -626,12 +638,13 @@ function renderAssistant(node, m, last) {
       goal: h('div', { class: 'goal', hidden: true }),
       plan: h('div', { hidden: true }),
       steps: h('div', { class: 'steps' }),
+      ask: h('div', { class: 'options', hidden: true, role: 'group', 'aria-label': '可选的回答' }),
       status: h('div', { class: 'msg-status' }),
       sources: h('div', { class: 'sources', hidden: true }),
       stepNodes: [],
       sourceSig: '',
     };
-    node.el.append(node.parts.goal, node.parts.plan, node.parts.steps, node.parts.status, node.parts.sources);
+    node.el.append(node.parts.goal, node.parts.plan, node.parts.steps, node.parts.ask, node.parts.status, node.parts.sources);
   }
   const parts = node.parts;
   const meta = m.metadata || {};
@@ -642,7 +655,8 @@ function renderAssistant(node, m, last) {
   parts.goal.hidden = !meta.goal;
   if (meta.goal) {
     parts.goal.className = 'goal ' + (meta.goal.status || 'running');
-    fill(parts.goal, icon('target', 15), h('span', null, '目标 · ' + goalLabel(meta.goal, live)));
+    const title = meta.task && meta.task.title ? `后台任务「${meta.task.title}」· ` : '目标 · ';
+    fill(parts.goal, icon('target', 15), h('span', null, title + goalLabel(meta.goal, live)));
   }
   const plan = Array.isArray(meta.plan) ? meta.plan : [];
   parts.plan.hidden = !plan.length;
@@ -653,7 +667,7 @@ function renderAssistant(node, m, last) {
   steps.forEach((step, i) => {
     let sn = parts.stepNodes[i];
     if (!sn) {
-      sn = { text: null, textEl: h('div', { class: 'md', hidden: true }), callsEl: h('div', { class: 'calls' }), calls: [] };
+      sn = { text: null, textEl: h('div', { class: 'md said', hidden: true }), callsEl: h('div', { class: 'calls' }), calls: [] };
       sn.el = h('div', { class: 'step' }, sn.textEl, sn.callsEl);
       parts.stepNodes[i] = sn;
       parts.steps.append(sn.el);
@@ -664,7 +678,9 @@ function renderAssistant(node, m, last) {
       sn.textEl.hidden = !text;
       fill(sn.textEl, renderMarkdown(text));
     }
-    const calls = Array.isArray(step.calls) ? step.calls : [];
+    // The question a reply ends on is shown as its options, not as a tool call.
+    const calls = (Array.isArray(step.calls) ? step.calls : []).filter((call) => call && call.name !== 'ask_user');
+    sn.el.hidden = !text && !calls.length;
     calls.forEach((call, j) => {
       let cn = sn.calls[j];
       if (!cn) {
@@ -682,10 +698,24 @@ function renderAssistant(node, m, last) {
   });
   while (parts.stepNodes.length > steps.length) parts.stepNodes.pop().el.remove();
 
+  // the options of the question this reply ended on: live for the latest reply, a record of the choice for older ones
+  const options = !live && meta.ask && Array.isArray(meta.ask.options) ? meta.ask.options.map(String) : [];
+  parts.ask.hidden = !options.length;
+  fill(parts.ask, options.map((option) => {
+    const chosen = node.answer === option;
+    return h('button', { class: 'option' + (chosen ? ' chosen' : ''), type: 'button', disabled: !last, 'aria-pressed': last ? null : String(chosen),
+      onclick: () => answer(option) }, h('span', null, option), chosen ? icon('check', 14, 1.8) : null);
+  }));
+
   // status line
   fill(parts.status);
   if (live) {
     parts.status.append(h('span', { class: 'spinner', 'aria-hidden': 'true' }), h('span', { class: 'muted' }, (job && job.phase) || (m.status === 'queued' ? '排队中' : '正在回复')));
+    if (job && job.payload && job.payload.background) {
+      // The composer's stop button belongs to the reply being waited for; background work is stopped here.
+      if (meta.background) parts.status.append(h('span', { class: 'muted' }, '· 已转到后台，做完发在这里，你可以接着聊'));
+      parts.status.append(action('停止', async () => { await post('/api/jobs/' + encodeURIComponent(job.id) + '/cancel'); refreshState(); }, { class: 'btn small' }));
+    }
   } else if (m.status === 'failed' || m.status === 'cancelled' || m.status === 'interrupted') {
     const fallback = m.status === 'failed' ? '回复失败' : m.status === 'cancelled' ? '已停止' : '回复被中断';
     parts.status.append(h('span', { class: m.status === 'failed' ? 'error-text' : 'muted' }, meta.error || (m.status === 'failed' && job && job.error) || fallback));
@@ -776,10 +806,53 @@ function approval(call, m) {
     h('div', { class: 'approval-actions' }, buttons));
 }
 
+// Cards: what a tool call made or found, shown as the thing itself instead of as a tool call.
+// A made thing (goal, schedule, memory, document, task) is one row that opens where it lives; a lookup (weather, price…) shows its figures.
+const MADE = { goal: ['target', 'goals'], schedule: ['clock', 'goals'], memory: ['bookmark', 'memory'], file: ['doc', 'library'], task: ['tasks', null] };
+const GLYPH = { sun: '☀️', moon: '🌙', partly: '⛅', cloud: '☁️', fog: '🌫️', drizzle: '🌦️', rain: '🌧️', snow: '❄️', storm: '⛈️', coin: '🪙', exchange: '💱', calendar: '📅', wallet: '🧾' };
+
+function sparkline(series, trend) {
+  const points = series.map(Number).filter(Number.isFinite);
+  if (points.length < 3) return null;
+  const low = Math.min(...points), span = Math.max(...points) - low || 1;
+  const path = points.map((p, i) => `${(i / (points.length - 1) * 100).toFixed(2)},${(30 - (p - low) / span * 28 - 1).toFixed(2)}`).join(' ');
+  const box = h('div', { class: 'spark ' + (trend || 'flat'), role: 'img', 'aria-label': '近 7 天走势' });
+  box.innerHTML = `<svg viewBox="0 0 100 30" preserveAspectRatio="none"><polyline points="${path}" fill="none" stroke="currentColor" stroke-width="1.5" vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>`;
+  return box;
+}
+
+function cardView(card) {
+  const made = MADE[card.kind];
+  if (made) {
+    const [glyph, tab] = made;
+    const inner = [h('span', { class: 'made-icon' }, icon(glyph, 18)),
+      h('span', { class: 'made-text' }, h('strong', null, card.title), h('span', { class: 'muted small' }, card.subtitle || ''),
+        card.note ? h('span', { class: 'made-note' }, card.note) : null),
+      tab ? icon('right', 16) : null];
+    return tab ? h('button', { class: 'made-card', type: 'button', onclick: () => emit('goto', tab) }, inner) : h('div', { class: 'made-card still' }, inner);
+  }
+  const rows = Array.isArray(card.rows) ? card.rows : [];
+  const days = Array.isArray(card.days) ? card.days : [];
+  const money = card.kind === 'ledger' || card.kind === 'expense';
+  return h(money ? 'button' : 'div', { class: 'info-card ' + String(card.kind || ''), type: money ? 'button' : null, onclick: money ? () => emit('goto', 'ledger') : null },
+    h('div', { class: 'info-head' },
+      h('div', { class: 'made-text' }, h('strong', null, card.title), card.subtitle ? h('span', { class: 'muted small' }, card.subtitle) : null),
+      GLYPH[card.icon] ? h('span', { class: 'info-glyph', 'aria-hidden': 'true' }, GLYPH[card.icon]) : null),
+    card.value ? h('div', { class: 'info-value ' + (card.trend || '') }, String(card.value), card.kind === 'countdown' && card.value !== '今天' ? h('span', { class: 'info-unit' }, '天') : null) : null,
+    Array.isArray(card.series) ? sparkline(card.series, card.trend) : null,
+    Array.isArray(card.bars) && card.bars.length ? bars(card.bars) : null,
+    rows.length ? h('dl', { class: 'info-rows' }, rows.map((row) => h('div', { class: String(row.label || '').length + String(row.value).length > 13 ? 'wide' : null }, row.label ? h('dt', null, row.label) : null, h('dd', null, String(row.value))))) : null,
+    days.length ? h('div', { class: 'info-days' }, days.map((day) => h('div', { class: 'info-day' },
+      h('span', { class: 'muted small' }, day.label), h('span', { 'aria-hidden': 'true' }, GLYPH[day.icon] || ''),
+      h('span', { class: 'small' }, `${day.high}° `, h('span', { class: 'muted' }, `${day.low}°`))))) : null,
+    card.note ? h('div', { class: 'muted small info-note' }, card.note) : null);
+}
+
 function updateCall(cn, call, m, job) {
   const wasOpen = !!(cn.details && cn.details.open);
   cn.details = null;
   if (call.status === 'awaiting') fill(cn.main, approval(call, m));
+  else if (call.card && call.card.title) fill(cn.main, cardView(call.card));
   else {
     const body = callBody(call);
     if (body.length) {

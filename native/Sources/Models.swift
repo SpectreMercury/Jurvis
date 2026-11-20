@@ -70,6 +70,8 @@ extension Message {
             item["step"].string.isEmpty ? nil : PlanStep(step: item["step"].string, done: item["status"].string == "done")
         }
     }
+    /// The answers offered with the question this reply ended on.
+    var options: [String] { metadata["ask"]["options"].array.map(\.string).filter { !$0.isEmpty } }
     /// A tool call that is waiting for the user's yes or no.
     var awaitingCall: ToolCall? { isLive ? steps.flatMap(\.calls).first(where: \.awaiting) : nil }
 }
@@ -81,6 +83,12 @@ struct ToolCall: Codable, Hashable, Identifiable {
     var id: String; var name: String; var label: String; var status: String
     var summary: String?; var output: String?; var arguments: JSONValue?
     var job_id: String?; var project_id: String?; var duration: Double?
+    /// What the call made or found, shown as the thing itself instead of as a tool call (engine/cards.py describes the fields).
+    var card: JSONValue?
+    var made: JSONValue? {
+        guard let card, !card["title"].string.isEmpty else { return nil }
+        return card
+    }
     // run_command
     var command: String?; var reason: String?; var cwd: String?; var console: String?; var exit_code: Int?
     var isRunning: Bool { status == "running" }
@@ -91,6 +99,8 @@ struct Job: Codable, Identifiable, Equatable {
     var id: String; var kind: String; var status: String; var phase: String; var progress: Double
     var payload: JSONValue; var result: JSONValue; var error: String?; var created_at: Double; var updated_at: Double
     var isActive: Bool { ["queued", "running"].contains(status) }
+    /// Work the conversation does not wait for: a task started in the background, or a long reply that moved there.
+    var isBackground: Bool { payload["background"] == .bool(true) }
     var title: String { ["chat":"对话", "image":"生成图片", "video":"生成视频", "rewrite":"提示词编排", "plan":"短剧分镜", "export":"成片导出", "frames":"提取首尾帧", "install":"安装创作扩展", "code":"代码建议", "code_test":"构建与测试", "memory":"整理记忆"][kind] ?? kind }
     var statusLabel: String { ["queued":"排队中", "running":"进行中", "succeeded":"已完成", "failed":"未完成", "cancelled":"已取消", "interrupted":"已中断"][status] ?? status }
 }
@@ -157,7 +167,7 @@ struct WorkspaceFile: Codable, Identifiable { var name: String; var bytes: Int; 
 struct WorkspaceContent: Codable, Identifiable { var name: String; var content: String; var id: String { name } }
 
 enum Section: String, CaseIterable, Identifiable {
-    case assistant = "对话", drama = "短剧", library = "素材", tasks = "任务", home = "家居", memory = "记忆", files = "文件", settings = "设置"
+    case assistant = "对话", drama = "短剧", library = "素材", tasks = "任务", home = "家居", goals = "目标", ledger = "账本", memory = "记忆", files = "文件", settings = "设置"
     var id: String { rawValue }
     /// The name shown in navigation. Conversations are "任务" there, so the job queue is "后台任务".
     var title: String {
@@ -175,28 +185,32 @@ enum Section: String, CaseIterable, Identifiable {
         case .tasks: return "list.bullet.rectangle"
         case .home: return "house"
         case .memory: return "brain"
+        case .goals: return "scope"
+        case .ledger: return "list.bullet.rectangle.portrait"
         case .files: return "doc.text"
         case .settings: return "gearshape"
         }
     }
-    /// The four places of the app; the other sections are tabs inside two of them.
+    /// The places of the app; the other sections are tabs inside them.
     var hub: Hub {
         switch self {
         case .assistant: return .tasks
         case .library, .drama, .files: return .library
         case .home: return .home
+        case .goals, .ledger: return .agenda
         case .settings, .memory, .tasks: return .settings
         }
     }
 }
 
 enum Hub: String, CaseIterable, Identifiable {
-    case tasks = "任务", library = "作品库", home = "家居", settings = "设置"
+    case tasks = "任务", library = "作品库", agenda = "目标", home = "家居", settings = "设置"
     var id: String { rawValue }
     var icon: String {
         switch self {
         case .tasks: return "checklist"
         case .library: return "square.grid.2x2"
+        case .agenda: return "scope"
         case .home: return "house"
         case .settings: return "gearshape"
         }
@@ -208,6 +222,7 @@ enum Hub: String, CaseIterable, Identifiable {
         case .tasks: return [.assistant]
         case .library: return [.library, .drama, .files]
         case .home: return [.home]
+        case .agenda: return [.goals, .ledger]
         case .settings: return [.settings, .memory, .tasks]
         }
     }

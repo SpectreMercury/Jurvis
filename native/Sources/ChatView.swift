@@ -576,15 +576,21 @@ struct AssistantMessage: View {
         let steps = message.steps
         let plan = message.plan
         VStack(alignment: .leading, spacing: 12) {
-            if case .object = message.metadata["goal"] { GoalStatus(goal: message.metadata["goal"], live: message.isLive) }
+            if case .object = message.metadata["goal"] { GoalStatus(goal: message.metadata["goal"], live: message.isLive, task: message.metadata["task"]["title"].string) }
             if !plan.isEmpty { PlanList(plan: plan, live: message.isLive) }
             if steps.isEmpty {
                 if !message.content.isEmpty { MarkdownText(text: message.content) }
             } else {
                 ForEach(Array(steps.enumerated()), id: \.offset) { _, step in
-                    if !step.text.isEmpty { MarkdownText(text: step.text) }
-                    if !step.calls.isEmpty { ToolTrace(messageID: message.id, calls: step.calls, open: open) }
+                    // What the assistant says is a message of its own, one per step; tool traces sit between them.
+                    if !step.text.isEmpty { said(step.text) }
+                    // The question a reply ends on is shown as its options, not as a tool call.
+                    let calls = step.calls.filter { $0.name != "ask_user" }
+                    if !calls.isEmpty { ToolTrace(messageID: message.id, calls: calls, open: open) }
                 }
+            }
+            if !message.isLive, !message.options.isEmpty {
+                OptionList(options: message.options, isLatest: store.messages.last?.id == message.id, answer: answer)
             }
             if !message.isLive, !message.metadata["sources"].array.isEmpty { SourceList(sources: message.metadata["sources"].array) }
             footer(hasContent: !message.content.isEmpty || !steps.isEmpty, words: steps.isEmpty ? message.content : steps.map(\.text).filter { !$0.isEmpty }.joined(separator: "\n\n"))
@@ -592,12 +598,30 @@ struct AssistantMessage: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    func said(_ text: String) -> some View {
+        MarkdownText(text: text)
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            .background(Color.card, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(Color.hairline))
+    }
+
+    /// What the user answered, when this reply ended on a question: the message that follows it.
+    var answer: String? {
+        guard let index = store.messages.firstIndex(where: { $0.id == message.id }), index + 1 < store.messages.count,
+              store.messages[index + 1].isUser else { return nil }
+        return store.messages[index + 1].content
+    }
+
     /// `words` is the text the model wrote, which is what the read button reads aloud.
     @ViewBuilder func footer(hasContent: Bool, words: String) -> some View {
         if message.isLive {
             HStack(spacing: 8) {
                 SignalDot()
-                Text(liveStatus).font(.jSmall).foregroundStyle(Color.inkSoft).lineLimit(1)
+                Text(liveStatus).font(.jSmall).foregroundStyle(Color.inkSoft).lineLimit(2)
+                // The composer's stop button belongs to the reply being waited for; background work is stopped here.
+                if let job = ownJob, job.isBackground {
+                    ActionButton(title: "停止", busyTitle: "正在停止", kind: .ghost, scale: .small, isBusy: store.isCancelling(job)) { await store.cancel(job) }
+                }
             }
         } else {
             if !message.errorText.isEmpty {
@@ -619,12 +643,13 @@ struct AssistantMessage: View {
         }
     }
 
+    var ownJob: Job? { store.snapshot?.jobs.first { $0.kind == "chat" && $0.payload["message_id"].string == message.id } }
+
     var liveStatus: String {
         if message.status == "queued" { return "排队中，前面的任务完成后开始" }
-        if let job = store.snapshot?.jobs.first(where: { $0.kind == "chat" && $0.payload["message_id"].string == message.id }), !job.phase.isEmpty {
-            return job.phase
-        }
-        return "正在思考"
+        let moved = message.metadata["background"] == .bool(true) ? " · 已转到后台，做完发在这里，你可以接着聊" : ""
+        if let job = ownJob, !job.phase.isEmpty { return job.phase + moved }
+        return "正在思考" + moved
     }
 }
 
@@ -660,6 +685,46 @@ struct PlanList: View {
     }
 }
 
+/// The answers offered with a question. On the latest reply a tap sends that answer; on older ones the list records what was chosen.
+struct OptionList: View {
+    @EnvironmentObject var store: AppStore
+    var options: [String]
+    var isLatest: Bool
+    var answer: String?
+    @State private var sending: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(options, id: \.self) { option in
+                let chosen = answer == option
+                Button {
+                    guard sending == nil else { return }
+                    sending = option
+                    Task {
+                        do { try await store.send(option, assets: []) } catch { store.report(error) }
+                        sending = nil
+                    }
+                } label: {
+                    HStack(spacing: 12) {
+                        Text(option).font(.jBody).multilineTextAlignment(.leading).frame(maxWidth: .infinity, alignment: .leading)
+                        if sending == option { ProgressView().controlSize(.small) }
+                        else if chosen { Image(systemName: "checkmark").font(.system(size: 12, weight: .semibold)) }
+                    }
+                    .foregroundStyle(isLatest || chosen ? Color.ink : Color.inkFaint)
+                    .padding(.horizontal, 14).padding(.vertical, 10).frame(minHeight: 44)
+                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(chosen ? Color.stroke : Color.stroke.opacity(isLatest ? 1 : 0.6), style: StrokeStyle(lineWidth: 1, dash: chosen ? [] : [4, 3])))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(!isLatest || sending != nil)
+                .accessibilityAddTraits(chosen ? .isSelected : [])
+            }
+        }
+        .frame(maxWidth: 520, alignment: .leading)
+    }
+}
+
 // MARK: - Tool trace
 
 /// Each tool call is a small pill; tap one for its arguments and result. A long run folds to its latest calls.
@@ -673,7 +738,7 @@ struct ToolTrace: View {
 
     /// Commands and anything waiting for a yes are shown as their own cards.
     static func isCard(_ call: ToolCall) -> Bool { call.name == "run_command" || call.awaiting }
-    var quiet: [ToolCall] { calls.filter { !Self.isCard($0) } }
+    var quiet: [ToolCall] { calls.filter { !Self.isCard($0) && $0.made == nil } }
 
     var body: some View {
         let quiet = quiet
@@ -697,10 +762,128 @@ struct ToolTrace: View {
             }
             ForEach(calls) { call in
                 if Self.isCard(call) { CommandCard(messageID: messageID, call: call) }
+                else if let made = call.made { CardView(card: made) }
                 else if call.name == "edit_code", let id = call.job_id { ChangeSetCard(jobID: id) }
                 else if let id = call.job_id, let job = store.job(id) { JobInline(job: job, open: open) }
             }
         }
+    }
+}
+
+/// What a tool call made or found, shown as the thing itself instead of as a tool call.
+/// A made thing (goal, schedule, memory, document, task) is one row; a lookup (weather, price, rate, clock, countdown) shows its figures.
+struct CardView: View {
+    var card: JSONValue
+    @EnvironmentObject var store: AppStore
+    static let made = ["goal": "scope", "schedule": "calendar.badge.clock", "memory": "bookmark", "file": "doc.text", "task": "checklist"]
+    /// Where the thing a card stands for lives; a tap goes there.
+    static let places: [String: Section] = ["goal": .goals, "schedule": .goals, "memory": .memory, "file": .files, "ledger": .ledger, "expense": .ledger]
+    static let glyphs = ["sun": "sun.max.fill", "moon": "moon.stars.fill", "partly": "cloud.sun.fill", "cloud": "cloud.fill", "fog": "cloud.fog.fill",
+                         "drizzle": "cloud.drizzle.fill", "rain": "cloud.rain.fill", "snow": "snowflake", "storm": "cloud.bolt.rain.fill",
+                         "coin": "bitcoinsign.circle.fill", "exchange": "arrow.left.arrow.right.circle.fill", "calendar": "calendar", "wallet": "list.bullet.rectangle.portrait.fill"]
+    var kind: String { card["kind"].string }
+    var trendColor: Color { card["trend"].string == "up" ? .signal : card["trend"].string == "down" ? .danger : .inkFaint }
+
+    var body: some View {
+        let content = Group {
+            if let symbol = Self.made[kind] { row(symbol) } else { figures }
+        }
+        .surface(radius: 16)
+        .accessibilityElement(children: .combine)
+        if let place = Self.places[kind] {
+            Button { store.section = place } label: { content.contentShape(Rectangle()) }.buttonStyle(.plain).accessibilityHint("打开" + place.rawValue)
+        } else {
+            content
+        }
+    }
+
+    func row(_ symbol: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: symbol).font(.system(size: 15)).foregroundStyle(Color.inkSoft)
+                .frame(width: 32, height: 32)
+                .background(Color.bubble, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(card["title"].string).font(.jHeading).lineLimit(1)
+                if !card["subtitle"].string.isEmpty { Text(card["subtitle"].string).font(.jSmall).foregroundStyle(Color.inkSoft).lineLimit(1) }
+                if !card["note"].string.isEmpty { Text(card["note"].string).font(.jCallout).foregroundStyle(Color.inkSoft).lineLimit(2).padding(.top, 2) }
+            }
+            Spacer(minLength: 0)
+            if Self.places[kind] != nil { Image(systemName: "chevron.right").font(.system(size: 11, weight: .medium)).foregroundStyle(Color.inkFaint).padding(.top, 10) }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .frame(maxWidth: 360, alignment: .leading)
+    }
+
+    var figures: some View {
+        let shares = card["bars"].array.map { (label: $0["label"].string, value: $0["value"].string, share: $0["share"].number ?? 0) }
+        let rows = card["rows"].array
+        let days = card["days"].array
+        let series = card["series"].array.compactMap(\.number)
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(card["title"].string).font(.jHeading).lineLimit(1)
+                    if !card["subtitle"].string.isEmpty { Text(card["subtitle"].string).font(.jSmall).foregroundStyle(Color.inkSoft).lineLimit(1) }
+                }
+                Spacer(minLength: 8)
+                if let glyph = Self.glyphs[card["icon"].string] {
+                    Image(systemName: glyph).symbolRenderingMode(.multicolor).font(.system(size: 24)).foregroundStyle(Color.inkSoft)
+                }
+            }
+            if !card["value"].string.isEmpty {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(card["value"].string).font(.system(size: ["price", "currency", "ledger", "expense"].contains(kind) ? 28 : 38, weight: .semibold)).monospacedDigit()
+                        .lineLimit(1).minimumScaleFactor(0.6)
+                    if kind == "countdown", card["value"].string != "今天" { Text("天").font(.jBody).foregroundStyle(Color.inkSoft) }
+                }
+            }
+            if series.count > 2 { Sparkline(points: series).stroke(trendColor, style: StrokeStyle(lineWidth: 1.5, lineJoin: .round)).frame(height: 34) }
+            if !shares.isEmpty { ShareBars(items: shares) }
+            if !rows.isEmpty {
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 16), GridItem(.flexible())], alignment: .leading, spacing: 6) {
+                    ForEach(Array(rows.enumerated()), id: \.offset) { _, item in
+                        HStack(spacing: 8) {
+                            if !item["label"].string.isEmpty { Text(item["label"].string).foregroundStyle(Color.inkFaint) }
+                            Spacer(minLength: 0)
+                            Text(item["value"].string).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
+                        }
+                        .font(.jCallout)
+                    }
+                }
+            }
+            if !days.isEmpty {
+                Divider().overlay(Color.hairline)
+                HStack(spacing: 4) {
+                    ForEach(Array(days.enumerated()), id: \.offset) { _, day in
+                        VStack(spacing: 3) {
+                            Text(day["label"].string).font(.jSmall).foregroundStyle(Color.inkSoft)
+                            Image(systemName: Self.glyphs[day["icon"].string] ?? "cloud.fill").symbolRenderingMode(.multicolor).font(.system(size: 15)).foregroundStyle(Color.inkSoft)
+                            (Text("\(Int(day["high"].number ?? 0))° ") + Text("\(Int(day["low"].number ?? 0))°").foregroundColor(.inkFaint)).font(.jSmall).monospacedDigit()
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                }
+            }
+            if !card["note"].string.isEmpty { Text(card["note"].string).font(.jSmall).foregroundStyle(Color.inkFaint).lineLimit(1) }
+        }
+        .padding(.horizontal, 16).padding(.vertical, 14)
+        .frame(maxWidth: 360, alignment: .leading)
+    }
+}
+
+/// A week of prices as one line, scaled to its own low and high.
+struct Sparkline: Shape {
+    var points: [Double]
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        guard points.count > 1, let low = points.min(), let high = points.max() else { return path }
+        let span = high - low == 0 ? 1 : high - low
+        for (index, value) in points.enumerated() {
+            let point = CGPoint(x: rect.minX + rect.width * CGFloat(index) / CGFloat(points.count - 1),
+                                y: rect.maxY - 1 - (rect.height - 2) * CGFloat((value - low) / span))
+            if index == 0 { path.move(to: point) } else { path.addLine(to: point) }
+        }
+        return path
     }
 }
 
@@ -803,11 +986,14 @@ struct CommandCard: View {
 struct GoalStatus: View {
     var goal: JSONValue
     var live: Bool
+    /// The title of the background task this message carries; empty for a goal the user set.
+    var task = ""
+    var name: String { task.isEmpty ? "目标" : "后台任务「\(task)」" }
 
     var body: some View {
         let status = goal["status"].string
         if live {
-            Badge(text: "目标 · " + label(status), tone: .active)
+            Badge(text: name + " · " + label(status), tone: .active)
         } else {
             HStack(alignment: .firstTextBaseline, spacing: 7) {
                 Group {
@@ -816,7 +1002,7 @@ struct GoalStatus: View {
                     else { Image(systemName: icon(status)).font(.system(size: 13)).foregroundStyle(Color.inkSoft) }
                 }
                 .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 3 }
-                Text("目标").font(.jSmall.weight(.medium))
+                Text(name).font(.jSmall.weight(.medium))
                 Text(label(status)).font(.jSmall).foregroundStyle(status == "blocked" ? Color.signal : Color.inkSoft).lineLimit(2)
             }
         }

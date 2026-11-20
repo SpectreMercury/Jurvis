@@ -138,7 +138,8 @@ def create_app(settings=None, *, run_worker=True):
             if prior["payload"].get("input")!=body.model_dump() or prior["payload"].get("session_id")!=ident:
                 raise HTTPException(409,"请求标识已用于不同消息")
             return prior
-        if store.one("SELECT id FROM jobs WHERE kind='chat' AND status IN ('queued','running') AND json_extract(payload,'$.session_id')=?",(ident,)):
+        # Background work does not hold the conversation: only a reply the user is waiting for does.
+        if store.one("SELECT id FROM jobs WHERE kind='chat' AND status IN ('queued','running') AND json_extract(payload,'$.session_id')=? AND json_extract(payload,'$.background') IS NULL",(ident,)):
             raise HTTPException(409,"请等待当前回复结束，或先停止它")
         for asset in body.asset_ids:
             worker.media.asset(asset)
@@ -194,7 +195,7 @@ def create_app(settings=None, *, run_worker=True):
             latest=store.one("SELECT id FROM jobs WHERE kind='chat' AND json_extract(payload,'$.session_id')=? ORDER BY created_at DESC LIMIT 1",(old["payload"]["session_id"],))
             if latest["id"]!=ident:
                 raise HTTPException(409,"这段对话已有后续消息，请重新发送需要回答的问题")
-            if store.one("SELECT id FROM jobs WHERE kind='chat' AND status IN ('queued','running') AND json_extract(payload,'$.session_id')=?",(old["payload"]["session_id"],)):
+            if store.one("SELECT id FROM jobs WHERE kind='chat' AND status IN ('queued','running') AND json_extract(payload,'$.session_id')=? AND json_extract(payload,'$.background') IS NULL",(old["payload"]["session_id"],)):
                 raise HTTPException(409,"当前对话已有进行中的回复")
             payload=dict(old["payload"])
             payload["message_id"]=store.add_message(payload["session_id"],"assistant","","queued")
@@ -286,6 +287,50 @@ def create_app(settings=None, *, run_worker=True):
 
     @app.get("/api/files/{name}")
     async def read_file(name:str):return worker.tools.execute("read_file",{"name":name})
+
+    @app.get("/api/agenda")
+    async def agenda():
+        """The long-term goals and the scheduled work, for the Goals view."""
+        return {"goals":worker.tools.agenda.goals(),"schedules":worker.tools.agenda.schedules()}
+
+    @app.delete("/api/goals/{ident}")
+    async def delete_goal(ident:str):
+        worker.tools.agenda.remove_goal(ident);return {"ok":True}
+
+    @app.delete("/api/schedules/{ident}")
+    async def delete_schedule(ident:str):
+        try:worker.tools.agenda.cancel(ident)
+        except ValueError:raise HTTPException(404,"定时任务不存在")
+        return {"ok":True}
+
+    @app.get("/api/ledger")
+    async def ledger(period:str="this_month",category:str=""):
+        """The ledger page: totals and every payment of a period. Read by the user's own devices, never by a model."""
+        try:
+            summary=worker.tools.ledger.summary(period,category)
+            return {"summary":summary,"transactions":worker.tools.ledger.transactions(period,category)["transactions"],"budgets":worker.tools.ledger.budgets()}
+        except ValueError as exc:raise HTTPException(400,str(exc))
+
+    @app.post("/api/ledger/import")
+    async def import_bill(file:UploadFile=File(...)):
+        content=await file.read(8*1024*1024+1)
+        if len(content)>8*1024*1024:raise HTTPException(413,"账单文件不能超过 8MB")
+        try:result=worker.tools.ledger.import_bill(content,file.filename or "")
+        except ValueError as exc:raise HTTPException(400,str(exc))
+        # Payments the keyword rules could not place are sorted by the local model in the background.
+        if result["uncategorized"] and not store.one("SELECT id FROM jobs WHERE kind='ledger' AND status IN ('queued','running')"):
+            result["job_id"]=store.create_job("ledger",{})["id"]
+        return result
+
+    @app.patch("/api/ledger/transactions/{ident}")
+    async def recategorize(ident:str,body:dict):
+        try:worker.tools.ledger.recategorize(ident,str(body.get("category","")))
+        except ValueError as exc:raise HTTPException(400,str(exc))
+        return {"ok":True}
+
+    @app.delete("/api/ledger/transactions/{ident}")
+    async def delete_transaction(ident:str):
+        worker.tools.ledger.remove(ident);return {"ok":True}
 
     @app.post("/api/memories")
     async def memory(body:MemoryCreate):
