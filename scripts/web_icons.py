@@ -19,7 +19,7 @@ ICONS = {
     "chat": "message-square", "target": "target", "clip": "paperclip", "send": "arrow-up", "stop": "square",
     "left": "chevron-left", "right": "chevron-right", "down": "chevron-down", "panel": "panel-right", "trash": "trash-2",
     "refresh": "refresh-cw", "link": "link", "shield": "shield", "eyeoff": "eye-off", "play": "play", "spark": "sparkles",
-    "wrench": "wrench", "tasks": "list-checks",
+    "wrench": "wrench", "tasks": "list-checks", "heart": "heart-pulse", "leaf": "leaf",
     "mic": "mic", "volume": "volume-2", "voice": "audio-lines",
     # devices
     "bulb": "lightbulb", "air": "air-vent", "fan": "fan", "blinds": "blinds", "lock": "lock", "unlocked": "lock-open",

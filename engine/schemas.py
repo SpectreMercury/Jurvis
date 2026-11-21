@@ -144,6 +144,15 @@ class CommandDecision(BaseModel):
     decision: Literal["run", "deny", "always"]
 
 
+class StreamCreate(ChatCreate):
+    """A message into the one conversation. The engine decides which stretch of it the message belongs to."""
+    code_project_id: str | None = Field(default=None, max_length=64, description='work in this code project from now on; "" leaves the project; omitted keeps what is open')
+    incognito: bool | None = Field(default=None, description="off the record from now on, or back on it; omitted keeps what is open")
+    fresh: bool = False     # the user asked to start on something new
+    answer_to: str | None = Field(default=None, max_length=64, description="the question (its id) this message answers, when it was picked from what is waiting to be decided")
+    model: str | None = Field(default=None, max_length=200, description='the model to talk with from now on; "" is the default; omitted keeps what is open')
+
+
 class SessionUpdate(BaseModel):
     allow_commands: bool | None = None
     model: str | None = Field(default=None, max_length=200, description='"" resets to the default model')

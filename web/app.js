@@ -4,13 +4,19 @@ import * as chat from './chat.js';
 import * as library from './library.js';
 import * as home from './home.js';
 import * as memory from './memory.js';
+import * as goals from './goals.js';
+import * as ledger from './ledger.js';
+import * as health from './health.js';
 import * as settings from './settings.js';
 import { icon } from './icons.js';
 
 const TABS = [
-  { id: 'chat', label: '任务', icon: 'list', module: chat },
+  { id: 'chat', label: '对话', icon: 'list', module: chat },
   { id: 'library', label: '作品库', icon: 'folder', module: library },
   { id: 'home', label: '家居', icon: 'home', module: home },
+  { id: 'goals', label: '目标', icon: 'target', module: goals },
+  { id: 'health', label: '健康', icon: 'heart', module: health },
+  { id: 'ledger', label: '账本', icon: 'doc', module: ledger },
   { id: 'memory', label: '记忆', icon: 'bookmark', module: memory },
   { id: 'settings', label: '设置', icon: 'gear', module: settings },
 ];
@@ -104,7 +110,7 @@ function buildShell() {
   const tabs = h('nav', { class: 'tabs', 'aria-label': '主导航' });
   const main = h('main', { class: 'views' });
   const nav = h('nav', { class: 'nav', 'aria-label': '导航' });
-  navRows.new = h('button', { class: 'nav-row', type: 'button', onclick: () => { go('chat', false); chat.newConversation(true); } }, icon('plus'), '新任务');
+  navRows.new = h('button', { class: 'nav-row', type: 'button', onclick: () => { go('chat', false); chat.newConversation(true); } }, icon('plus'), '新话题');
   nav.append(navRows.new);
   for (const tab of TABS) {
     const view = h('section', { class: 'view view-' + tab.id, hidden: true, 'aria-label': tab.label });
@@ -127,9 +133,9 @@ function buildShell() {
   const sidebar = h('aside', { class: 'sidebar' },
     h('div', { class: 'brand' }, logo(24), h('span', null, 'Jurvis'), status.pill),
     nav, side.waiting,
-    h('div', { class: 'side-tasks' }, h('div', { class: 'side-title' }, '任务'), side.list),
+    h('div', { class: 'side-tasks' }, h('div', { class: 'side-title' }, '对话记录'), side.list),
     h('div', { class: 'side-foot' },
-      h('button', { class: 'new-task', type: 'button', onclick: () => chat.newConversation(true) }, icon('plus', 18), '交给 Jurvis 一个新任务')),
+      h('button', { class: 'new-task', type: 'button', onclick: () => chat.newConversation(true) }, icon('plus', 18), '换个话题，交给 Jurvis 一件新的事')),
     status.box);
   offline = h('div', { class: 'offline', hidden: true, role: 'status' }, '连接中断，正在重试…');
   shell = h('div', { class: 'shell' }, sidebar, h('div', { class: 'main-col' }, offline, main), tabs);
@@ -197,10 +203,12 @@ on('auth', () => {
 });
 on('goto', (id) => go(id, false));
 on('conv', syncNav);
+on('open-stretch', (id) => { go('chat', false); chat.openStretch(id); });
 on('ask', (text) => { go('chat', false); chat.startTask(text); });
 on('state', () => {
   if (offline) offline.hidden = true;
   chat.onState();
+  chat.announce();
   renderStatus();
   if (store.tab === 'library') library.onState();
   if (store.tab === 'memory') memory.onState();
@@ -214,6 +222,9 @@ function handleEvent(event) {
     chat.refreshMessages();
     return;
   }
+  if (event.entity === 'goals' || event.entity === 'schedules') { goals.refresh(); return; }
+  if (event.entity === 'ledger') { ledger.refresh(); return; }
+  if (event.entity === 'health') { health.refresh(); return; }
   if (event.entity === 'settings' && store.tab === 'settings') settings.onSettingsEvent();
   refreshState();
 }

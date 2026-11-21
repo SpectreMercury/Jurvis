@@ -8,6 +8,7 @@ import { renderMarkdown } from './md.js';
 import { icon, toolIcon } from './icons.js';
 import { disclosure, ask } from './ui.js';
 import * as voice from './voice.js';
+import { bars } from './ledger.js';
 
 const MODES = [
   ['goal', '目标', 'target', '目标：先列计划，自己一步步做完再汇报；写到一半被截断会自动续写。'],
@@ -21,7 +22,10 @@ const MODE_HINTS = Object.fromEntries(MODES.map(([id, , , hint]) => [id, hint]))
 const MAX_IMAGES = 4;
 const coarse = window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
 
-const draft = { model: '', incognito: false }; // choices for a conversation that does not exist yet
+const draft = { model: '', incognito: false }; // choices for what is said next, while no stretch of the conversation is open
+// The one conversation: what is loaded starts at `from` (a message time) and follows the present, unless an old part is open (`past`).
+const stream = { from: null, earlier: false, past: false, fresh: false, target: null };
+const STREAM_LIMIT = 400;
 let mode = null;
 let speech = { stt: false, tts: false };   // what the Mac can do with voice
 let dictation = null;   // the recording in progress for the composer
@@ -35,19 +39,28 @@ let loadSeq = 0;
 const nodes = new Map();     // message id -> {el, sig, parts}
 const extraJobs = new Map(); // jobs older than the 200 in /api/state, fetched once
 const els = {};
-let open = false;        // phone: the conversation is on screen (otherwise the task list)
+let open = true;         // phone: the conversation is on screen (otherwise the list of its earlier stretches)
 let waitingId = null;
 
 // ---------------------------------------------------------------- mount
 export function mount(root) {
   els.list = h('div', { class: 'session-list' });
+  // Finding something said before: by the words, across the whole conversation.
+  els.search = h('input', { class: 'side-search', type: 'search', placeholder: '搜索说过的话', 'aria-label': '搜索说过的话', enterKeyHint: 'search' });
+  els.hits = h('div', { class: 'session-list', hidden: true });
+  let typing = 0;
+  els.search.addEventListener('input', () => { clearTimeout(typing); typing = setTimeout(findSaid, 300); });
+  els.side = h('div', { class: 'side-stream' }, els.search, els.hits, els.list);
   els.waiting = h('button', { class: 'waiting-card', type: 'button', hidden: true, onclick: () => { if (waitingId) openSession(waitingId); } });
 
-  els.title = h('div', { class: 'conv-title' }, '新任务');
+  els.title = h('div', { class: 'conv-title' }, 'Jurvis');
   els.state = h('div', { class: 'conv-state' });
-  els.modelBtn = h('button', { class: 'chip', type: 'button', onclick: chooseModel, title: '这个任务使用的模型' });
-  els.incognito = action(icon('eyeoff', 18), toggleIncognito, { class: 'icon-btn', 'aria-pressed': 'false', 'aria-label': '无痕', title: '无痕：这个任务不读取也不写入记忆' });
-  els.msgs = h('div', { class: 'msgs' });
+  els.modelBtn = h('button', { class: 'chip', type: 'button', onclick: chooseModel, title: '对话使用的模型' });
+  els.incognito = action(icon('eyeoff', 18), toggleIncognito, { class: 'icon-btn', 'aria-pressed': 'false', 'aria-label': '无痕', title: '无痕：这段对话不读取也不写入记忆' });
+  els.earlier = action('更早的对话', loadEarlier, { class: 'btn small earlier', hidden: true });
+  els.msgs = h('div', { class: 'msgs' }, els.earlier);
+  els.note = h('div', { class: 'stream-note', hidden: true });
+  els.tray = h('div', { class: 'tray', hidden: true, role: 'group', 'aria-label': '等你决定' });
   els.empty = h('div', { class: 'empty' }, h('p', { class: 'empty-title' }, '今天交给 Jurvis 什么？'),
     h('p', { class: 'muted' }, '说清楚想要的结果，它会自己列计划、分步做完，需要你时再来找你。'));
   els.scroller = h('div', { class: 'scroller' }, els.empty, els.msgs);
@@ -92,11 +105,11 @@ export function mount(root) {
 
   els.conv = h('section', { class: 'conv' },
     h('header', { class: 'conv-head' },
-      h('button', { class: 'icon-btn back', type: 'button', 'aria-label': '任务列表', onclick: showList }, icon('left', 20, 1.6)),
+      h('button', { class: 'icon-btn back', type: 'button', 'aria-label': '对话记录', onclick: showList }, icon('left', 20, 1.6)),
       h('div', { class: 'conv-heading' }, els.title, els.state),
       h('div', { class: 'conv-actions' }, els.incognito)),
     els.scroller,
-    h('div', { class: 'composer-wrap' }, els.composer, els.modeRow, els.modeHint));
+    h('div', { class: 'composer-wrap' }, els.tray, els.note, els.composer, els.modeRow, els.modeHint));
 
   els.screen = h('div', { class: 'chat-screen' }, els.conv);
   root.append(els.screen);
@@ -161,7 +174,6 @@ async function askAloud(text) {
   if (!sid) throw new Error('没有发出去');
   for (;;) {
     await sleep(400);
-    if (store.sessionId !== sid) throw new Error('已经换到别的任务，语音对话停在这里');
     const live = jobsOf(sid).find(isLive);
     if (live && String(live.phase || '').startsWith('等待你确认')) return '有一步需要你确认，请结束语音对话，在屏幕上处理。';
     if (!live && !sending) break;
@@ -173,7 +185,15 @@ async function askAloud(text) {
   return stepsOf(last).map((step) => step.text || '').filter(Boolean).pop() || '';
 }
 
-/** Starts a new task with this text, as if it had been typed and sent. */
+/** Sends one of the offered options as the user's reply in this conversation. */
+function answer(option) {
+  if (sending || liveJob()) return;
+  els.input.value = option;
+  autogrow();
+  send();
+}
+
+/** Says this as the start of something new, as if it had been typed and sent. */
 export function startTask(text) {
   newConversation(false);
   els.input.value = String(text || '').slice(0, 16000);
@@ -183,8 +203,24 @@ export function startTask(text) {
 }
 
 /** The parts of this module that live in the app's sidebar. */
-export function sideParts() { return { list: els.list, waiting: els.waiting }; }
-export function where() { return { open, blank: !store.sessionId }; }
+export function sideParts() { return { list: els.side, waiting: els.waiting }; }
+
+let findSeq = 0;
+async function findSaid() {
+  const query = els.search.value.trim();
+  const seq = ++findSeq;
+  if (query.length < 2) { els.hits.hidden = true; els.list.hidden = false; return; }
+  let found;
+  try { found = (await get('/api/stream/search?q=' + encodeURIComponent(query))).results; } catch { return; }
+  if (seq !== findSeq) return;
+  els.list.hidden = true;
+  els.hits.hidden = false;
+  fill(els.hits, found.length ? null : h('p', { class: 'muted small pad' }, '没有说到过。'), ...found.map((hit) =>
+    h('div', { class: 'session-row' }, h('button', { class: 'session-open hit', type: 'button', onclick: () => openSession(hit.session_id, hit.id) },
+      h('span', { class: 'session-text' }, h('span', { class: 'session-title' }, hit.snippet),
+        h('span', { class: 'session-sub' }, stretchTime(hit.created_at) + ' · ' + (hit.title || '对话')))))));
+}
+export function where() { return { open, blank: stream.fresh }; }
 
 export function showList() { open = false; emit('conv'); }
 function showConversation() { open = true; emit('conv'); }
@@ -193,6 +229,7 @@ function showConversation() { open = true; emit('conv'); }
 export function reset() {
   store.sessionId = null;
   store.messages = [];
+  Object.assign(stream, { from: null, earlier: false, past: false, fresh: false, target: null });
   draft.model = '';
   draft.incognito = false;
   mode = null;
@@ -203,6 +240,8 @@ export function reset() {
 }
 
 export function onState() {
+  if (stream.from == null && !stream.past) refreshMessages();  // the first state after signing in: the conversation is loaded with it
+  renderTray();
   renderList();
   renderHeader();
   renderMessages();
@@ -229,13 +268,13 @@ function renderList() {
   waitingId = waiting ? waiting.id : null;
   els.waiting.hidden = !waiting;
   if (waiting) {
-    fill(els.waiting, h('span', { class: 'live' }, '等你确认'), h('span', { class: 'waiting-title' }, waiting.title || '新任务'),
+    fill(els.waiting, h('span', { class: 'live' }, '等你确认'), h('span', { class: 'waiting-title' }, waiting.title || '对话'),
       h('span', { class: 'muted small' }, 'Jurvis 停在这一步，等你允许或拒绝。'), h('span', { class: 'go' }, '去确认', icon('right', 14)));
   }
 
   fill(els.list);
   if (!sessions.length) {
-    els.list.append(h('p', { class: 'muted small pad' }, '还没有任务。'));
+    els.list.append(h('p', { class: 'muted small pad' }, '还没有对话。'));
     return;
   }
   const row = (s) => {
@@ -244,17 +283,18 @@ function renderList() {
     const sub = badge ? (badge.kind === 'wait' ? '等你确认' : badge.phase) : s.incognito ? '无痕' : '';
     const button = h('button', { class: 'session-open', type: 'button', onclick: () => openSession(s.id) },
       h('span', { class: 'session-mark' + (live ? ' live' : '') }, icon(badge ? (badge.kind === 'wait' ? 'alert' : 'clock') : 'check')),
-      h('span', { class: 'session-text' }, h('span', { class: 'session-title' }, s.title || '新任务'), sub ? h('span', { class: 'session-sub' }, sub) : null),
+      h('span', { class: 'session-text' }, h('span', { class: 'session-title' }, s.title || '对话'), sub ? h('span', { class: 'session-sub' }, sub) : null),
       h('span', { class: 'session-tag' + (badge && badge.kind === 'wait' ? ' green' : '') }, badge ? (badge.kind === 'wait' ? '等你' : '') : shortTime(s.updated_at)));
     const remove = action(icon('trash', 15), async () => {
-      if (!await ask(`删除“${s.title || '新任务'}”？这个任务的消息会一并删除。`, { ok: '删除', danger: true })) return;
+      if (!await ask(`删除“${s.title || '对话'}”？这段对话的消息会一并删除。`, { ok: '删除', danger: true })) return;
       await del('/api/sessions/' + encodeURIComponent(s.id));
       if (store.state) store.state.sessions = store.state.sessions.filter((x) => x.id !== s.id);
-      if (store.sessionId === s.id) { newConversation(false); showList(); }
+      if (store.sessionId === s.id) store.sessionId = null;
       listSig = '';
       renderList();
+      backToNow();
       refreshState();
-    }, { class: 'icon-btn small session-remove', 'aria-label': '删除任务', title: '删除任务' });
+    }, { class: 'icon-btn small session-remove', 'aria-label': '删除这段对话', title: '删除这段对话' });
     return h('div', { class: 'session-row' + (s.id === store.sessionId ? ' current' : '') }, button, remove);
   };
   const running = sessions.filter((s) => badges.has(s.id));
@@ -276,31 +316,115 @@ function clearMessages() {
   stick = true;
 }
 
+/** The conversation goes on by itself; this only says that what comes next is about something else. */
 export function newConversation(focus) {
-  store.sessionId = null;
-  clearMessages();
-  renderMessages();
-  renderHeader();
-  renderList();
+  stream.fresh = true;
+  if (stream.past) backToNow();
+  renderNote();
   showConversation();
   if (focus && !coarse) els.input.focus();
 }
 
-function openSession(id) {
-  showConversation();
-  if (store.sessionId === id) return;
-  store.sessionId = id;
+/** Leaves the old part that was open and follows the present again. */
+function backToNow() {
+  stream.past = false;
+  stream.from = null;
   clearMessages();
+  renderNote();
+  return loadMessages(true);
+}
+
+/** Opens the conversation at an earlier stretch, from another screen. */
+export function openStretch(id) { return openSession(id); }
+
+/** Opens the conversation at an earlier stretch, or at one message of it. */
+async function openSession(id, messageId = null) {
+  showConversation();
+  let page;
+  try {
+    page = await get('/api/stream?' + (messageId ? 'at=' + encodeURIComponent(messageId) : 'start=' + encodeURIComponent(id)) + '&limit=' + STREAM_LIMIT);
+  } catch (err) {
+    if (!(err instanceof ApiError && err.status === 401)) notify(err.message);
+    return;
+  }
+  clearMessages();
+  stream.past = page.later;
+  stream.from = null;
+  const first = page.messages.find((m) => m.session_id === id) || page.messages[0];
+  stream.target = messageId || (first && first.id) || null;
+  stick = false;
+  applyPage(page);
+}
+
+async function loadEarlier() {
+  const first = store.messages[0];
+  if (!first || !stream.earlier) return;
+  const page = await get('/api/stream?before=' + first.created_at.toFixed(6));
+  const height = els.scroller.scrollHeight;
+  stream.from = (page.messages.length ? page.messages[0].created_at : first.created_at) - 0.00001;
+  stream.earlier = page.earlier;
+  store.messages = [...page.messages, ...store.messages];
+  stick = false;
   renderMessages();
-  renderHeader();
-  renderList();
-  loadMessages(true);
+  els.scroller.scrollTop += els.scroller.scrollHeight - height;  // what was on screen stays where it was
+}
+
+function applyPage(page) {
+  if (stream.from == null) stream.from = (page.messages.length ? page.messages[0].created_at : Date.now() / 1000) - 0.00001;
+  stream.earlier = page.earlier;
+  const moved = store.sessionId !== page.current;
+  store.sessionId = page.current;
+  store.messages = page.messages;
+  renderMessages();
+  renderNote();
+  if (moved) { renderHeader(); listSig = ''; renderList(); }
+}
+
+// What Jurvis asked and the user has not decided yet stays above the composer, wherever they are in the conversation.
+// The question the conversation ends on is left out: its options are right there under it.
+let trayAt = 0;
+let traySig = '';
+function renderTray() {
+  const last = store.messages.length ? store.messages[store.messages.length - 1].id : null;
+  const items = ((store.state && store.state.questions) || []).filter((q) => q.message_id !== last);
+  els.tray.hidden = !items.length;
+  if (!items.length) { traySig = ''; return; }
+  trayAt = Math.min(trayAt, items.length - 1);
+  const sig = JSON.stringify([items, trayAt]);
+  if (sig === traySig) return;
+  traySig = sig;
+  const q = items[trayAt];
+  fill(els.tray,
+    h('div', { class: 'tray-head' },
+      h('span', { class: 'tray-label' }, items.length > 1 ? `等你决定 · ${trayAt + 1}/${items.length}` : '等你决定'),
+      items.length > 1 ? h('button', { class: 'link', type: 'button', onclick: () => { trayAt = (trayAt + 1) % items.length; renderTray(); } }, '下一个') : null,
+      action('×', async () => {
+        await del('/api/questions/' + encodeURIComponent(q.id));
+        if (store.state) store.state.questions = store.state.questions.filter((x) => x.id !== q.id);
+        renderTray();
+        refreshState();
+      }, { class: 'icon-btn small', 'aria-label': '不用决定了', title: '不用决定了' })),
+    h('button', { class: 'tray-question', type: 'button', title: '看看当时说到哪了', onclick: () => openSession(q.session_id, q.message_id) }, q.question),
+    h('div', { class: 'tray-options' }, q.options.map((option) => h('button', { class: 'option', type: 'button', onclick: () => {
+      if (sending || liveJob()) return;
+      els.input.value = option;
+      autogrow();
+      send({ answerTo: q.id });
+    } }, option))));
+}
+
+/** One line above the composer: an old part of the conversation is open, or the next message begins a new subject. */
+function renderNote() {
+  els.note.hidden = !(stream.past || stream.fresh);
+  if (stream.past) fill(els.note, h('span', null, '这是较早的对话'), h('button', { class: 'link', type: 'button', onclick: backToNow }, '回到现在'));
+  else if (stream.fresh) fill(els.note, h('span', null, '下一条消息会开始一个新话题'), h('button', { class: 'link', type: 'button', onclick: () => { stream.fresh = false; renderNote(); } }, '取消'));
+  emit('conv');
 }
 
 // ---------------------------------------------------------------- header: title, model, incognito
 function renderHeader() {
   const s = store.sessionId ? sessionOf(store.sessionId) : null;
-  els.title.textContent = (s && s.title) || '新任务';
+  els.title.textContent = stream.past ? '较早的对话' : (s && s.title) || 'Jurvis';
   const model = store.sessionId ? ((s && s.model) || '') : draft.model;
   fill(els.modelBtn, icon('chip', 14), modelLabel(model), icon('down', 12));
   const incognito = store.sessionId ? !!(s && s.incognito) : draft.incognito;
@@ -322,7 +446,7 @@ function chooseModel() {
   const sid = store.sessionId;
   const s = sid ? sessionOf(sid) : null;
   pickModel({
-    title: '这个任务的模型',
+    title: '对话的模型',
     current: sid ? ((s && s.model) || '') : draft.model,
     defaultLabel: '默认' + (store.state && store.state.chat_model ? `（${modelLabel(store.state.chat_model)}）` : ''),
     onPick: async (id) => {
@@ -357,8 +481,9 @@ function renderModes() {
   els.modeHint.textContent = mode ? MODE_HINTS[mode] : '';
 }
 
+/** The reply the conversation is waiting for. Background work does not count: you can keep talking while it runs. */
 function liveJob() {
-  return store.sessionId ? jobsOf(store.sessionId).find(isLive) || null : null;
+  return ((store.state && store.state.jobs) || []).find((job) => job.kind === 'chat' && isLive(job) && !(job.payload && job.payload.background)) || null;
 }
 
 function updateSend() {
@@ -384,7 +509,7 @@ function primary() {
   } else send();
 }
 
-async function send({ spoken = false } = {}) {
+async function send({ spoken = false, answerTo = null } = {}) {
   const text = els.input.value.trim();
   if (!text || sending || liveJob()) return null;
   sending = true;
@@ -392,22 +517,26 @@ async function send({ spoken = false } = {}) {
   try {
     await Promise.all(attachments.map((a) => a.ready));
     const assetIds = attachments.filter((a) => a.asset).map((a) => a.asset.id);
-    let sid = store.sessionId;
-    if (!sid) {
-      const session = await post('/api/sessions', { title: '新任务', model: draft.model || null, incognito: draft.incognito });
-      sid = session.id;
-      replaceSession(session);
-      store.sessionId = sid;
-      clearMessages();
-      draft.model = '';
-      draft.incognito = false;
-      renderHeader();
-    }
-    const key = JSON.stringify([sid, text, assetIds, mode]);
+    if (stream.past) await backToNow();  // what is said now belongs at the end, not in the old part that was open
+    const key = JSON.stringify([text, assetIds, mode]);
     if (!lastRequest || lastRequest.key !== key) lastRequest = { key, id: uuid() };
-    const job = await post('/api/sessions/' + encodeURIComponent(sid) + '/messages',
-      { content: text, asset_ids: assetIds, request_id: lastRequest.id, mode, voice: spoken });
+    const body = { content: text, asset_ids: assetIds, request_id: lastRequest.id, mode, voice: spoken };
+    if (answerTo) body.answer_to = answerTo;  // picked from what is waiting: it goes back to where it was asked
+    else if (stream.fresh) body.fresh = true;
+    if (!store.sessionId || stream.fresh) {  // no stretch is open: the choices made meanwhile go with the message
+      if (draft.incognito) body.incognito = true;
+      if (draft.model) body.model = draft.model;
+    }
+    // The engine decides which stretch of the conversation this continues, or begins a new one.
+    const job = await post('/api/stream/messages', body);
+    const sid = job.payload.session_id;
     lastRequest = null;
+    stream.fresh = false;
+    draft.model = '';
+    draft.incognito = false;
+    store.sessionId = sid;
+    renderNote();
+    renderHeader();
     if (store.state && job && job.id && !store.state.jobs.some((j) => j.id === job.id)) store.state.jobs.unshift(job);
     els.input.value = '';
     autogrow();
@@ -417,7 +546,7 @@ async function send({ spoken = false } = {}) {
     stick = true;
     listSig = '';
     renderList();
-    if (store.sessionId === sid) await loadMessages(false);
+    await loadMessages(false);
     refreshState();
     return sid;
   } catch (err) {
@@ -469,25 +598,51 @@ function renderAttachments() {
 }
 
 // ---------------------------------------------------------------- messages
+/** Brings the loaded part of the conversation up to date. While an old part is open it is left as it is. */
 async function loadMessages(loud) {
-  const sid = store.sessionId;
-  if (!sid) return;
+  if (stream.past) return;
   const seq = ++loadSeq;
-  let rows;
+  let page;
   try {
-    rows = await get('/api/sessions/' + encodeURIComponent(sid) + '/messages');
+    page = await get(stream.from == null ? '/api/stream' : '/api/stream?after=' + stream.from.toFixed(6) + '&limit=' + STREAM_LIMIT);
   } catch (err) {
-    if (sid !== store.sessionId) return;
-    if (err instanceof ApiError && err.status === 404) {
-      notify('这个任务已被删除', 'info');
-      newConversation(false);
-    } else if (loud && !(err instanceof ApiError && err.status === 401)) notify(err.message);
+    if (loud && !(err instanceof ApiError && err.status === 401)) notify(err.message);
     return;
   }
-  if (sid !== store.sessionId || seq !== loadSeq) return;
-  store.messages = rows;
-  renderMessages();
+  if (seq !== loadSeq || stream.past) return;
+  if (stream.from != null && page.later) {  // grown too long to keep whole: start over from the newest
+    stream.from = null;
+    return loadMessages(loud);
+  }
+  applyPage(page);
 }
+
+// Messages Jurvis wrote on its own (a check-in when body data turned) are announced once each: a system notification when the
+// browser allows it, otherwise a note in the page. Nothing is announced for the conversation already open in front of the user.
+const DELIVERED = 'jurvis.outreach.delivered';
+export function announce() {
+  const list = (store.state && store.state.outreach) || [];
+  if (!list.length) return;
+  let done = [];
+  try { done = JSON.parse(localStorage.getItem(DELIVERED) || '[]'); } catch { done = []; }
+  const fresh = list.filter((o) => !done.includes(o.id) && Date.now() / 1000 - o.created_at < 6 * 3600).reverse();
+  if (!fresh.length) return;
+  for (const o of fresh) {
+    done.push(o.id);
+    if (store.tab === 'chat' && !stream.past && document.visibilityState === 'visible') continue;  // it is on screen as it arrives
+    const text = o.content.length > 180 ? o.content.slice(0, 180) + '…' : o.content;
+    if ('Notification' in window && Notification.permission === 'granted') {
+      try {
+        const n = new Notification('Jurvis', { body: text, tag: o.id });
+        n.onclick = () => { window.focus(); emit('goto', 'chat'); backToNow(); n.close(); };
+        continue;
+      } catch { /* some mobile browsers only notify from a service worker: fall back to the page */ }
+    }
+    notify('Jurvis：' + text, 'info');
+  }
+  try { localStorage.setItem(DELIVERED, JSON.stringify(done.slice(-200))); } catch { /* private mode */ }
+}
+
 export const refreshMessages = throttle(() => loadMessages(false), 250);
 
 function scrollBottom() { els.scroller.scrollTop = els.scroller.scrollHeight; }
@@ -517,22 +672,36 @@ function chatJob(m) {
 
 function renderMessages() {
   const list = store.messages;
+  // One conversation, in stretches: where a new one begins, the time says how long ago that was.
+  const begins = (m, index) => index === 0 || list[index - 1].session_id !== m.session_id;
   const ids = new Set(list.map((m) => m.id));
+  list.forEach((m, index) => { if (begins(m, index)) ids.add('mark:' + m.id); });
   for (const [id, node] of nodes) {
     if (!ids.has(id)) { node.el.remove(); nodes.delete(id); }
   }
+  els.earlier.hidden = !stream.earlier;
   const used = new Set();
-  let previous = null;
+  let previous = els.earlier;
+  const place = (el) => {
+    if (previous.nextSibling !== el) els.msgs.insertBefore(el, previous.nextSibling);
+    previous = el;
+  };
   list.forEach((m, index) => {
     const last = index === list.length - 1;
+    if (begins(m, index)) {
+      let mark = nodes.get('mark:' + m.id);
+      if (!mark) {
+        mark = { el: h('div', { class: 'stretch-mark', role: 'separator' }, stretchTime(m.created_at)), sig: null, parts: null };
+        nodes.set('mark:' + m.id, mark);
+      }
+      place(mark.el);
+    }
     let node = nodes.get(m.id);
     if (!node) {
       node = { el: h('article', { class: 'msg ' + (m.role === 'user' ? 'user' : 'assistant') }), sig: null, parts: null };
       nodes.set(m.id, node);
     }
-    const expected = previous ? previous.nextSibling : els.msgs.firstChild;
-    if (expected !== node.el) els.msgs.insertBefore(node.el, expected);
-    previous = node.el;
+    place(node.el);
     let sig;
     if (m.role === 'user') {
       for (const id of (m.metadata && m.metadata.asset_ids) || []) used.add(id);
@@ -546,8 +715,15 @@ function renderMessages() {
           related.push(jobSig(job));
           if (job && job.status === 'succeeded') for (const id of (job.result && job.result.asset_ids) || []) used.add(id);
         }
+        for (const call of step.calls || []) {
+          if (call.card && call.card.image) used.add(call.card.image);
+        }
       }
-      sig = JSON.stringify([m, last, jobSig(chatJob(m)), related, speech.tts, voice.speakingKey() === m.id]);
+      const after = list[index + 1];
+      // What the user answered, when this reply ended on a question: the message picked for it later, or the one that follows it.
+      const picked = list.find((x) => x.role === 'user' && x.metadata && x.metadata.answer && x.metadata.answer.message_id === m.id);
+      node.answer = picked ? picked.content : after && after.role === 'user' && after.session_id === m.session_id ? after.content : null;
+      sig = JSON.stringify([m, last, node.answer, jobSig(chatJob(m)), related, speech.tts, voice.speakingKey() === m.id]);
     }
     if (sig !== node.sig) {
       node.sig = sig;
@@ -555,7 +731,7 @@ function renderMessages() {
       else renderAssistant(node, m, last);
     }
   });
-  els.empty.hidden = list.length > 0 || !!store.sessionId;
+  els.empty.hidden = list.length > 0 || stream.earlier;
   const blank = !els.empty.hidden;
   if (els.conv.classList.contains('blank') !== blank || !els.modes.isConnected) {
     els.conv.classList.toggle('blank', blank);
@@ -565,8 +741,42 @@ function renderMessages() {
     autogrow();
   }
   releaseAssets(used);
-  if (stick) scrollBottom();
+  renderTray();
+  const target = stream.target && nodes.get(stream.target);
+  if (target) {  // an old stretch or a search result was opened: bring it to the top, once
+    stream.target = null;
+    els.scroller.scrollTop = Math.max(0, target.el.offsetTop - 72);
+  } else if (stick) scrollBottom();
   updateSend();
+}
+
+const BLOCK = /^(\s*([-*+•]|\d+[.)、])\s|#{1,6}\s|>|\||\s{4,}\S)/;
+/** A reply's text as the few messages it would be in a chat: split between plain paragraphs. Lists, tables and quotes stay with
+ *  the paragraph that leads into them; long or structured writing (code, a document) stays whole. */
+export function bubbles(text) {
+  if (!text || text.length > 1500 || /```|~~~/.test(text)) return [text];
+  const parts = text.split(/\n\s*\n/).map((part) => part.trim()).filter(Boolean);
+  const plain = (part) => !part.split('\n').some((line) => BLOCK.test(line));
+  const out = [];
+  let before = true;
+  for (const part of parts) {
+    const now = plain(part);
+    if (out.length && !(now && before)) out[out.length - 1] += '\n\n' + part;
+    else out.push(part);
+    before = now;
+  }
+  while (out.length > 4) { const tail = out.pop(); out[out.length - 1] += '\n\n' + tail; }
+  return out.length ? out : [text];
+}
+
+function stretchTime(seconds) {
+  const date = new Date(seconds * 1000);
+  const pad = (n) => String(n).padStart(2, '0');
+  const clock = pad(date.getHours()) + ':' + pad(date.getMinutes());
+  const day = dayGroup(seconds);
+  if (day === '今天') return clock;
+  if (day === '昨天') return '昨天 ' + clock;
+  return (date.getFullYear() === new Date().getFullYear() ? '' : date.getFullYear() + '年') + (date.getMonth() + 1) + '月' + date.getDate() + '日 ' + clock;
 }
 
 function media(id) {
@@ -626,12 +836,13 @@ function renderAssistant(node, m, last) {
       goal: h('div', { class: 'goal', hidden: true }),
       plan: h('div', { hidden: true }),
       steps: h('div', { class: 'steps' }),
+      ask: h('div', { class: 'options', hidden: true, role: 'group', 'aria-label': '可选的回答' }),
       status: h('div', { class: 'msg-status' }),
       sources: h('div', { class: 'sources', hidden: true }),
       stepNodes: [],
       sourceSig: '',
     };
-    node.el.append(node.parts.goal, node.parts.plan, node.parts.steps, node.parts.status, node.parts.sources);
+    node.el.append(node.parts.goal, node.parts.plan, node.parts.steps, node.parts.ask, node.parts.status, node.parts.sources);
   }
   const parts = node.parts;
   const meta = m.metadata || {};
@@ -642,7 +853,8 @@ function renderAssistant(node, m, last) {
   parts.goal.hidden = !meta.goal;
   if (meta.goal) {
     parts.goal.className = 'goal ' + (meta.goal.status || 'running');
-    fill(parts.goal, icon('target', 15), h('span', null, '目标 · ' + goalLabel(meta.goal, live)));
+    const title = meta.task && meta.task.title ? `后台任务「${meta.task.title}」· ` : '目标 · ';
+    fill(parts.goal, icon('target', 15), h('span', null, title + goalLabel(meta.goal, live)));
   }
   const plan = Array.isArray(meta.plan) ? meta.plan : [];
   parts.plan.hidden = !plan.length;
@@ -653,7 +865,7 @@ function renderAssistant(node, m, last) {
   steps.forEach((step, i) => {
     let sn = parts.stepNodes[i];
     if (!sn) {
-      sn = { text: null, textEl: h('div', { class: 'md', hidden: true }), callsEl: h('div', { class: 'calls' }), calls: [] };
+      sn = { text: null, textEl: h('div', { class: 'said-group', hidden: true }), callsEl: h('div', { class: 'calls' }), calls: [] };
       sn.el = h('div', { class: 'step' }, sn.textEl, sn.callsEl);
       parts.stepNodes[i] = sn;
       parts.steps.append(sn.el);
@@ -662,9 +874,12 @@ function renderAssistant(node, m, last) {
     if (text !== sn.text) {
       sn.text = text;
       sn.textEl.hidden = !text;
-      fill(sn.textEl, renderMarkdown(text));
+      // Said the way a person messages: a few short messages, not one block.
+      fill(sn.textEl, ...bubbles(text).map((part) => h('div', { class: 'md said' }, renderMarkdown(part))));
     }
-    const calls = Array.isArray(step.calls) ? step.calls : [];
+    // The question a reply ends on is shown as its options, not as a tool call.
+    const calls = (Array.isArray(step.calls) ? step.calls : []).filter((call) => call && call.name !== 'ask_user');
+    sn.el.hidden = !text && !calls.length;
     calls.forEach((call, j) => {
       let cn = sn.calls[j];
       if (!cn) {
@@ -682,10 +897,24 @@ function renderAssistant(node, m, last) {
   });
   while (parts.stepNodes.length > steps.length) parts.stepNodes.pop().el.remove();
 
+  // the options of the question this reply ended on: live for the latest reply, a record of the choice for older ones
+  const options = !live && meta.ask && Array.isArray(meta.ask.options) ? meta.ask.options.map(String) : [];
+  parts.ask.hidden = !options.length;
+  fill(parts.ask, options.map((option) => {
+    const chosen = node.answer === option;
+    return h('button', { class: 'option' + (chosen ? ' chosen' : ''), type: 'button', disabled: !last, 'aria-pressed': last ? null : String(chosen),
+      onclick: () => answer(option) }, h('span', null, option), chosen ? icon('check', 14, 1.8) : null);
+  }));
+
   // status line
   fill(parts.status);
   if (live) {
     parts.status.append(h('span', { class: 'spinner', 'aria-hidden': 'true' }), h('span', { class: 'muted' }, (job && job.phase) || (m.status === 'queued' ? '排队中' : '正在回复')));
+    if (job && job.payload && job.payload.background) {
+      // The composer's stop button belongs to the reply being waited for; background work is stopped here.
+      if (meta.background) parts.status.append(h('span', { class: 'muted' }, '· 已转到后台，做完发在这里，你可以接着聊'));
+      parts.status.append(action('停止', async () => { await post('/api/jobs/' + encodeURIComponent(job.id) + '/cancel'); refreshState(); }, { class: 'btn small' }));
+    }
   } else if (m.status === 'failed' || m.status === 'cancelled' || m.status === 'interrupted') {
     const fallback = m.status === 'failed' ? '回复失败' : m.status === 'cancelled' ? '已停止' : '回复被中断';
     parts.status.append(h('span', { class: m.status === 'failed' ? 'error-text' : 'muted' }, meta.error || (m.status === 'failed' && job && job.error) || fallback));
@@ -776,10 +1005,79 @@ function approval(call, m) {
     h('div', { class: 'approval-actions' }, buttons));
 }
 
+// Cards: what a tool call made or found, shown as the thing itself instead of as a tool call.
+// A made thing (goal, schedule, memory, document, task) is one row that opens where it lives; a lookup (weather, price…) shows its figures.
+const MADE = { goal: ['target', 'goals'], schedule: ['clock', 'goals'], memory: ['bookmark', 'memory'], file: ['doc', 'library'], task: ['tasks', null], session: ['leaf', null] };
+const GLYPH = { sun: '☀️', moon: '🌙', partly: '⛅', cloud: '☁️', fog: '🌫️', drizzle: '🌦️', rain: '🌧️', snow: '❄️', storm: '⛈️', coin: '🪙', exchange: '💱', calendar: '📅', wallet: '🧾', heart: '❤️', drop: '🌸' };
+
+function sparkline(series, trend, label) {
+  const points = series.map(Number).filter(Number.isFinite);
+  if (points.length < 3) return null;
+  const low = Math.min(...points), span = Math.max(...points) - low || 1;
+  const path = points.map((p, i) => `${(i / (points.length - 1) * 100).toFixed(2)},${(30 - (p - low) / span * 28 - 1).toFixed(2)}`).join(' ');
+  const box = h('div', { class: 'spark ' + (trend || 'flat'), role: 'img', 'aria-label': label || '近 7 天走势' });
+  box.innerHTML = `<svg viewBox="0 0 100 30" preserveAspectRatio="none"><polyline points="${path}" fill="none" stroke="currentColor" stroke-width="1.5" vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>`;
+  return box;
+}
+
+/** The outfit illustration of a weather card: the picture once it is drawn, a quiet note while it is being drawn. */
+function cardArt(card, job) {
+  const done = job && job.status === 'succeeded' && job.result && Array.isArray(job.result.asset_ids) ? job.result.asset_ids[0] : null;
+  const id = card.image || done;
+  if (id) {
+    const box = h('div', { class: 'info-art' });
+    assetURL(id).then((url) => fill(box, h('img', { src: url, alt: '今天的穿搭插画' })), () => box.remove());
+    return box;
+  }
+  if (card.image_job && job && isLive(job)) return h('div', { class: 'info-art drawing' }, h('span', { class: 'spinner', 'aria-hidden': 'true' }), h('span', { class: 'muted small' }, '正在画穿搭'));
+  return null;
+}
+
+function cardView(card, job) {
+  const made = MADE[card.kind];
+  if (made) {
+    const [glyph, tab] = made;
+    const inner = [h('span', { class: 'made-icon' }, icon(glyph, 18)),
+      h('span', { class: 'made-text' }, h('strong', null, card.title), h('span', { class: 'muted small' }, card.subtitle || ''),
+        card.note ? h('span', { class: 'made-note' }, card.note) : null),
+      tab ? icon('right', 16) : null];
+    if (card.kind === 'session' && card.session_id) {
+      inner[2] = icon('right', 16);
+      return h('button', { class: 'made-card companion', type: 'button', onclick: () => { Promise.resolve(refreshState()).finally(() => openSession(card.session_id)); } }, inner);
+    }
+    return tab ? h('button', { class: 'made-card', type: 'button', onclick: () => emit('goto', tab) }, inner) : h('div', { class: 'made-card still' }, inner);
+  }
+  const rows = Array.isArray(card.rows) ? card.rows : [];
+  const days = Array.isArray(card.days) ? card.days : [];
+  const money = card.kind === 'ledger' || card.kind === 'expense';
+  const body = card.kind === 'health' || card.kind === 'cycle' || card.kind === 'mood';
+  const go = money ? 'ledger' : body ? 'health' : null;
+  return h(go ? 'button' : 'div', { class: 'info-card ' + String(card.kind || ''), type: go ? 'button' : null, onclick: go ? () => emit('goto', go) : null },
+    h('div', { class: 'info-head' },
+      h('div', { class: 'made-text' }, h('strong', null, card.title), card.subtitle ? h('span', { class: 'muted small' }, card.subtitle) : null),
+      GLYPH[card.icon] ? h('span', { class: 'info-glyph', 'aria-hidden': 'true' }, GLYPH[card.icon]) : null),
+    // The figure and what to wear sit beside the temperature: the picture is the advice at a glance.
+    h('div', { class: 'info-split' },
+      h('div', { class: 'info-left' },
+        card.value ? h('div', { class: 'info-value ' + (card.trend || '') }, String(card.value), card.kind === 'countdown' && card.value !== '今天' ? h('span', { class: 'info-unit' }, '天') : null) : null,
+        card.outfit && Array.isArray(card.outfit.wear) ? h('div', { class: 'info-outfit' },
+          h('div', { class: 'chips' }, card.outfit.wear.map((item) => h('span', { class: 'chip static' }, String(item)))),
+          card.outfit.tip ? h('div', { class: 'small' }, card.outfit.tip) : null) : null),
+      card.kind === 'weather' ? cardArt(card, job) : null),
+    Array.isArray(card.series) ? sparkline(card.series, card.trend, card.series_label) : null,
+    Array.isArray(card.bars) && card.bars.length ? bars(card.bars) : null,
+    rows.length ? h('dl', { class: 'info-rows' }, rows.map((row) => h('div', { class: String(row.label || '').length + String(row.value).length > 13 ? 'wide' : null }, row.label ? h('dt', null, row.label) : null, h('dd', null, String(row.value))))) : null,
+    days.length ? h('div', { class: 'info-days' }, days.map((day) => h('div', { class: 'info-day' },
+      h('span', { class: 'muted small' }, day.label), h('span', { 'aria-hidden': 'true' }, GLYPH[day.icon] || ''),
+      h('span', { class: 'small' }, `${day.high}° `, h('span', { class: 'muted' }, `${day.low}°`))))) : null,
+    card.note ? h('div', { class: 'muted small info-note' }, card.note) : null);
+}
+
 function updateCall(cn, call, m, job) {
   const wasOpen = !!(cn.details && cn.details.open);
   cn.details = null;
   if (call.status === 'awaiting') fill(cn.main, approval(call, m));
+  else if (call.card && call.card.title) fill(cn.main, cardView(call.card, job));
   else {
     const body = callBody(call);
     if (body.length) {
@@ -793,6 +1091,11 @@ function updateCall(cn, call, m, job) {
   }
   // the linked job: live progress, then its output
   fill(cn.jobEl);
+  if (call.card && call.card.image_job) {  // the drawing for a card is shown inside the card
+    cn.jobEl.hidden = true;
+    cn.mediaEl.hidden = true;
+    return;
+  }
   if (job && isLive(job)) {
     const percent = Math.max(0, Math.min(100, Math.round((job.progress || 0) * 100)));
     cn.jobEl.append(h('span', { class: 'muted small' }, (job.phase || (job.status === 'queued' ? '排队中' : '进行中')) + ' · ' + percent + '%'),

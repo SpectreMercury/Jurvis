@@ -87,6 +87,15 @@ launchctl load ~/Library/LaunchAgents/app.jurvis.engine.plist
 
 - **同一个局域网**：`https://<Mac 的局域网地址>:18777`。首次启动时 macOS 会询问是否允许接入连接，选允许。
 - **在外面**：在 Mac 和设备上装 [Tailscale](https://tailscale.com) 并登录同一个账号，用 Mac 的 Tailscale 地址访问。配对邀请会同时带上两个地址，App 自动切换。
+- **在外面，手机不装 Tailscale**：在 Mac 上开 [Tailscale Funnel](https://tailscale.com/kb/1223/tailscale-funnel)，把引擎发布到 `https://<机器名>.<tailnet>.ts.net`：
+
+  ```bash
+  tailscale funnel --bg https+insecure://127.0.0.1:18777
+  ```
+
+  需要先在 Tailscale 管理后台打开 MagicDNS 和 HTTPS 证书，并允许这台 Mac 使用 Funnel。引擎会自动发现 Funnel，把这个地址放在配对邀请的最后一位；已配对的 App 下次连接时也会自动学到它，不用重新配对。App 对 IP 地址只认 Mac 的自签名证书，对这种域名地址交给系统按正规证书校验。网页版直接在 Safari 打开这个地址，证书受信任，也能添加到主屏幕。别的反向代理（如 Cloudflare Tunnel）用 `JURVIS_PUBLIC_URL` 指定地址。
+
+  这会让任何人都能访问到引擎的登录页面，挡住他们的只有配对凭据这一层。不用时运行 `tailscale funnel reset` 关掉。
 - **不要把 18777 端口直接映射到公网**。引擎能读写文件、运行命令，访问控制只有配对凭据这一层。
 
 每台设备都要先配对：在 Mac 上的 **设置 → 配对 iPhone 或 iPad** 创建一次性邀请，在设备上扫码或粘贴。Mac App 用本机凭据直接连接，不需要配对；网页版在每个浏览器里都要配对一次。

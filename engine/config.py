@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     data: Path = ROOT / "data"
     host: str = "0.0.0.0"
     port: int = 18777
+    public_url: str = ""                      # an https address that reaches the engine from the internet; empty finds a Tailscale Funnel
     llm_port: int = 18778
     comfy_port: int = 18779
     max_upload_bytes: int = 32 * 1024 * 1024
@@ -22,6 +23,12 @@ class Settings(BaseSettings):
     speech_stt: str = "speech/sensevoice-small"   # speech recognition model folder; relative paths start at models/
     speech_tts: str = "speech/qwen3-tts-0.6b"     # speech synthesis model folder
     shared_skills: str = "~/.claude/skills"   # skills written for Claude Code are offered here too; empty turns that off
+    # Health accounts the user connects in the browser (engine/health_sync.py). Each needs an OAuth app of the user's own.
+    whoop_client_id: str = ""
+    whoop_client_secret: str = ""
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    oauth_base: str = ""                      # where the browser comes back after connecting; empty uses public_url, then https://localhost:<port>
 
     def prepare(self):
         for name in ("assets", "workspace", "logs", "security"):

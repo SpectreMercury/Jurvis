@@ -204,11 +204,9 @@ struct ReadAloudButton: View {
         }
         guard active else { return "" }
         let job = try await store.send(text, assets: [], voice: true)
-        guard let session = store.selectedSession else { throw APIError.message("没有发出去") }
         while true {
             try? await Task.sleep(for: .milliseconds(400))
             guard active else { return "" }
-            guard store.selectedSession == session else { throw APIError.message("已经换到别的任务，语音对话停在这里") }
             if store.awaitingConfirmation { needsUser = true; return Self.needsConfirmation }
             // The store's own polling keeps the job current; done means this job has ended and nothing else runs in the task.
             if let current = store.job(job.id), !current.isActive, !store.chatBusy { break }

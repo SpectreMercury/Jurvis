@@ -4,6 +4,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from fastapi.testclient import TestClient
 
 from engine.app import create_app
 from engine.config import Settings
@@ -187,3 +188,220 @@ def test_speech_api_reports_missing_models_and_wraps_audio(tmp_path):
         assert client.post("/api/speech/transcribe", files={"file": ("a.wav", b"not audio", "audio/wav")}).status_code == 409
         assert client.patch("/api/settings", json={"voice": {"speaker": "Vivian"}}).json()["settings"]["voice"] == {"speaker": "Vivian", "auto_speak": False}
         assert client.get("/api/speech").json()["speaker"] == "Vivian"
+
+
+@pytest.mark.asyncio
+async def test_a_question_with_options_ends_the_reply_and_is_kept_for_the_buttons(app):
+    model = ScriptedModel([
+        Completion("集中流动性的核心是取舍：区间越窄，手续费越高，无常损失也越大。",
+                   [call("ask_user", question="你想先从哪一步开始？", options="1. 先搭个通用分析框架\n- 帮我分析我现在做的池子\n先算几个典型区间的对照表\n先算几个典型区间的对照表")], "tool_calls"),
+    ])
+    result, message = await run(app, model, "我一直在做集中流动性 LP，想系统分析区间选择")
+    assert "ask_user" in {t["function"]["name"] for t in model.calls[0]["tools"]} and len(model.calls) == 1  # asking costs no further model call
+    meta = message["metadata"]
+    assert meta["ask"] == {"question": "你想先从哪一步开始？", "options": ["先搭个通用分析框架", "帮我分析我现在做的池子", "先算几个典型区间的对照表"]}
+    assert [s["text"] for s in meta["steps"]] == ["集中流动性的核心是取舍：区间越窄，手续费越高，无常损失也越大。", "你想先从哪一步开始？"]
+    assert message["status"] == "complete" and message["content"].endswith("你想先从哪一步开始？")
+    # the answer arrives as an ordinary message, and the question is replayed as the call it was
+    model.turns.append(Completion("好，按通用框架来。", [], "stop"))
+    await run(app, model, "先搭个通用分析框架")
+    replayed = [m for m in model.calls[1]["messages"] if m.get("tool_calls")]
+    assert replayed and replayed[0]["tool_calls"][0]["function"]["name"] == "ask_user"
+
+
+@pytest.mark.asyncio
+async def test_a_second_question_in_a_row_with_nothing_given_is_sent_back_to_do_the_work(app):
+    first = [call("ask_user", question="你目前的跑步基础是怎样的？", options="完全没跑过\n偶尔跑过\n有基础")]
+    model = ScriptedModel([Completion("", first, "tool_calls")])
+    _, message = await run(app, model, "我想开始跑步，帮我做个计划")
+    assert message["metadata"]["ask"]["question"] == "你目前的跑步基础是怎样的？"
+    again = [call("ask_user", question="你每周能跑几次？", options="两次\n三次")]
+    after = [{**call("ask_user", question="要不要设个每周提醒？", options="要\n先不用"), "id": "call_after"}]
+    model = ScriptedModel([Completion("", again, "tool_calls"),
+                           Completion("按每周三次给你排了八周：前两周跑一分钟走两分钟，之后每两周加一分钟。", after, "tool_calls")])
+    _, message = await run(app, model, "偶尔跑过")
+    calls = [c for s in message["metadata"]["steps"] for c in s["calls"]]
+    assert [c["status"] for c in calls] == ["error", "ok"] and "Do the work now" in calls[0]["output"]
+    assert message["content"].startswith("按每周三次给你排了八周") and message["metadata"]["ask"]["question"] == "要不要设个每周提醒？"
+
+
+@pytest.mark.asyncio
+async def test_a_question_already_written_in_the_reply_is_not_shown_twice_and_one_option_is_refused(app):
+    model = ScriptedModel([
+        Completion("按周还是按月更新？", [call("ask_user", question="按周还是按月更新？", options="按周\n按月")], "tool_calls"),
+    ])
+    _, message = await run(app, model, "帮我长期跟踪 L2")
+    assert [s["text"] for s in message["metadata"]["steps"] if s["text"]] == ["按周还是按月更新？"] and message["content"] == "按周还是按月更新？"
+    # reworded at the end of the answer, it is still one question: the answer keeps its body and the buttons get the question
+    model = ScriptedModel([
+        Completion("记下了，存到 Goals 里了。\n\n要不要设一个每周的简报？频率你想怎么定？", [call("ask_user", question="要不要设一个每周简报？频率怎么定？", options="每周\n每月")], "tool_calls"),
+    ])
+    _, message = await run(app, model, "我每周都看质押项目")
+    assert [s["text"] for s in message["metadata"]["steps"] if s["text"]] == ["记下了，存到 Goals 里了。", "要不要设一个每周简报？频率怎么定？"]
+    model = ScriptedModel([
+        Completion("", [call("ask_user", question="要继续吗？", options="好")], "tool_calls"),
+        Completion("要继续吗？", [], "stop"),
+    ])
+    _, message = await run(app, model, "继续")
+    assert "ask" not in message["metadata"] and message["metadata"]["steps"][0]["calls"][0]["status"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_a_goal_is_not_offered_option_questions(app):
+    model = ScriptedModel([Completion("", [call("finish_goal", status="blocked", summary="需要你确认预算")], "tool_calls")])
+    await run(app, model, "把预算表做完", mode="goal")
+    assert "ask_user" not in {t["function"]["name"] for t in model.calls[0]["tools"]}
+
+
+def task_jobs(app):
+    return [j for j in app.state.store.all("SELECT * FROM jobs WHERE kind='chat' ORDER BY created_at") if j["payload"].get("task")]
+
+
+@pytest.mark.asyncio
+async def test_longer_work_is_started_in_the_background_and_delivered_below_what_was_said_meanwhile(app):
+    store = app.state.store
+    brief = "算三个典型区间（±1%、±10%、全区间）在价格 ±20% 时的无常损失，保存为 il.md。入场价居中，不计手续费。"
+    model = ScriptedModel([
+        Completion("", [call("start_task", title="IL 对照表", brief=brief), {**call("start_task", title="IL 对照表", brief=brief + "再来一次"), "id": "call_again"}], "tool_calls"),
+        Completion("表在做了，入场价居中、不计手续费，算好发你。", [], "stop"),
+    ])
+    _, reply = await run(app, model, "先算几个典型区间的 IL 对照表")
+    assert {"ask_user", "start_task"} <= {t["function"]["name"] for t in model.calls[0]["tools"]}
+    first, again = reply["metadata"]["steps"][0]["calls"]
+    assert first["status"] == "ok" and again["status"] == "error"  # the same task is not started twice
+    (job,) = task_jobs(app)
+    assert first["job_id"] == job["id"] and job["status"] == "queued" and job["payload"]["background"] is True
+    card = store.one("SELECT * FROM messages WHERE id=?", (job["payload"]["message_id"],))
+    assert card["status"] == "queued" and card["metadata"]["task"] == {"title": "IL 对照表"}
+
+    # the conversation goes on while the task is queued (the reply that started it has finished)
+    for done in store.all("SELECT * FROM jobs WHERE kind='chat'"):
+        if not done["payload"].get("task"):
+            store.update_job(done["id"], status="succeeded")
+    client = TestClient(app)
+    token = {"Authorization": "Bearer " + app.state.security.local_token}
+    sent = client.post("/api/sessions/s1/messages", json={"content": "顺便问下，今天周几", "request_id": "request-while-task-runs"}, headers=token)
+    assert sent.status_code == 200
+    store.update_job(sent.json()["id"], status="succeeded")
+    store.update_message(sent.json()["payload"]["message_id"], "周五。", "complete")
+
+    # the task runs as a goal on its brief, without the tools for starting tasks or asking with buttons
+    worker = app.state.worker
+    worker.agent.runtime = task_model = ScriptedModel([
+        Completion("", [{"id": "call_save", "name": "save_file", "arguments": json.dumps({"name": "il.md", "content": "| 区间 | +20% | -20% |\n| ±10% | -6.6% | -9.1% |"})}], "tool_calls"),
+        Completion("", [call("finish_goal", status="done", summary="表做好了，存在 il.md：±10% 区间涨 20% 时无常损失约 -6.6%。", evidence="save_file ok")], "tool_calls"),
+        Completion('{"achieved": true, "missing": ""}', [], "stop"),
+    ])
+    await worker.agent.run(store.get_job(job["id"]))
+    offered = {t["function"]["name"] for t in task_model.calls[0]["tools"]}
+    assert "finish_goal" in offered and not offered & {"start_task", "ask_user"}
+    assert task_model.calls[0]["messages"][-1]["content"].startswith("IL 对照表\n\n" + brief)
+    assert "Background task" in task_model.calls[0]["messages"][0]["content"]
+    rows = store.all("SELECT id,role,content,status FROM messages WHERE session_id='s1' ORDER BY created_at")
+    assert rows[-1]["id"] == card["id"] and rows[-1]["status"] == "complete" and "il.md" in rows[-1]["content"]
+    assert [r["content"] for r in rows[-3:-1]] == ["顺便问下，今天周几", "周五。"]
+
+
+@pytest.mark.asyncio
+async def test_a_reply_that_keeps_working_hands_the_conversation_back(app):
+    store = app.state.store
+    turns = [Completion("", [{**call("calculate", expression=f"{n}+1"), "id": f"c{n}"}], "tool_calls") for n in range(8)]
+    model = ScriptedModel([*turns, Completion("都算完了。", [], "stop")])
+    job_seen = {}
+
+    async def stream(messages, **options):
+        (job,) = store.all("SELECT * FROM jobs WHERE kind='chat'")
+        job_seen[len(model.calls)] = bool(job["payload"].get("background"))
+        return await ScriptedModel.stream(model, messages, **options)
+    watcher = SimpleNamespace(stream=stream)
+    worker = app.state.worker
+    worker.agent.runtime = watcher
+    from tests.test_agent import chat_job
+    job, mid = chat_job(app, "把这几个数都加一")
+    await worker.agent.run(job)
+    message = store.one("SELECT * FROM messages WHERE id=?", (mid,))
+    assert job_seen[0] is False and job_seen[5] is False and job_seen[6] is True  # after six rounds of tools the conversation is free
+    assert message["metadata"]["background"] is True and message["content"] == "都算完了。"
+
+
+def test_schedule_rules_fall_on_the_next_matching_time():
+    from datetime import datetime
+    from engine.agenda import describe, make_rule, next_run
+    friday = datetime(2026, 11, 20, 12, 0)
+    monthly = make_rule("month", "9:00", day=1)
+    assert next_run(monthly, friday) == datetime(2026, 12, 1, 9, 0) and describe(monthly) == "每月 1 号 09:00"
+    assert next_run(make_rule("month", "09:00", day=31), datetime(2027, 1, 31, 10, 0)) == datetime(2027, 2, 28, 9, 0)  # a month without a 31st
+    assert next_run(make_rule("week", "08:30", weekday="fri"), friday) == datetime(2026, 11, 27, 8, 30)  # this Friday's time has passed
+    assert next_run(make_rule("week", "18:00", weekday="fri"), friday) == datetime(2026, 11, 20, 18, 0)
+    assert next_run(make_rule("day", "07:00"), friday) == datetime(2026, 11, 21, 7, 0)
+    assert next_run(make_rule("once", "09:00", date="2026-11-19"), friday) is None
+    for bad in (dict(every="week"), dict(every="month"), dict(every="once", date="明天"), dict(every="day", at="25:00")):
+        with pytest.raises(ValueError):
+            make_rule(**bad)
+
+
+@pytest.mark.asyncio
+async def test_a_goal_is_saved_once_and_a_schedule_delivers_its_runs_into_the_conversation(app):
+    from datetime import datetime, timedelta
+    store, agenda = app.state.store, app.state.worker.tools.agenda
+    brief = "复盘本月 L2 的技术路线和生态变化：TVL、Stage 进展、重要升级，对比上月。"
+    model = ScriptedModel([
+        Completion("", [call("agenda")], "tool_calls"),
+        Completion("", [call("track_goal", title="L2 长期跟踪", detail="技术路线和生态进展"),
+                        call("schedule_task", title="L2 每月深度复盘", brief=brief, every="month", day=1, time="09:00")], "tool_calls"),
+        Completion("记下了，每月 1 号上午复盘。", [], "stop"),
+    ])
+    _, reply = await run(app, model, "我想长期跟踪 L2，按月给我复盘")
+    assert {"agenda", "track_goal", "schedule_task", "cancel_schedule"} <= {t["function"]["name"] for t in model.calls[0]["tools"]}
+    goal_call, schedule_call = reply["metadata"]["steps"][1]["calls"]
+    assert goal_call["card"] == {"kind": "goal", "title": "L2 长期跟踪", "subtitle": "长期目标"}
+    assert schedule_call["card"] == {"kind": "schedule", "title": "L2 每月深度复盘", "subtitle": "定时任务 · 每月 1 号 09:00"}
+    assert "first_run" in json.loads(schedule_call["output"])
+    assert agenda.track("s1", "L2长期跟踪")["existing"] and len(agenda.goals()) == 1  # nearly the same title is the same goal
+    (schedule,) = agenda.schedules()
+    assert schedule["when"] == "每月 1 号 09:00" and schedule["next_run"] > datetime.now().timestamp()
+
+    # nothing runs before its time; when it is due it starts once as a background task and moves to the next month
+    assert agenda.fire() == []
+    due = datetime.fromtimestamp(schedule["next_run"]) + timedelta(minutes=1)
+    (job,) = agenda.fire(due)
+    assert job["payload"]["background"] is True and job["payload"]["schedule_id"] == schedule["id"] and job["payload"]["session_id"] == "s1"
+    assert agenda.fire(due + timedelta(minutes=1)) == []
+    assert agenda.schedules()[0]["next_run"] > due.timestamp()
+    worker = app.state.worker
+    worker.agent.runtime = task_model = ScriptedModel([
+        Completion("", [call("finish_goal", status="done", summary="本月复盘：总锁定价值小幅上升。", evidence="无需工具")], "tool_calls"),
+        Completion('{"achieved": true, "missing": ""}', [], "stop"),
+    ])
+    await worker.agent.run(job)
+    system = task_model.calls[0]["messages"][0]["content"]
+    assert "Scheduled run" in system and "每月 1 号 09:00" in system and task_model.calls[0]["messages"][-1]["content"].startswith("L2 每月深度复盘\n\n" + brief)
+    last = store.all("SELECT * FROM messages WHERE session_id='s1' ORDER BY created_at")[-1]
+    assert last["content"] == "本月复盘：总锁定价值小幅上升。" and last["metadata"]["task"] == {"title": "L2 每月深度复盘", "scheduled": "每月 1 号 09:00"}
+
+    # a one-time schedule runs once and is then off; a schedule whose conversation is gone gets a conversation of its own
+    once = agenda.schedule(None, "提醒交房租", "提醒我今天交房租，金额见上月记录。", {"every": "once", "at": "09:00", "date": "2030-01-01"}, now=datetime(2029, 12, 31, 8, 0))
+    (reminder,) = agenda.fire(datetime(2030, 1, 1, 9, 1))
+    assert store.one("SELECT title FROM sessions WHERE id=?", (reminder["payload"]["session_id"],))["title"] == "提醒交房租"
+    assert once["id"] not in {s["id"] for s in agenda.schedules()}
+
+    client = TestClient(app)
+    token = {"Authorization": "Bearer " + app.state.security.local_token}
+    listed = client.get("/api/agenda", headers=token).json()
+    assert [g["title"] for g in listed["goals"]] == ["L2 长期跟踪"] and [s["title"] for s in listed["schedules"]] == ["L2 每月深度复盘"]
+    assert client.delete("/api/schedules/" + schedule["id"], headers=token).status_code == 200 and agenda.schedules() == []
+    assert client.delete("/api/schedules/nope", headers=token).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_options_sent_as_a_json_list_are_read_and_a_silent_reply_is_told_to_speak_first(app):
+    model = ScriptedModel([
+        Completion("", [call("track_goal", title="质押收益来源")], "tool_calls"),
+        Completion("", [call("ask_user", question="多久看一次？", options='["每周一次", "每月一次"]')], "tool_calls"),
+        Completion("记下了，存到 Goals 里了。", [{**call("ask_user", question="多久看一次？", options=["每周一次", "每月一次"]), "id": "call_again"}], "tool_calls"),
+    ])
+    _, message = await run(app, model, "我每周都会看质押项目")
+    steps = message["metadata"]["steps"]
+    assert steps[1]["calls"][0]["status"] == "error" and "written anything" in steps[1]["calls"][0]["output"]
+    assert message["metadata"]["ask"]["options"] == ["每周一次", "每月一次"]
+    assert [s["text"] for s in steps if s["text"]] == ["记下了，存到 Goals 里了。", "多久看一次？"]

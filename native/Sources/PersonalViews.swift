@@ -7,7 +7,12 @@ struct MemoryView: View {
     @State private var editing: Memory?
     @State private var adding = false
     var body: some View {
-        Page(title: "记忆", subtitle: "启用的记忆会作为背景信息带入每次对话。你也可以在对话里说「请记住……」。", width: 860) {
+        Page(title: "记忆", subtitle: "启用的记忆会作为背景信息带入每次对话。它们同时以 Markdown 保存在 Mac 上，可以用 Obsidian 打开：在那里改动一行，就是改动一条记忆。", width: 860) {
+            #if os(macOS)
+            if let vault = store.snapshot?.vault {
+                Button { NSWorkspace.shared.open(URL(fileURLWithPath: vault)) } label: { Label("打开笔记文件夹", systemImage: "folder") }.buttonStyle(.jurvis(.secondary))
+            }
+            #endif
             Button { adding = true } label: { Label("添加", systemImage: "plus") }.buttonStyle(.jurvis(.primary))
         } content: {
             if store.snapshot == nil {
@@ -229,6 +234,8 @@ struct SettingsView: View {
                 connection
                 AssistantModelSettings()
                 VoiceSettings()
+                MailSettings()
+                CareSettings()
                 models
                 extensions
                 devices
@@ -336,7 +343,9 @@ struct InvitationView: View {
                         .padding(12).background(.white, in: RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous))
                 }
                 Text(invitation.url).font(.jMono).foregroundStyle(Color.inkSoft).textSelection(.enabled)
-                if (invitation.urls ?? []).contains(where: { URL(string: $0)?.host.map(API.isTailscale) ?? false }) {
+                if (invitation.urls ?? []).contains(where: { URL(string: $0)?.host.map { !API.isIPAddress($0) } ?? false }) {
+                    Label("已包含这台 Mac 的公网地址，出门后手机无需安装 Tailscale 也能连接", systemImage: "globe").font(.jSmall).foregroundStyle(Color.signal)
+                } else if (invitation.urls ?? []).contains(where: { URL(string: $0)?.host.map(API.isTailscale) ?? false }) {
                     Label("已包含这台 Mac 的 Tailscale 地址，出门后也能连接", systemImage: "network").font(.jSmall).foregroundStyle(Color.signal)
                 } else {
                     Text("想在外面使用：在 Mac 和手机上登录同一个 Tailscale 账号，再重新生成邀请。").font(.jSmall).foregroundStyle(Color.inkSoft).multilineTextAlignment(.center)

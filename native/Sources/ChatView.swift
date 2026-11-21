@@ -37,7 +37,8 @@ struct ChatView: View {
     @State private var pasteMonitor: Any?
     #endif
 
-    var isHome: Bool { store.visibleMessages.isEmpty && store.selectedSession == nil }
+    /// Nothing has been said yet: the conversation has not begun.
+    var isHome: Bool { store.visibleMessages.isEmpty && !store.streamEarlier && !store.loadingSession }
     /// Phone width: one column, a one-line composer, finger-sized controls.
     var narrow: Bool {
         #if os(iOS)
@@ -93,8 +94,6 @@ struct ChatView: View {
         #if os(macOS)
         .onAppear { focused = true }  // on iPhone this would pop the keyboard and swallow the next tap
         #endif
-        // A draft belongs to the conversation it was typed in.
-        .onChange(of: store.selectedSession) { _, _ in input = ""; attachments = [] }
         #if os(macOS)
         // ⌘V with an image on the clipboard attaches it; plain text still pastes into the field.
         .onAppear { pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
@@ -108,7 +107,7 @@ struct ChatView: View {
         .toolbar {
             ToolbarItem(placement: .principal) {
                 VStack(spacing: 1) {
-                    Text(store.currentSession?.title ?? "新任务").font(.jHeading).lineLimit(1)
+                    Text(store.currentSession?.title ?? "Jurvis").font(.jHeading).lineLimit(1)
                     if let status = store.runStatus { RunStatusLine(text: status) }
                 }
             }
@@ -207,10 +206,22 @@ struct ChatView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 22) {
-                        if store.loadingSession && store.messages.isEmpty { LoadingState(text: "正在打开任务") }
-                        ForEach(store.visibleMessages) { message in
-                            if message.isUser { UserMessage(message: message, open: { store.view($0) }) }
-                            else { AssistantMessage(message: message, open: { store.view($0) }) }
+                        if store.loadingSession && store.messages.isEmpty { LoadingState(text: "正在打开对话") }
+                        if store.streamEarlier {
+                            ActionButton(title: "更早的对话", busyTitle: "正在载入", kind: .ghost, scale: .small) { await store.loadEarlier() }
+                                .frame(maxWidth: .infinity)
+                        }
+                        let shown = store.visibleMessages
+                        ForEach(Array(shown.enumerated()), id: \.element.id) { index, message in
+                            // One conversation, in stretches: where a new one begins, the time says how long ago that was.
+                            if message.id != "outgoing", index == 0 || shown[index - 1].session_id != message.session_id {
+                                StretchMark(time: message.created_at)
+                            }
+                            Group {
+                                if message.isUser { UserMessage(message: message, open: { store.view($0) }) }
+                                else { AssistantMessage(message: message, open: { store.view($0) }) }
+                            }
+                            .id(message.id)
                         }
                         if store.visibleMessages.last?.id == "outgoing" {
                             HStack(spacing: 8) { SignalDot(); Text("正在发送").font(.jSmall).foregroundStyle(Color.inkSoft) }
@@ -221,15 +232,34 @@ struct ChatView: View {
                     .frame(maxWidth: Metrics.readable).frame(maxWidth: .infinity)
                 }
                 .scrollDismissesKeyboard(.interactively)
-                .onChange(of: store.messages.last?.content) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
-                .onChange(of: store.messages.last?.steps.flatMap(\.calls).count) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
-                .onChange(of: store.visibleMessages.count) { _, _ in withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("bottom", anchor: .bottom) } }
-                .onAppear { proxy.scrollTo("bottom", anchor: .bottom) }
+                .onChange(of: store.messages.last?.content) { _, _ in settle(proxy) }
+                .onChange(of: store.messages.last?.steps.flatMap(\.calls).count) { _, _ in settle(proxy) }
+                .onChange(of: store.visibleMessages.count) { _, _ in settle(proxy, animated: true) }
+                .onChange(of: store.scrollTarget) { _, target in if target != nil { settle(proxy) } }  // clearing it is not a reason to move
+                .onAppear { settle(proxy) }
             }
-            if store.currentSession?.allow_commands == 1, let id = store.selectedSession {
+            WaitingQuestions()
+                .frame(maxWidth: Metrics.readable)
+                .padding(.horizontal, narrow ? 12 : 24).padding(.top, 6)
+            if store.streamPast {
+                HStack(spacing: 6) {
+                    Image(systemName: "clock.arrow.circlepath")
+                    Text("这是较早的对话").lineLimit(1)
+                    ActionButton(title: "回到现在", busyTitle: "正在载入", kind: .ghost, scale: .small) { await store.loadNewest() }
+                }
+                .font(.jSmall).foregroundStyle(Color.inkSoft).padding(.top, 6)
+            } else if store.fresh {
+                HStack(spacing: 6) {
+                    Image(systemName: "square.and.pencil")
+                    Text("下一条消息会开始一个新话题").lineLimit(1)
+                    Button("取消") { store.fresh = false; store.projectPicked = false }.buttonStyle(.plain).foregroundStyle(Color.ink)
+                }
+                .font(.jSmall).foregroundStyle(Color.inkSoft).padding(.top, 6)
+            }
+            if store.currentSession?.allow_commands == 1, let id = store.selectedSession, !store.streamPast {
                 HStack(spacing: 6) {
                     Image(systemName: "terminal")
-                    Text("这个任务里的命令会直接运行").lineLimit(1)
+                    Text("这段对话里的命令会直接运行").lineLimit(1)
                     ActionButton(title: "改为每次确认", busyTitle: "正在修改", kind: .ghost, scale: .small) { await store.setAllowCommands(id, false) }
                 }
                 .font(.jSmall).foregroundStyle(Color.inkSoft).padding(.top, 6)
@@ -240,11 +270,26 @@ struct ChatView: View {
         }
     }
 
+    /// Keeps the newest message in view, or brings the one that was asked for to the top (an old stretch, a search result).
+    func settle(_ proxy: ScrollViewProxy, animated: Bool = false) {
+        if let target = store.scrollTarget {
+            proxy.scrollTo(target, anchor: .top)
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(400))  // the list is still laying itself out: hold the position meanwhile
+                proxy.scrollTo(target, anchor: .top)
+                if store.scrollTarget == target { store.scrollTarget = nil }
+            }
+        } else if !store.streamPast {
+            if animated { withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("bottom", anchor: .bottom) } }
+            else { proxy.scrollTo("bottom", anchor: .bottom) }
+        }
+    }
+
     #if os(macOS)
-    /// The task's name and where it stands.
+    /// What is being talked about and where it stands.
     var header: some View {
         HStack(spacing: 10) {
-            Text(store.currentSession?.title ?? "新任务").font(.jSection).lineLimit(1).truncationMode(.tail)
+            Text(store.streamPast ? "较早的对话" : store.currentSession?.title ?? "Jurvis").font(.jSection).lineLimit(1).truncationMode(.tail)
             if let status = store.runStatus { Badge(text: status, tone: .active) }
             Spacer(minLength: 8)
             if let job = store.chatJob, !store.isCancelling(job) {
@@ -394,29 +439,25 @@ struct ChatView: View {
         .fixedSize()
     }
 
-    /// Binds a new conversation to a code project; an existing one shows its project.
+    /// The code project being worked in. Picking another, or none, applies from the next message on.
     @ViewBuilder func projectChip(compact: Bool, scale: Chip.Scale = .regular) -> some View {
-        if store.selectedSession != nil {
-            if let project = store.activeProject { Chip(title: project.name, icon: "chevron.left.forwardslash.chevron.right", on: true, compact: compact, scale: scale) {} .disabled(true) }
-        } else {
-            Menu {
-                ForEach(store.codeProjects) { project in
-                    Button { store.codeProjectID = project.id } label: {
-                        if project.id == store.codeProjectID { Label(project.name, systemImage: "checkmark") } else { Text(project.name) }
-                    }
+        Menu {
+            ForEach(store.codeProjects) { project in
+                Button { store.codeProjectID = project.id; store.projectPicked = true } label: {
+                    if project.id == store.activeProject?.id { Label(project.name, systemImage: "checkmark") } else { Text(project.name) }
                 }
-                if store.codeProjectID != nil { Button("不关联项目") { store.codeProjectID = nil } }
-                #if os(macOS)
-                Divider()
-                Button { connecting = true } label: { Label("连接项目文件夹…", systemImage: "folder.badge.plus") }
-                #endif
-            } label: {
-                Chip(title: linkingProject ? "正在连接" : store.activeProject?.name ?? "代码", icon: "chevron.left.forwardslash.chevron.right", on: store.activeProject != nil, compact: compact && store.activeProject == nil && !linkingProject, busy: linkingProject, scale: scale) {}
-                    .allowsHitTesting(false)
             }
-            .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
-            .help("让这个任务关联一个代码项目")
+            if store.activeProject != nil { Button("不关联项目") { store.codeProjectID = nil; store.projectPicked = true } }
+            #if os(macOS)
+            Divider()
+            Button { connecting = true } label: { Label("连接项目文件夹…", systemImage: "folder.badge.plus") }
+            #endif
+        } label: {
+            Chip(title: linkingProject ? "正在连接" : store.activeProject?.name ?? "代码", icon: "chevron.left.forwardslash.chevron.right", on: store.activeProject != nil, compact: compact && store.activeProject == nil && !linkingProject, busy: linkingProject, scale: scale) {}
+                .allowsHitTesting(false)
         }
+        .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+        .help("接下来在一个代码项目里工作")
     }
 
     /// Dictation into the field, and the hands-free conversation. Each shows only when the Mac has the model it needs.
@@ -576,15 +617,25 @@ struct AssistantMessage: View {
         let steps = message.steps
         let plan = message.plan
         VStack(alignment: .leading, spacing: 12) {
-            if case .object = message.metadata["goal"] { GoalStatus(goal: message.metadata["goal"], live: message.isLive) }
+            if case .object = message.metadata["goal"] { GoalStatus(goal: message.metadata["goal"], live: message.isLive, task: message.metadata["task"]["title"].string) }
             if !plan.isEmpty { PlanList(plan: plan, live: message.isLive) }
             if steps.isEmpty {
                 if !message.content.isEmpty { MarkdownText(text: message.content) }
             } else {
                 ForEach(Array(steps.enumerated()), id: \.offset) { _, step in
-                    if !step.text.isEmpty { MarkdownText(text: step.text) }
-                    if !step.calls.isEmpty { ToolTrace(messageID: message.id, calls: step.calls, open: open) }
+                    // What the assistant says comes as a few short messages, the way a person writes; tool traces sit between them.
+                    if !step.text.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(Array(Bubbles.split(step.text).enumerated()), id: \.offset) { _, part in said(part) }
+                        }
+                    }
+                    // The question a reply ends on is shown as its options, not as a tool call.
+                    let calls = step.calls.filter { $0.name != "ask_user" }
+                    if !calls.isEmpty { ToolTrace(messageID: message.id, calls: calls, open: open) }
                 }
+            }
+            if !message.isLive, !message.options.isEmpty {
+                OptionList(options: message.options, isLatest: store.messages.last?.id == message.id, answer: answer)
             }
             if !message.isLive, !message.metadata["sources"].array.isEmpty { SourceList(sources: message.metadata["sources"].array) }
             footer(hasContent: !message.content.isEmpty || !steps.isEmpty, words: steps.isEmpty ? message.content : steps.map(\.text).filter { !$0.isEmpty }.joined(separator: "\n\n"))
@@ -592,12 +643,31 @@ struct AssistantMessage: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    func said(_ text: String) -> some View {
+        MarkdownText(text: text)
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            .background(Color.card, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(Color.hairline))
+    }
+
+    /// What the user answered, when this reply ended on a question: the message picked for it later, or the one that follows it.
+    var answer: String? {
+        if let picked = store.messages.first(where: { $0.isUser && $0.metadata["answer"]["message_id"].string == message.id }) { return picked.content }
+        guard let index = store.messages.firstIndex(where: { $0.id == message.id }), index + 1 < store.messages.count,
+              store.messages[index + 1].isUser, store.messages[index + 1].session_id == message.session_id else { return nil }
+        return store.messages[index + 1].content
+    }
+
     /// `words` is the text the model wrote, which is what the read button reads aloud.
     @ViewBuilder func footer(hasContent: Bool, words: String) -> some View {
         if message.isLive {
             HStack(spacing: 8) {
                 SignalDot()
-                Text(liveStatus).font(.jSmall).foregroundStyle(Color.inkSoft).lineLimit(1)
+                Text(liveStatus).font(.jSmall).foregroundStyle(Color.inkSoft).lineLimit(2)
+                // The composer's stop button belongs to the reply being waited for; background work is stopped here.
+                if let job = ownJob, job.isBackground {
+                    ActionButton(title: "停止", busyTitle: "正在停止", kind: .ghost, scale: .small, isBusy: store.isCancelling(job)) { await store.cancel(job) }
+                }
             }
         } else {
             if !message.errorText.isEmpty {
@@ -619,12 +689,13 @@ struct AssistantMessage: View {
         }
     }
 
+    var ownJob: Job? { store.snapshot?.jobs.first { $0.kind == "chat" && $0.payload["message_id"].string == message.id } }
+
     var liveStatus: String {
         if message.status == "queued" { return "排队中，前面的任务完成后开始" }
-        if let job = store.snapshot?.jobs.first(where: { $0.kind == "chat" && $0.payload["message_id"].string == message.id }), !job.phase.isEmpty {
-            return job.phase
-        }
-        return "正在思考"
+        let moved = message.metadata["background"] == .bool(true) ? " · 已转到后台，做完发在这里，你可以接着聊" : ""
+        if let job = ownJob, !job.phase.isEmpty { return job.phase + moved }
+        return "正在思考" + moved
     }
 }
 
@@ -660,6 +731,46 @@ struct PlanList: View {
     }
 }
 
+/// The answers offered with a question. On the latest reply a tap sends that answer; on older ones the list records what was chosen.
+struct OptionList: View {
+    @EnvironmentObject var store: AppStore
+    var options: [String]
+    var isLatest: Bool
+    var answer: String?
+    @State private var sending: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(options, id: \.self) { option in
+                let chosen = answer == option
+                Button {
+                    guard sending == nil else { return }
+                    sending = option
+                    Task {
+                        do { try await store.send(option, assets: []) } catch { store.report(error) }
+                        sending = nil
+                    }
+                } label: {
+                    HStack(spacing: 12) {
+                        Text(option).font(.jBody).multilineTextAlignment(.leading).frame(maxWidth: .infinity, alignment: .leading)
+                        if sending == option { ProgressView().controlSize(.small) }
+                        else if chosen { Image(systemName: "checkmark").font(.system(size: 12, weight: .semibold)) }
+                    }
+                    .foregroundStyle(isLatest || chosen ? Color.ink : Color.inkFaint)
+                    .padding(.horizontal, 14).padding(.vertical, 10).frame(minHeight: 44)
+                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(chosen ? Color.stroke : Color.stroke.opacity(isLatest ? 1 : 0.6), style: StrokeStyle(lineWidth: 1, dash: chosen ? [] : [4, 3])))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(!isLatest || sending != nil)
+                .accessibilityAddTraits(chosen ? .isSelected : [])
+            }
+        }
+        .frame(maxWidth: 520, alignment: .leading)
+    }
+}
+
 // MARK: - Tool trace
 
 /// Each tool call is a small pill; tap one for its arguments and result. A long run folds to its latest calls.
@@ -673,7 +784,7 @@ struct ToolTrace: View {
 
     /// Commands and anything waiting for a yes are shown as their own cards.
     static func isCard(_ call: ToolCall) -> Bool { call.name == "run_command" || call.awaiting }
-    var quiet: [ToolCall] { calls.filter { !Self.isCard($0) } }
+    var quiet: [ToolCall] { calls.filter { !Self.isCard($0) && $0.made == nil } }
 
     var body: some View {
         let quiet = quiet
@@ -697,10 +808,198 @@ struct ToolTrace: View {
             }
             ForEach(calls) { call in
                 if Self.isCard(call) { CommandCard(messageID: messageID, call: call) }
+                else if let made = call.made { CardView(card: made) }
                 else if call.name == "edit_code", let id = call.job_id { ChangeSetCard(jobID: id) }
                 else if let id = call.job_id, let job = store.job(id) { JobInline(job: job, open: open) }
             }
         }
+    }
+}
+
+/// What a tool call made or found, shown as the thing itself instead of as a tool call.
+/// A made thing (goal, schedule, memory, document, task) is one row; a lookup (weather, price, rate, clock, countdown) shows its figures.
+struct CardView: View {
+    var card: JSONValue
+    @EnvironmentObject var store: AppStore
+    static let made = ["goal": "scope", "schedule": "calendar.badge.clock", "memory": "bookmark", "file": "doc.text", "task": "checklist", "session": "leaf"]
+    /// Where the thing a card stands for lives; a tap goes there.
+    static let places: [String: Section] = ["goal": .goals, "schedule": .goals, "memory": .memory, "file": .files, "ledger": .ledger, "expense": .ledger, "health": .health, "cycle": .health, "mood": .health]
+    static let glyphs = ["sun": "sun.max.fill", "moon": "moon.stars.fill", "partly": "cloud.sun.fill", "cloud": "cloud.fill", "fog": "cloud.fog.fill",
+                         "drizzle": "cloud.drizzle.fill", "rain": "cloud.rain.fill", "snow": "snowflake", "storm": "cloud.bolt.rain.fill",
+                         "coin": "bitcoinsign.circle.fill", "exchange": "arrow.left.arrow.right.circle.fill", "calendar": "calendar", "wallet": "list.bullet.rectangle.portrait.fill", "heart": "heart.fill", "drop": "drop.fill"]
+    var kind: String { card["kind"].string }
+    var trendColor: Color { card["trend"].string == "up" ? .signal : card["trend"].string == "down" ? .danger : .inkFaint }
+
+    var body: some View {
+        let content = Group {
+            if let symbol = Self.made[kind] { row(symbol) } else { figures }
+        }
+        .surface(radius: 16)
+        .accessibilityElement(children: .combine)
+        if kind == "session", !card["session_id"].string.isEmpty {
+            // A conversation the assistant opened for what the user is going through: a tap goes there.
+            Button { Task { await store.open(stretch: card["session_id"].string) } } label: { content.contentShape(Rectangle()) }.buttonStyle(.plain).accessibilityHint("转到这段对话")
+        } else if let place = Self.places[kind] {
+            Button { store.section = place } label: { content.contentShape(Rectangle()) }.buttonStyle(.plain).accessibilityHint("打开" + place.rawValue)
+        } else {
+            content
+        }
+    }
+
+    func row(_ symbol: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: symbol).font(.system(size: 15)).foregroundStyle(Color.inkSoft)
+                .frame(width: 32, height: 32)
+                .background(Color.bubble, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(card["title"].string).font(.jHeading).lineLimit(1)
+                if !card["subtitle"].string.isEmpty { Text(card["subtitle"].string).font(.jSmall).foregroundStyle(Color.inkSoft).lineLimit(1) }
+                if !card["note"].string.isEmpty { Text(card["note"].string).font(.jCallout).foregroundStyle(Color.inkSoft).lineLimit(2).padding(.top, 2) }
+            }
+            Spacer(minLength: 0)
+            if Self.places[kind] != nil || kind == "session" { Image(systemName: "chevron.right").font(.system(size: 11, weight: .medium)).foregroundStyle(Color.inkFaint).padding(.top, 10) }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .frame(maxWidth: 360, alignment: .leading)
+    }
+
+    var figures: some View {
+        let shares = card["bars"].array.map { (label: $0["label"].string, value: $0["value"].string, share: $0["share"].number ?? 0) }
+        let rows = card["rows"].array
+        let days = card["days"].array
+        let series = card["series"].array.compactMap(\.number)
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(card["title"].string).font(.jHeading).lineLimit(1)
+                    if !card["subtitle"].string.isEmpty { Text(card["subtitle"].string).font(.jSmall).foregroundStyle(Color.inkSoft).lineLimit(1) }
+                }
+                Spacer(minLength: 8)
+                if let glyph = Self.glyphs[card["icon"].string] {
+                    Image(systemName: glyph).symbolRenderingMode(.multicolor).font(.system(size: 24)).foregroundStyle(Color.inkSoft)
+                }
+            }
+            // The figure and what to wear sit beside the temperature: the picture is the advice at a glance.
+            HStack(alignment: .top, spacing: 12) {
+              VStack(alignment: .leading, spacing: 10) {
+            if !card["value"].string.isEmpty {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(card["value"].string).font(.system(size: ["price", "currency", "ledger", "expense", "health", "cycle"].contains(kind) ? 28 : 38, weight: .semibold)).monospacedDigit()
+                        .lineLimit(1).minimumScaleFactor(0.6)
+                    if kind == "countdown", card["value"].string != "今天" { Text("天").font(.jBody).foregroundStyle(Color.inkSoft) }
+                }
+            }
+            if !card["outfit"]["wear"].array.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    FlowChips(items: card["outfit"]["wear"].array.map(\.string))
+                    if !card["outfit"]["tip"].string.isEmpty { Text(card["outfit"]["tip"].string).font(.jCallout).fixedSize(horizontal: false, vertical: true) }
+                }
+            }
+              }
+              .frame(maxWidth: .infinity, alignment: .leading)
+              if kind == "weather" { art }
+            }
+            if series.count > 2 { Sparkline(points: series).stroke(trendColor, style: StrokeStyle(lineWidth: 1.5, lineJoin: .round)).frame(height: 34) }
+            if !shares.isEmpty { ShareBars(items: shares) }
+            if !rows.isEmpty {
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 16), GridItem(.flexible())], alignment: .leading, spacing: 6) {
+                    ForEach(Array(rows.enumerated()), id: \.offset) { _, item in
+                        HStack(spacing: 8) {
+                            if !item["label"].string.isEmpty { Text(item["label"].string).foregroundStyle(Color.inkFaint) }
+                            Spacer(minLength: 0)
+                            Text(item["value"].string).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
+                        }
+                        .font(.jCallout)
+                    }
+                }
+            }
+            if !days.isEmpty {
+                Divider().overlay(Color.hairline)
+                HStack(spacing: 4) {
+                    ForEach(Array(days.enumerated()), id: \.offset) { _, day in
+                        VStack(spacing: 3) {
+                            Text(day["label"].string).font(.jSmall).foregroundStyle(Color.inkSoft)
+                            Image(systemName: Self.glyphs[day["icon"].string] ?? "cloud.fill").symbolRenderingMode(.multicolor).font(.system(size: 15)).foregroundStyle(Color.inkSoft)
+                            (Text("\(Int(day["high"].number ?? 0))° ") + Text("\(Int(day["low"].number ?? 0))°").foregroundColor(.inkFaint)).font(.jSmall).monospacedDigit()
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                }
+            }
+            if !card["note"].string.isEmpty { Text(card["note"].string).font(.jSmall).foregroundStyle(Color.inkFaint).lineLimit(1) }
+        }
+        .padding(.horizontal, 16).padding(.vertical, 14)
+        .frame(maxWidth: 360, alignment: .leading)
+    }
+}
+
+extension CardView {
+    /// The outfit illustration of a weather card: the picture once it is drawn, a quiet note while it is being drawn.
+    @ViewBuilder var art: some View {
+        let job = store.job(card["image_job"].string.isEmpty ? nil : card["image_job"].string)
+        let drawn = card["image"].string.isEmpty ? job.flatMap { store.outputs(of: $0).first } : store.asset(card["image"].string)
+        if let drawn {
+            // The drawing is a square with the figure in its middle: the frame keeps the figure and trims the empty sides.
+            MediaThumb(asset: drawn, fill: true).frame(width: 116, height: 164)
+        } else if let job, job.isActive {
+            VStack(spacing: 8) {
+                BusyRing(size: 14)
+                Text("正在画穿搭").font(.jSmall).foregroundStyle(Color.inkSoft)
+            }
+            .frame(width: 116, height: 164).background(Color.bubble, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+    }
+}
+
+/// Short labels that wrap onto as many lines as they need.
+struct FlowChips: View {
+    var items: [String]
+    var body: some View {
+        FlowLayout(spacing: 6) {
+            ForEach(items, id: \.self) { item in
+                Text(item).font(.jSmall).padding(.horizontal, 10).frame(height: 24).background(Color.bubble, in: Capsule())
+            }
+        }
+    }
+}
+
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 6
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        arrange(width: proposal.width ?? .infinity, subviews: subviews).size
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for (subview, point) in zip(subviews, arrange(width: bounds.width, subviews: subviews).points) {
+            subview.place(at: CGPoint(x: bounds.minX + point.x, y: bounds.minY + point.y), proposal: .unspecified)
+        }
+    }
+    func arrange(width: CGFloat, subviews: Subviews) -> (size: CGSize, points: [CGPoint]) {
+        var points: [CGPoint] = [], x: CGFloat = 0, y: CGFloat = 0, row: CGFloat = 0, widest: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > width { x = 0; y += row + spacing; row = 0 }
+            points.append(CGPoint(x: x, y: y))
+            x += size.width + spacing
+            row = max(row, size.height)
+            widest = max(widest, x - spacing)
+        }
+        return (CGSize(width: widest, height: y + row), points)
+    }
+}
+
+/// A week of prices as one line, scaled to its own low and high.
+struct Sparkline: Shape {
+    var points: [Double]
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        guard points.count > 1, let low = points.min(), let high = points.max() else { return path }
+        let span = high - low == 0 ? 1 : high - low
+        for (index, value) in points.enumerated() {
+            let point = CGPoint(x: rect.minX + rect.width * CGFloat(index) / CGFloat(points.count - 1),
+                                y: rect.maxY - 1 - (rect.height - 2) * CGFloat((value - low) / span))
+            if index == 0 { path.move(to: point) } else { path.addLine(to: point) }
+        }
+        return path
     }
 }
 
@@ -803,11 +1102,14 @@ struct CommandCard: View {
 struct GoalStatus: View {
     var goal: JSONValue
     var live: Bool
+    /// The title of the background task this message carries; empty for a goal the user set.
+    var task = ""
+    var name: String { task.isEmpty ? "目标" : "后台任务「\(task)」" }
 
     var body: some View {
         let status = goal["status"].string
         if live {
-            Badge(text: "目标 · " + label(status), tone: .active)
+            Badge(text: name + " · " + label(status), tone: .active)
         } else {
             HStack(alignment: .firstTextBaseline, spacing: 7) {
                 Group {
@@ -816,7 +1118,7 @@ struct GoalStatus: View {
                     else { Image(systemName: icon(status)).font(.system(size: 13)).foregroundStyle(Color.inkSoft) }
                 }
                 .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 3 }
-                Text("目标").font(.jSmall.weight(.medium))
+                Text(name).font(.jSmall.weight(.medium))
                 Text(label(status)).font(.jSmall).foregroundStyle(status == "blocked" ? Color.signal : Color.inkSoft).lineLimit(2)
             }
         }
@@ -1100,6 +1402,125 @@ extension NSItemProvider {
             _ = loadDataRepresentation(for: .image) { data, error in
                 if let data { done.resume(returning: data) } else { done.resume(throwing: error ?? CocoaError(.fileReadUnknown)) }
             }
+        }
+    }
+}
+
+/// Where a stretch of the conversation begins: the time, in the middle, like a pause between two talks.
+struct StretchMark: View {
+    var time: Double
+    var body: some View {
+        Text(Self.label(time)).font(.jSmall).foregroundStyle(Color.inkFaint)
+            .frame(maxWidth: .infinity).padding(.top, 6)
+            .accessibilityLabel("对话时间 " + Self.label(time))
+    }
+    private static let clock: DateFormatter = { let f = DateFormatter(); f.dateFormat = "HH:mm"; return f }()
+    static func label(_ time: Double) -> String {
+        let date = Date(timeIntervalSince1970: time), calendar = Calendar.current
+        let clock = Self.clock.string(from: date)
+        if calendar.isDateInToday(date) { return clock }
+        if calendar.isDateInYesterday(date) { return "昨天 " + clock }
+        let sameYear = calendar.component(.year, from: date) == calendar.component(.year, from: Date())
+        return (sameYear ? "" : "\(calendar.component(.year, from: date))年") + "\(calendar.component(.month, from: date))月\(calendar.component(.day, from: date))日 " + clock
+    }
+}
+
+/// A reply's text as the few messages it would be in a chat: split between plain paragraphs. Lists, tables and quotes stay with
+/// the paragraph that leads into them; long or structured writing (code, a document) stays whole.
+enum Bubbles {
+    static func plain(_ part: String) -> Bool {
+        !part.split(separator: "\n", omittingEmptySubsequences: false).contains { line in
+            let text = line.drop { $0 == " " || $0 == "\t" }
+            if line.hasPrefix("    ") && !text.isEmpty { return true }
+            if let first = text.first, "#>|".contains(first) { return true }
+            if let first = text.first, "-*+•".contains(first), text.dropFirst().first == " " { return true }
+            let digits = text.prefix { $0.isNumber }
+            if !digits.isEmpty, let mark = text.dropFirst(digits.count).first, ".)、".contains(mark) { return true }
+            return false
+        }
+    }
+    static func split(_ text: String) -> [String] {
+        guard text.count <= 1500, !text.contains("```"), !text.contains("~~~") else { return [text] }
+        var parts: [String] = [], current: [Substring] = []
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            if line.allSatisfy(\.isWhitespace) {
+                if !current.isEmpty { parts.append(current.joined(separator: "\n")); current = [] }
+            } else { current.append(line) }
+        }
+        if !current.isEmpty { parts.append(current.joined(separator: "\n")) }
+        var out: [String] = [], before = true
+        for part in parts {
+            let now = plain(part)
+            if !out.isEmpty && !(now && before) { out[out.count - 1] += "\n\n" + part } else { out.append(part) }
+            before = now
+        }
+        while out.count > 4 { let tail = out.removeLast(); out[out.count - 1] += "\n\n" + tail }
+        return out.isEmpty ? [text] : out
+    }
+}
+
+/// What Jurvis asked and the user has not decided yet, one question at a time, above the composer wherever they are in the conversation.
+struct WaitingQuestions: View {
+    @EnvironmentObject var store: AppStore
+    @State private var index = 0
+    @State private var sending: String?
+    #if os(macOS)
+    private let tap: CGFloat = 32
+    #else
+    private let tap: CGFloat = 44
+    #endif
+
+    var body: some View {
+        let items = store.waitingQuestions
+        if !items.isEmpty {
+            let at = min(index, items.count - 1)
+            let asked = items[at]
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 10) {
+                    Text(items.count > 1 ? "等你决定 · \(at + 1)/\(items.count)" : "等你决定").font(.jSmall).foregroundStyle(Color.signal)
+                    Spacer(minLength: 8)
+                    if items.count > 1 {
+                        Button("下一个") { index = (at + 1) % items.count }.buttonStyle(.plain).font(.jSmall).foregroundStyle(Color.inkSoft)
+                    }
+                    Button { Task { await store.dropQuestion(asked.id) } } label: {
+                        Image(systemName: "xmark").font(.system(size: 11, weight: .medium)).foregroundStyle(Color.inkSoft)
+                            .frame(width: tap, height: 28).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain).help("不用决定了").accessibilityLabel("不用决定了")
+                }
+                Button { Task { await store.open(message: asked.message_id) } } label: {
+                    Text(asked.question).font(.jBody).foregroundStyle(Color.ink).multilineTextAlignment(.leading).frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).accessibilityHint("转到当时说到的地方")
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(asked.options, id: \.self) { option in
+                            Button {
+                                guard sending == nil else { return }
+                                sending = option
+                                Task {
+                                    do { try await store.send(option, assets: [], answerTo: asked.id) } catch { store.report(error) }
+                                    sending = nil
+                                }
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Text(option).font(.jCallout).lineLimit(1)
+                                    if sending == option { ProgressView().controlSize(.small) }
+                                }
+                                .foregroundStyle(Color.ink).padding(.horizontal, 12).frame(minHeight: tap)
+                                .overlay(Capsule().strokeBorder(Color.stroke, style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+                                .contentShape(Capsule())
+                            }
+                            .buttonStyle(.plain).disabled(sending != nil || store.chatBusy)
+                        }
+                    }
+                    .padding(.vertical, 1)
+                }
+            }
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            .background(Color.card, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Color.hairline))
         }
     }
 }

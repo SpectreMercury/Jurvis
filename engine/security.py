@@ -4,10 +4,12 @@ import ipaddress
 import json
 import os
 import secrets
+import shutil
 import socket
+import subprocess
 import time
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -59,15 +61,15 @@ class Security:
             self.store.execute("UPDATE devices SET last_seen=? WHERE id=?", (time.time(),row["id"]))
         return row
 
-    def pairing(self, address, others=()):
+    def pairing(self, urls):
         # An invitation is single-use, time-limited, and contains a pinned TLS fingerprint.
-        # `others` are further addresses of this Mac (its Tailscale address, say) the device may fall back to.
+        # The first URL is the one to use; the rest (Tailscale, a public address) are addresses the device may fall back to.
         now=time.time()
         self.codes={k:v for k,v in self.codes.items() if v>now}
         code=secrets.token_urlsafe(24)
         self.codes[code]=now+300
-        url=f"https://{address}:{self.settings.port}"
-        urls=[url]+[f"https://{other}:{self.settings.port}" for other in others if other!=address]
+        urls=list(dict.fromkeys(urls))
+        url=urls[0]
         link="jurvis://pair?"+urlencode([("url",url),("code",code),("fingerprint",self.fingerprint)]+[("alt",other) for other in urls[1:]])
         # The same invitation for a browser: the web app reads the code from the fragment, which is never sent to a server.
         return {"url":url,"urls":urls,"code":code,"fingerprint":self.fingerprint,"link":link,"web_link":f"{url}/app/#pair={code}","expires_at":now+300}
@@ -109,3 +111,40 @@ def tailscale_addresses():
 def reach_addresses():
     """Every address a paired device may use: the local network first, then Tailscale."""
     return list(dict.fromkeys(lan_addresses()+tailscale_addresses()))
+
+
+TAILSCALE_BINARIES = ("/opt/homebrew/bin/tailscale", "/usr/local/bin/tailscale", "/Applications/Tailscale.app/Contents/MacOS/Tailscale")
+
+
+def funnel_url(port):
+    """The public address of a Tailscale Funnel that forwards to this engine, or None.
+
+    Funnel publishes the engine at https://<machine>.<tailnet>.ts.net with a certificate every phone trusts,
+    so a device reaches it from anywhere without Tailscale installed."""
+    binary = shutil.which("tailscale") or next((path for path in TAILSCALE_BINARIES if os.path.exists(path)), None)
+    if not binary:
+        return None
+    try:
+        out = subprocess.run([binary, "serve", "status", "--json"], capture_output=True, text=True, timeout=3)
+        config = json.loads(out.stdout or "{}") if out.returncode == 0 else {}
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    return funnel_from_config(config, port)
+
+
+def funnel_from_config(config, port):
+    """Reads `tailscale serve status --json`: a host:port open to the internet whose root forwards to the engine."""
+    public = config.get("AllowFunnel") or {}
+    for hostport, web in (config.get("Web") or {}).items():
+        if not public.get(hostport):
+            continue
+        proxy = (((web or {}).get("Handlers") or {}).get("/") or {}).get("Proxy") or ""
+        target = urlparse(proxy if "://" in proxy else "http://" + proxy)
+        try:
+            if target.hostname not in ("127.0.0.1", "localhost", "::1") or target.port != port:
+                continue
+        except ValueError:
+            continue
+        host, _, outer = hostport.rpartition(":")
+        return f"https://{host}" if outer == "443" else f"https://{host}:{outer}"
+    return None

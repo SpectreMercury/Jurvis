@@ -64,15 +64,41 @@ class Store:
                 db.execute("ALTER TABLE sessions ADD COLUMN allow_commands INTEGER NOT NULL DEFAULT 0")
             # Per-conversation model, memory bookkeeping and the rolling summary of older messages.
             for name, kind in (("model", "TEXT"), ("incognito", "INTEGER NOT NULL DEFAULT 0"), ("summary", "TEXT"),
-                               ("summary_upto", "REAL NOT NULL DEFAULT 0"), ("memory_upto", "REAL NOT NULL DEFAULT 0"), ("tools", "TEXT")):
+                               ("summary_upto", "REAL NOT NULL DEFAULT 0"), ("memory_upto", "REAL NOT NULL DEFAULT 0"), ("tools", "TEXT"),
+                               # A conversation opened by the assistant for one subject: what it is for, what led to it, and where it came from.
+                               ("persona", "TEXT"), ("brief", "TEXT"), ("parent_id", "TEXT")):
                 if name not in columns:
                     db.execute(f"ALTER TABLE sessions ADD COLUMN {name} {kind}")
+            # The user sees one conversation. A session row is one stretch of it, about one thing (engine/stream.py);
+            # focused_at is when the user's attention was last put on it: where their next message continues.
+            if "focused_at" not in columns:
+                db.execute("ALTER TABLE sessions ADD COLUMN focused_at REAL")
+            # The record of a finished stretch, by which it is found again later (engine/memory.py).
+            db.execute("""CREATE TABLE IF NOT EXISTS digests(
+                session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,text TEXT NOT NULL,
+                upto REAL NOT NULL,embedding BLOB,embed_model TEXT)""")
+            db.execute("CREATE INDEX IF NOT EXISTS messages_time ON messages(created_at)")
             columns = [r[1] for r in db.execute("PRAGMA table_info(memories)")]
             for name, kind in (("importance", "REAL NOT NULL DEFAULT 0.5"), ("durable", "INTEGER NOT NULL DEFAULT 1"), ("tags", "TEXT NOT NULL DEFAULT '[]'"),
                                ("source", "TEXT NOT NULL DEFAULT 'manual'"), ("session_id", "TEXT"), ("embedding", "BLOB"), ("embed_model", "TEXT"), ("used_at", "REAL")):
                 if name not in columns:
                     db.execute(f"ALTER TABLE memories ADD COLUMN {name} {kind}")
             db.execute("UPDATE schema_version SET version=2 WHERE version<2")
+            # What the assistant keeps doing over time: goals it tracks and work it runs on a schedule (engine/agenda.py).
+            db.executescript("""
+                CREATE TABLE IF NOT EXISTS goals(
+                    id TEXT PRIMARY KEY,title TEXT NOT NULL,detail TEXT NOT NULL DEFAULT '',status TEXT NOT NULL DEFAULT 'active',
+                    session_id TEXT,created_at REAL NOT NULL,updated_at REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS transactions(
+                    id TEXT PRIMARY KEY,at REAL NOT NULL,amount_cents INTEGER NOT NULL,direction TEXT NOT NULL DEFAULT 'expense',
+                    category TEXT NOT NULL,merchant TEXT NOT NULL DEFAULT '',note TEXT NOT NULL DEFAULT '',source TEXT NOT NULL DEFAULT 'chat',
+                    ref TEXT UNIQUE,auto INTEGER NOT NULL DEFAULT 0,created_at REAL NOT NULL);
+                CREATE INDEX IF NOT EXISTS transactions_at ON transactions(at);
+                CREATE TABLE IF NOT EXISTS budgets(category TEXT PRIMARY KEY,amount_cents INTEGER NOT NULL,updated_at REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS schedules(
+                    id TEXT PRIMARY KEY,title TEXT NOT NULL,brief TEXT NOT NULL,rule TEXT NOT NULL,next_run REAL NOT NULL,
+                    last_run REAL,session_id TEXT,enabled INTEGER NOT NULL DEFAULT 1,created_at REAL NOT NULL);
+            """)
 
     @contextmanager
     def connection(self):
@@ -94,7 +120,7 @@ class Store:
         if row is None:
             return None
         obj = dict(row)
-        for key in ("payload", "result", "document", "metadata", "tags"):
+        for key in ("payload", "result", "document", "metadata", "tags", "rule"):
             if isinstance(obj.get(key), str):
                 obj[key] = json.loads(obj[key])
         return obj
@@ -148,6 +174,20 @@ class Store:
             fields["result"] = dumps(fields["result"])
         self.execute("UPDATE jobs SET " + ",".join(f"{k}=?" for k in fields) + " WHERE id=?", (*fields.values(), ident))
         self.event("jobs", ident)
+
+    def to_background(self, ident):
+        """Marks a conversation job as background work: it no longer holds the conversation, and its result is delivered when done."""
+        self.execute("UPDATE jobs SET payload=json_set(payload,'$.background',json('true')),updated_at=? WHERE id=?", (time.time(), ident))
+        self.event("jobs", ident)
+
+    def deliver(self, message_id):
+        """A background result is posted when it is ready: it moves below whatever was said while it was being worked on."""
+        row = self.one("SELECT session_id,created_at FROM messages WHERE id=?", (message_id,))
+        if row and self.one("SELECT id FROM messages WHERE session_id=? AND created_at>? LIMIT 1", (row["session_id"], row["created_at"])):
+            now = time.time()
+            self.execute("UPDATE messages SET created_at=? WHERE id=?", (now, message_id))
+            self.execute("UPDATE sessions SET updated_at=? WHERE id=?", (now, row["session_id"]))
+            self.event("messages", row["session_id"])
 
     def claim_next(self):
         with self.connection() as db:
