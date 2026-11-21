@@ -5,11 +5,19 @@ import SwiftUI
 #endif
 struct JurvisApp: App {
     @StateObject private var store = AppStore()
+    @Environment(\.scenePhase) private var phase
+    #if os(iOS) && canImport(HealthKit)
+    init() { HealthKitSync.shared.watch() }  // a background launch for new Health data comes through here too
+    #endif
     var body: some Scene {
         WindowGroup {
             RootView().environmentObject(store).tint(Color.ink)
                 .task { await store.start() }
                 .onOpenURL { url in Task { await store.pair(url.absoluteString) } }
+                #if os(iOS) && canImport(HealthKit)
+                // Apple Health is read on the phone and sent to the Mac whenever the app comes to the front (once the user turned it on).
+                .onChange(of: phase) { _, now in if now == .active { Task { await HealthKitSync.shared.syncIfDue(store: store) } } }
+                #endif
                 #if os(macOS)
                 .frame(minWidth: 820, minHeight: 600)
                 #endif
@@ -119,6 +127,9 @@ struct HubView: View {
             case .tasks: TasksView()
             case .home: HomeView()
             case .memory: MemoryView()
+            case .goals: GoalsView()
+            case .ledger: LedgerView()
+            case .health: HealthView()
             case .files: FilesView()
             case .settings: SettingsView()
             case .assistant: ChatView()
@@ -195,7 +206,7 @@ struct Sidebar: View {
             VStack(spacing: 2) {
                 newTaskRow
                 searchRow
-                ForEach([Hub.library, .home, .settings]) { hubRow($0) }
+                ForEach([Hub.library, .agenda, .home, .settings]) { hubRow($0) }
             }
             .padding(.horizontal, 10)
             Eyebrow(text: "任务").padding(.horizontal, 20).padding(.top, 18).padding(.bottom, 6)

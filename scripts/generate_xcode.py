@@ -33,7 +33,8 @@ def main():
                       "CURRENT_PROJECT_VERSION":"1","MARKETING_VERSION":"0.1.0","JURVIS_WORKSPACE_ROOT":"$(SRCROOT)/..","ASSETCATALOG_COMPILER_APPICON_NAME":"AppIcon",
                       "SWIFT_OPTIMIZATION_LEVEL":"-Onone" if config=="Debug" else "-O","ENABLE_APP_SANDBOX":"NO","CODE_SIGN_STYLE":"Automatic"}
             if platform=="macosx":settings.update(MACOSX_DEPLOYMENT_TARGET="15.0",CODE_SIGN_IDENTITY="-",COMBINE_HIDPI_IMAGES="YES")
-            else:settings.update(IPHONEOS_DEPLOYMENT_TARGET="18.0",TARGETED_DEVICE_FAMILY="1,2",SUPPORTS_MACCATALYST="NO",INFOPLIST_KEY_UIApplicationSceneManifest_Generation="YES")
+            else:settings.update(IPHONEOS_DEPLOYMENT_TARGET="18.0",TARGETED_DEVICE_FAMILY="1,2",SUPPORTS_MACCATALYST="NO",INFOPLIST_KEY_UIApplicationSceneManifest_Generation="YES",
+                                 CODE_SIGN_ENTITLEMENTS="JurvisMobile.entitlements")  # HealthKit: the phone reads Apple Health and sends it to the Mac
             configs.append(add(name+config,isa="XCBuildConfiguration",buildSettings=settings,name=config))
         configs_id=add(name+"configs",isa="XCConfigurationList",buildConfigurations=configs,defaultConfigurationIsVisible=0,defaultConfigurationName="Debug")
         targets.append(add(name,isa="PBXNativeTarget",buildConfigurationList=configs_id,buildPhases=[phase,frameworks,resources],buildRules=[],dependencies=[],name=name,productName="Jurvis",productReference=product,productType="com.apple.product-type.application"))
@@ -42,10 +43,12 @@ def main():
     configs=[add("project"+c,isa="XCBuildConfiguration",buildSettings={"CLANG_ENABLE_MODULES":"YES","SWIFT_STRICT_CONCURRENCY":"minimal"},name=c) for c in ("Debug","Release")]
     configs_id=add("projectconfigs",isa="XCConfigurationList",buildConfigurations=configs,defaultConfigurationIsVisible=0,defaultConfigurationName="Debug")
     project=add("project",isa="PBXProject",attributes={"LastUpgradeCheck":"2700","BuildIndependentTargetsInParallel":"YES"},buildConfigurationList=configs_id,compatibilityVersion="Xcode 14.0",developmentRegion="zh-Hans",hasScannedForEncodings=0,knownRegions=["zh-Hans","en","Base"],mainGroup=group,productRefGroup=productgroup,projectDirPath="",projectRoot="",targets=targets)
+    (NATIVE/"JurvisMobile.entitlements").write_text('<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+        '<plist version="1.0">\n<dict>\n\t<key>com.apple.developer.healthkit</key>\n\t<true/>\n\t<key>com.apple.developer.healthkit.access</key>\n\t<array/>\n\t<key>com.apple.developer.healthkit.background-delivery</key>\n\t<true/>\n</dict>\n</plist>\n')
     folder=NATIVE/"Jurvis.xcodeproj";folder.mkdir(exist_ok=True)
     (folder/"project.pbxproj").write_text("// !$*UTF8*$!\n"+render({"archiveVersion":1,"classes":{},"objectVersion":56,"objects":objects,"rootObject":project})+"\n")
     info={"CFBundleDisplayName":"Jurvis","CFBundleName":"Jurvis","CFBundleIdentifier":"$(PRODUCT_BUNDLE_IDENTIFIER)","CFBundleExecutable":"$(EXECUTABLE_NAME)","CFBundlePackageType":"APPL","CFBundleShortVersionString":"$(MARKETING_VERSION)","CFBundleVersion":"$(CURRENT_PROJECT_VERSION)",
-          "JurvisWorkspaceRoot":"$(JURVIS_WORKSPACE_ROOT)","LSApplicationCategoryType":"public.app-category.productivity","NSLocalNetworkUsageDescription":"连接你的 Mac，使用本地助理、生图和短剧工具。","NSCameraUsageDescription":"扫描 Mac 上的配对二维码。","NSMicrophoneUsageDescription":"用语音向 Jurvis 提问，录音只发送到你自己的 Mac。","NSAppTransportSecurity":{"NSAllowsLocalNetworking":True},
+          "JurvisWorkspaceRoot":"$(JURVIS_WORKSPACE_ROOT)","LSApplicationCategoryType":"public.app-category.productivity","NSLocalNetworkUsageDescription":"连接你的 Mac，使用本地助理、生图和短剧工具。","NSCameraUsageDescription":"扫描 Mac 上的配对二维码。","NSMicrophoneUsageDescription":"用语音向 Jurvis 提问，录音只发送到你自己的 Mac。","NSHealthShareUsageDescription":"读取睡眠、运动、心率和经期记录，只发送到你自己的 Mac，用来回答你的健康问题。","NSAppTransportSecurity":{"NSAllowsLocalNetworking":True},
           "CFBundleURLTypes":[{"CFBundleURLName":"app.jurvis.pair","CFBundleURLSchemes":["jurvis"]}],"UILaunchScreen":{},"UISupportedInterfaceOrientations":["UIInterfaceOrientationPortrait","UIInterfaceOrientationLandscapeLeft","UIInterfaceOrientationLandscapeRight"],
           "UISupportedInterfaceOrientations~ipad":["UIInterfaceOrientationPortrait","UIInterfaceOrientationPortraitUpsideDown","UIInterfaceOrientationLandscapeLeft","UIInterfaceOrientationLandscapeRight"],"ITSAppUsesNonExemptEncryption":False,"NSHighResolutionCapable":True}
     (NATIVE/"Info.plist").write_bytes(plistlib.dumps(info))

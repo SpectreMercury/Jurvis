@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     speech_stt: str = "speech/sensevoice-small"   # speech recognition model folder; relative paths start at models/
     speech_tts: str = "speech/qwen3-tts-0.6b"     # speech synthesis model folder
     shared_skills: str = "~/.claude/skills"   # skills written for Claude Code are offered here too; empty turns that off
+    # Health accounts the user connects in the browser (engine/health_sync.py). Each needs an OAuth app of the user's own.
+    whoop_client_id: str = ""
+    whoop_client_secret: str = ""
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    oauth_base: str = ""                      # where the browser comes back after connecting; empty uses public_url, then https://localhost:<port>
 
     def prepare(self):
         for name in ("assets", "workspace", "logs", "security"):

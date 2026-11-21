@@ -7,9 +7,10 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
 import psutil
+import httpx
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps, UnidentifiedImageError
 from . import __version__,drama
@@ -26,6 +27,14 @@ from .coding import CodeConnect,CodeTask,CodeCommand
 
 MEMORY_COLUMNS="SELECT id,title,content,enabled,created_at,updated_at,importance,durable,tags,source,session_id,embed_model FROM memories"
 
+
+
+def page_note(title,text):
+    """A plain page for the browser tab the user connected an account in."""
+    from html import escape
+    return (f'<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{escape(title)}</title>'
+            f'<body style="font:16px -apple-system,system-ui,sans-serif;max-width:32rem;margin:18vh auto;padding:0 20px;color:#222">'
+            f'<h2 style="font-weight:600">{escape(title)}</h2><p style="line-height:1.6;color:#555">{escape(text)}</p></body>')
 
 def create_app(settings=None, *, run_worker=True):
     settings=settings or Settings()
@@ -55,7 +64,7 @@ def create_app(settings=None, *, run_worker=True):
     async def authenticate(request,call_next):
         path=request.url.path
         if path=="/":return RedirectResponse("/app/")
-        if path not in ("/health","/pair") and not path.startswith("/app"):
+        if path not in ("/health","/pair") and not path.startswith(("/app","/oauth/")):
             header=request.headers.get("authorization","")
             identity=security.authorize(header[7:] if header.startswith("Bearer ") else "")
             if not identity:return JSONResponse({"detail":"请先与 Mac 配对"},status_code=401)
@@ -88,6 +97,10 @@ def create_app(settings=None, *, run_worker=True):
                 "assets":store.all("SELECT * FROM assets ORDER BY created_at DESC LIMIT 500"),
                 "projects":store.all("SELECT * FROM projects ORDER BY updated_at DESC LIMIT 100"),
                 "memories":store.all(MEMORY_COLUMNS+" ORDER BY updated_at DESC LIMIT 500"),
+                # Messages Jurvis wrote on its own lately: the apps show each one as a notification, once.
+                "outreach":store.all("""SELECT m.id,m.session_id,m.content,m.created_at,s.title FROM messages m JOIN sessions s ON s.id=m.session_id
+                                        WHERE json_extract(m.metadata,'$.checkin') AND m.status='complete' AND m.content!='' AND m.created_at>=?
+                                        ORDER BY m.created_at DESC LIMIT 5""",(time.time()-86400,)),
                 "chat_model":worker.llm.chat_model(),
                 "runtime":{"active":runtime.active,"memory_used_gib":round(psutil.virtual_memory().used/2**30,1),"memory_total_gib":round(psutil.virtual_memory().total/2**30,1)},
                 "last_event":(store.one("SELECT MAX(id) AS id FROM events")["id"] or 0)}
@@ -138,7 +151,8 @@ def create_app(settings=None, *, run_worker=True):
             if prior["payload"].get("input")!=body.model_dump() or prior["payload"].get("session_id")!=ident:
                 raise HTTPException(409,"请求标识已用于不同消息")
             return prior
-        if store.one("SELECT id FROM jobs WHERE kind='chat' AND status IN ('queued','running') AND json_extract(payload,'$.session_id')=?",(ident,)):
+        # Background work does not hold the conversation: only a reply the user is waiting for does.
+        if store.one("SELECT id FROM jobs WHERE kind='chat' AND status IN ('queued','running') AND json_extract(payload,'$.session_id')=? AND json_extract(payload,'$.background') IS NULL",(ident,)):
             raise HTTPException(409,"请等待当前回复结束，或先停止它")
         for asset in body.asset_ids:
             worker.media.asset(asset)
@@ -194,7 +208,7 @@ def create_app(settings=None, *, run_worker=True):
             latest=store.one("SELECT id FROM jobs WHERE kind='chat' AND json_extract(payload,'$.session_id')=? ORDER BY created_at DESC LIMIT 1",(old["payload"]["session_id"],))
             if latest["id"]!=ident:
                 raise HTTPException(409,"这段对话已有后续消息，请重新发送需要回答的问题")
-            if store.one("SELECT id FROM jobs WHERE kind='chat' AND status IN ('queued','running') AND json_extract(payload,'$.session_id')=?",(old["payload"]["session_id"],)):
+            if store.one("SELECT id FROM jobs WHERE kind='chat' AND status IN ('queued','running') AND json_extract(payload,'$.session_id')=? AND json_extract(payload,'$.background') IS NULL",(old["payload"]["session_id"],)):
                 raise HTTPException(409,"当前对话已有进行中的回复")
             payload=dict(old["payload"])
             payload["message_id"]=store.add_message(payload["session_id"],"assistant","","queued")
@@ -286,6 +300,124 @@ def create_app(settings=None, *, run_worker=True):
 
     @app.get("/api/files/{name}")
     async def read_file(name:str):return worker.tools.execute("read_file",{"name":name})
+
+    @app.get("/api/agenda")
+    async def agenda():
+        """The long-term goals and the scheduled work, for the Goals view."""
+        return {"goals":worker.tools.agenda.goals(),"schedules":worker.tools.agenda.schedules()}
+
+    @app.delete("/api/goals/{ident}")
+    async def delete_goal(ident:str):
+        worker.tools.agenda.remove_goal(ident);return {"ok":True}
+
+    @app.delete("/api/schedules/{ident}")
+    async def delete_schedule(ident:str):
+        try:worker.tools.agenda.cancel(ident)
+        except ValueError:raise HTTPException(404,"定时任务不存在")
+        return {"ok":True}
+
+    @app.get("/api/ledger")
+    async def ledger(period:str="this_month",category:str=""):
+        """The ledger page: totals and every payment of a period. Read by the user's own devices, never by a model."""
+        try:
+            summary=worker.tools.ledger.summary(period,category)
+            return {"summary":summary,"transactions":worker.tools.ledger.transactions(period,category)["transactions"],"budgets":worker.tools.ledger.budgets()}
+        except ValueError as exc:raise HTTPException(400,str(exc))
+
+    @app.post("/api/ledger/import")
+    async def import_bill(file:UploadFile=File(...)):
+        content=await file.read(8*1024*1024+1)
+        if len(content)>8*1024*1024:raise HTTPException(413,"账单文件不能超过 8MB")
+        try:result=worker.tools.ledger.import_bill(content,file.filename or "")
+        except ValueError as exc:raise HTTPException(400,str(exc))
+        # Payments the keyword rules could not place are sorted by the local model in the background.
+        if result["uncategorized"] and not store.one("SELECT id FROM jobs WHERE kind='ledger' AND status IN ('queued','running')"):
+            result["job_id"]=store.create_job("ledger",{})["id"]
+        return result
+
+    @app.patch("/api/ledger/transactions/{ident}")
+    async def recategorize(ident:str,body:dict):
+        try:worker.tools.ledger.recategorize(ident,str(body.get("category","")))
+        except ValueError as exc:raise HTTPException(400,str(exc))
+        return {"ok":True}
+
+    @app.delete("/api/ledger/transactions/{ident}")
+    async def delete_transaction(ident:str):
+        worker.tools.ledger.remove(ident);return {"ok":True}
+
+    @app.get("/api/health")
+    async def health_page(days:int=30):
+        """The 健康 page: daily figures, workouts and the cycle. Read by the user's own devices, never by a model."""
+        return {**worker.tools.health.page(max(7,min(days,120))),"accounts":worker.health_sync.status()}
+
+    @app.post("/api/health/import")
+    async def health_import(body:dict):
+        """A sync from the iPhone app's HealthKit reader (source apple), or another device that reads health data itself."""
+        source=str(body.get("source") or "apple")
+        if source not in ("apple",):raise HTTPException(400,"只接受 Apple 健康的数据")
+        try:return worker.tools.health.ingest(source,body)
+        except (KeyError,TypeError,ValueError) as exc:raise HTTPException(400,f"数据格式不对：{exc}")
+
+    @app.post("/api/health/period")
+    async def health_period(body:dict):
+        try:
+            if body.get("ended"):return worker.tools.health.end_period(str(body.get("day") or ""))
+            return worker.tools.health.log_period(str(body["start"]),str(body.get("end") or ""),str(body.get("flow") or "unspecified"),list(body.get("symptoms") or []),str(body.get("note") or ""))
+        except (KeyError,ValueError) as exc:raise HTTPException(400,str(exc))
+
+    @app.delete("/api/health/cycle/{day}")
+    async def health_cycle_day(day:str):
+        store.execute("DELETE FROM cycle_days WHERE day=?",(day[:10],));store.event("health","manual");return {"ok":True}
+
+    @app.post("/api/health/connect/{provider}")
+    async def health_connect(provider:str):
+        return worker.health_sync.connect(provider)
+
+    @app.post("/api/health/sync/{provider}")
+    async def health_sync_now(provider:str):
+        try:return await worker.health_sync.sync(provider)
+        except ValueError as exc:raise HTTPException(400,str(exc))
+        except httpx.HTTPError as exc:raise HTTPException(502,f"连不上 {provider}：{exc}")
+
+    @app.delete("/api/health/connect/{provider}")
+    async def health_disconnect(provider:str):
+        worker.health_sync.disconnect(provider);return {"ok":True}
+
+    @app.get("/api/checkin")
+    async def checkin_settings():return worker.checkin.settings()
+
+    @app.put("/api/checkin")
+    async def checkin_update(body:dict):
+        try:return worker.checkin.update(body.get("enabled"),body.get("quiet_start"),body.get("quiet_end"))
+        except ValueError:raise HTTPException(400,"时间格式应为 HH:MM")
+
+    @app.post("/api/checkin/now")
+    async def checkin_now():
+        """Looks at the signals now, ignoring quiet hours and the daily limit: for trying it out."""
+        job=worker.checkin.tick(force=True)
+        if not job:raise HTTPException(409,"最近的身体数据没有需要关心的变化")
+        return {"job_id":job["id"],"session_id":job["payload"]["session_id"]}
+
+    @app.get("/api/mail")
+    async def mail_accounts():return {"accounts":worker.tools.mail.public(),"presets":worker.tools.mail.presets()}
+
+    @app.put("/api/mail/{ident}")
+    async def mail_save(ident:str,body:dict):
+        try:return {"accounts":await asyncio.to_thread(worker.tools.mail.save,ident,str(body.get("kind") or "imap"),str(body.get("address") or ""),
+                                                        str(body.get("password") or ""),str(body.get("host") or ""),bool(body.get("cloud")))}
+        except OSError as exc:raise HTTPException(502,f"连不上邮件服务器：{exc}")
+
+    @app.delete("/api/mail/{ident}")
+    async def mail_remove(ident:str):
+        worker.tools.mail.remove(ident);return {"accounts":worker.tools.mail.public()}
+
+    @app.get("/oauth/{provider}")
+    async def oauth_return(provider:str,code:str="",state:str="",error:str=""):
+        """Where the browser lands after the user connects WHOOP or Google Health. Needs no device token: the single-use state is the proof."""
+        if error or not code:return HTMLResponse(page_note("没有连接",f"授权没有完成（{error or '缺少 code'}）。可以回到 Jurvis 再试一次。"),status_code=400)
+        try:await worker.health_sync.finish(provider,code,state)
+        except Exception as exc:return HTMLResponse(page_note("没有连接",str(exc)[:300]),status_code=400)
+        return HTMLResponse(page_note("已连接","已经连好了，正在同步最近 30 天的数据。可以关掉这个页面，回到 Jurvis 的「健康」。"))
 
     @app.post("/api/memories")
     async def memory(body:MemoryCreate):

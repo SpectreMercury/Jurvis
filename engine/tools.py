@@ -12,12 +12,17 @@ import operator
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
-from . import web
+from . import cards, web
+from .agenda import Agenda
+from .ledger import CATEGORIES, TOTAL, Ledger
+from .health import Health
+from .mail import Mail
 from .coding import Coding, CodeEdit, CodeTask
 from .home import ACTIONS as HOME_ACTIONS, TYPES as HOME_TYPES, ConnectorError
 from .mcp import McpError
@@ -112,6 +117,133 @@ class SearchFilesArgs(BaseModel):
 
 class CommandIdArgs(BaseModel):
     command_id: str = Field(description="The command_id returned by run_command with background set")
+
+
+class AskUserArgs(BaseModel):
+    question: str = Field(min_length=1, max_length=300, description="The one question, in the user's language")
+    options: str | list[str] = Field(description="2 to 4 short answers the user can tap, one per line, each a few words (under about 12 Chinese characters or 6 English words) in the user's own voice, e.g. 先搭个通用框架")
+
+
+class StartTaskArgs(BaseModel):
+    title: str = Field(min_length=1, max_length=60, description="A short name for the work, in the user's language, e.g. 集中流动性 IL 对照表")
+    brief: str = Field(min_length=20, max_length=6000, description="Everything needed to do the work without asking again: what to produce and in what form "
+                       "(a file name if it is a document), the facts and figures the user gave, the assumptions to use, and what counts as done")
+
+
+class TrackGoalArgs(BaseModel):
+    title: str = Field(min_length=1, max_length=80, description="A short name for what the user wants to follow or keep doing, in their language, e.g. DeFi / 质押 / 再质押长期跟踪")
+    detail: str = Field(default="", max_length=1000, description="What they care about in it and how often they look at it, in one or two sentences")
+
+
+class ScheduleArgs(BaseModel):
+    title: str = Field(min_length=1, max_length=80, description="A short name for the scheduled work, in the user's language, e.g. L2 每月深度复盘")
+    brief: str = Field(min_length=20, max_length=6000, description="What to do on each run, complete enough to do without this conversation: what to look up or produce, "
+                       "what the user cares about, the form of the result. For a reminder: what to remind them of")
+    every: Literal["once", "day", "week", "month"] = Field(description="How often it runs. once: a single run on date")
+    time: str = Field(default="09:00", description="Time of day in 24-hour HH:MM, in the user's local time")
+    weekday: Literal["", "mon", "tue", "wed", "thu", "fri", "sat", "sun"] = Field(default="", description="For every=week: the day of the week")
+    day: int = Field(default=0, ge=0, le=31, description="For every=month: the day of the month, 1 to 31")
+    date: str = Field(default="", description="For every=once: the date as YYYY-MM-DD")
+
+
+class ScheduleIdArgs(BaseModel):
+    schedule_id: str = Field(description="The id of the schedule, from agenda")
+
+
+class WeatherArgs(BaseModel):
+    place: str = Field(min_length=1, max_length=80, description="The city, e.g. 北京, 深圳, Tokyo. For a city outside China its English name is the safest")
+    days: int = Field(default=3, ge=1, le=7, description="How many days of forecast, today included")
+
+
+class CryptoArgs(BaseModel):
+    asset: str = Field(min_length=1, max_length=40, description="The ticker or name of one crypto asset, e.g. BTC, ETH, Solana")
+
+
+class CurrencyArgs(BaseModel):
+    amount: float = Field(default=1, gt=0, le=1e12, description="How much of the source currency")
+    source: str = Field(min_length=3, max_length=3, description="ISO code of the currency to convert from, e.g. USD")
+    target: str = Field(min_length=3, max_length=3, description="ISO code of the currency to convert to, e.g. CNY")
+
+
+class WorldTimeArgs(BaseModel):
+    place: str = Field(min_length=1, max_length=80, description="A city (东京, New York) or an IANA time zone (Europe/London)")
+
+
+class CountdownArgs(BaseModel):
+    date: str = Field(description="The date as YYYY-MM-DD. Work it out from the current date you are given; for a lunar or movable holiday be sure of the date first")
+    label: str = Field(default="", max_length=40, description="What the date is, in the user's language, e.g. 春节, 项目上线")
+
+
+Category = Literal["餐饮", "交通", "购物", "日用", "住房", "娱乐", "医疗", "教育", "通讯", "旅行", "订阅", "转账", "其他"]
+Period = Field(default="this_month", description="today, this_week, this_month, last_month, this_year, a month as YYYY-MM, or a year as YYYY")
+
+
+class ExpenseArgs(BaseModel):
+    amount: float = Field(gt=0, le=1e9, description="The amount in yuan, e.g. 35 or 128.5")
+    category: Category = Field(description="The closest category")
+    merchant: str = Field(default="", max_length=80, description="Where or to whom it was paid, if the user said")
+    note: str = Field(default="", max_length=200, description="What it was for, in a few words, e.g. 午饭")
+    date: str = Field(default="", description="YYYY-MM-DD when it was not today")
+    income: bool = Field(default=False, description="True when this is money received, not spent")
+
+
+class SpendingArgs(BaseModel):
+    period: str = Period
+    category: Literal["", "餐饮", "交通", "购物", "日用", "住房", "娱乐", "医疗", "教育", "通讯", "旅行", "订阅", "转账", "其他"] = Field(default="", description="Only this category; empty for all spending")
+
+
+class BudgetArgs(BaseModel):
+    category: Literal["总计", "餐饮", "交通", "购物", "日用", "住房", "娱乐", "医疗", "教育", "通讯", "旅行", "订阅", "转账", "其他"] = Field(description="总计 for all spending in a month, or one category")
+    amount: float = Field(ge=0, le=1e9, description="The monthly limit in yuan; 0 removes the budget")
+
+
+class HealthArgs(BaseModel):
+    period: Literal["today", "yesterday", "last_7_days", "last_14_days", "last_30_days", "this_week", "this_month"] = Field(default="last_7_days", description="Which days to sum up")
+    focus: Literal["all", "sleep", "activity", "heart", "recovery", "stress", "mood"] = Field(default="all", description="What the user asked about; all for an overview")
+
+
+class PeriodLogArgs(BaseModel):
+    start: str = Field(description="YYYY-MM-DD the period started (today when they say it started today)")
+    end: str = Field(default="", description="YYYY-MM-DD it ended, when they say so; empty while it is ongoing (only the start day is recorded)")
+    flow: Literal["spotting", "light", "medium", "heavy", "unspecified"] = Field(default="unspecified", description="How heavy, if they said")
+    symptoms: list[str] = Field(default_factory=list, max_length=8, description="Symptoms they mentioned, a few words each in their language, e.g. 痛经, 腰酸, 头痛")
+    note: str = Field(default="", max_length=200)
+
+
+class PeriodEndArgs(BaseModel):
+    day: str = Field(default="", description="YYYY-MM-DD of the last day of the period; empty for today")
+
+
+class MoodArgs(BaseModel):
+    score: int = Field(ge=1, le=5, description="How they feel: 1 very bad, 2 low, 3 okay, 4 good, 5 very good")
+    note: str = Field(default="", max_length=200, description="What it is about, in a few words of their own")
+
+
+class MailArgs(BaseModel):
+    days: int = Field(default=3, ge=1, le=30, description="How many days back")
+    query: str = Field(default="", max_length=100, description="Only messages containing these words; empty for all")
+    unread: bool = Field(default=False, description="Only unread messages")
+
+
+class MailReadArgs(BaseModel):
+    id: str = Field(min_length=3, max_length=80, description="The id of a message from mail_recent")
+
+
+class ConversationsArgs(BaseModel):
+    days: int = Field(default=3, ge=1, le=14, description="How many days back")
+
+
+class OpenSessionArgs(BaseModel):
+    kind: Literal["companion"] = Field(default="companion", description="companion: a quiet conversation of its own for what the user is going through")
+    title: str = Field(min_length=1, max_length=30, description="A gentle short name for the conversation in the user's language, e.g. 最近的压力, 和妈妈的关系; never a diagnosis")
+    brief: str = Field(min_length=10, max_length=2000, description="What the user has shared so far and what they seem to need, in a few sentences, so the new conversation continues without asking again")
+    opening: str = Field(min_length=5, max_length=600, description="The first message in the new conversation, in the user's language: warm, short, picks up exactly what they said and invites them to go on")
+
+
+class TransactionsArgs(BaseModel):
+    period: str = Period
+    category: Literal["", "餐饮", "交通", "购物", "日用", "住房", "娱乐", "医疗", "教育", "通讯", "旅行", "订阅", "转账", "其他"] = ""
+    merchant: str = Field(default="", max_length=80, description="Only payments whose payee contains this text")
 
 
 class FindToolsArgs(BaseModel):
@@ -359,6 +491,10 @@ class Outcome:
 class ToolRegistry:
     def __init__(self, settings, store):
         self.settings, self.store = settings, store
+        self.agenda = Agenda(store)
+        self.ledger = Ledger(store)
+        self.health = Health(store)
+        self.mail = Mail(settings)
         self.coding = Coding(settings, store)
         self.llm = self.memory = self.skills = self.home = self.mcp = None  # attached by the worker; tools that need them are offered only then
         self.shell = self.browser = self.media = None
@@ -437,7 +573,8 @@ class ToolRegistry:
               lambda a: self.edit_file(a.name, a.old_text, a.new_text, a.replace_all), "write"),
             T("recall", "查找记忆", "Search saved memories and uploaded or generated media assets by keywords (any keyword may match). An empty query lists the most recent ones.", RecallArgs,
               lambda a: self.recall(a.query)),
-            T("remember", "保存记忆", "Save a memory. ONLY when the user explicitly asks you to remember something.", RememberArgs,
+            T("remember", "保存记忆", "Save one lasting fact about the user: when they ask you to remember something, or when they tell you a standing interest, habit, "
+              "preference or fact about themselves that will matter in later conversations. Not for one-off requests, and never passwords or keys.", RememberArgs,
               lambda a: self.remember(a.title, a.content), "write"),
             T("create_image", "生成图片", "Queue a text-to-image or reference-image edit task. Returns a job ID; the image appears when the job finishes.",
               ImageArgs, self.create_image, "job"),
@@ -497,6 +634,65 @@ class ToolRegistry:
             T("delegate", "委派子任务", "Hand a self-contained research or reading subtask to a helper that works on it separately and reports back. "
               "Use it for side investigations that would otherwise fill this conversation with detail. The helper can read and search but cannot change anything.",
               DelegateArgs, None, "agent"),
+            T("ask_user", "向你提问", "End your reply with a question the user answers by tapping one of a few options (they can also type their own answer). "
+              "Use it when the next step is the user's choice: which direction to take, how often, which of a few things to do first. "
+              "Say what you have to say first; this call comes last and ends your turn. Not for a question with an open answer, and not after an answer that leaves nothing to decide.",
+              AskUserArgs, None, "ask"),
+            T("start_task", "开始后台任务", "Start a longer piece of work in the background: research across many sources, a document, a table or an analysis to build, "
+              "anything that needs many steps. It runs on its own while the conversation goes on, and its result is posted in this conversation when it is done. "
+              "Not for a question you can answer now or an action that takes a step or two.", StartTaskArgs, None, "task"),
+            T("weather", "查天气", "Current weather and the forecast for a city. The user is shown a weather card with the figures.", WeatherArgs,
+              self.weather, summary=lambda r: f"{r['place']} · {r['now']['temperature']}° {r['now']['sky']}"),
+            T("crypto_price", "查币价", "The current USD price of one crypto asset with its 24-hour and 7-day change. The user is shown a price card with a 7-day chart.", CryptoArgs,
+              lambda a: cards.crypto_price(a.asset), summary=lambda r: f"{r['symbol']} · ${r['price_usd']:,} · {r['change_24h_percent']:+.2f}%"),
+            T("convert_currency", "换算汇率", "Convert an amount between two currencies at the latest reference rate. The user is shown a card with the result and the rate.", CurrencyArgs,
+              lambda a: cards.convert_currency(a.amount, a.source, a.target), summary=lambda r: f"{r['amount']:g} {r['from']} = {r['converted']:,} {r['to']}"),
+            T("world_time", "查当地时间", "The current time in a city or time zone and how far it is from the user's own clock. The user is shown a clock card.", WorldTimeArgs,
+              lambda a: cards.world_time(a.place), summary=lambda r: f"{r['place']} · {r['time'][-5:]}"),
+            T("countdown", "倒计时", "How many days from today until a date (or since it). The user is shown a countdown card.", CountdownArgs,
+              lambda a: cards.countdown(a.date, a.label), summary=lambda r: f"{r['days']} 天" if r["days"] > 0 else "就是今天" if not r["days"] else f"已过 {-r['days']} 天"),
+            T("log_expense", "记一笔", "Record one payment (or one income) in the user's spending ledger when they tell you about it, e.g. 午饭 35. "
+              "The user is shown a card with the entry and where the month stands.", ExpenseArgs, self.log_expense, "write",
+              summary=lambda r: f"{r['recorded']['category']} · ¥{r['recorded']['amount']:g}"),
+            T("spending_summary", "看支出", "How much the user spent in a period, by category, with the change from the period before and budget progress. "
+              "All figures are added up for you: quote them, never do the sums yourself. It has no single payments and no payee names. The user is shown a card.",
+              SpendingArgs, lambda a: self.ledger.summary(a.period, a.category), summary=lambda r: f"{r['period']} · ¥{r['spent']:,.2f} · {r['payments']} 笔"),
+            T("set_budget", "设预算", "Set or remove a monthly spending limit, for all spending (总计) or one category.", BudgetArgs,
+              self.set_budget, "write", summary=lambda r: r["summary"]),
+            T("ledger_transactions", "看账单明细", "List the single payments in a period: time, amount, category, payee, note. Use it when the user asks which payments make up a figure.",
+              TransactionsArgs, self.ledger_transactions, summary=lambda r: f"{len(r['transactions'])} 笔"),
+            T("health_summary", "看健康数据", "The user's sleep, activity and workouts, resting heart rate, HRV, recovery, an estimated body-stress signal and mood for a period, "
+              "from Apple Health, WHOOP and Google Health. All figures are computed for you: quote them, never estimate. The user is shown a card.",
+              HealthArgs, lambda a: self.health.summary(a.period, a.focus), summary=lambda r: f"{r['period']} · {r['days_with_data']} 天有数据"),
+            T("cycle_status", "看经期", "Where the user is in their menstrual cycle: the last period, average cycle length, the next period estimate and common symptoms. "
+              "Estimated from their own records; never a method of contraception. The user is shown a card.", NoArgs,
+              lambda a: self.health.cycle(), summary=lambda r: f"周期第 {r['cycle_day_today']} 天 · {r['phase']}" if r.get("periods_recorded") else "还没有记录"),
+            T("log_period", "记经期", "Record the user's period when they tell you it started, how heavy it is, or the days it ran. The user is shown a cycle card.",
+              PeriodLogArgs, lambda a: self.health.log_period(a.start, a.end, a.flow, a.symptoms, a.note), "write",
+              summary=lambda r: f"已记录 · {r['recorded']['start'][5:]}" + (f" – {r['recorded']['end'][5:]}" if r['recorded']['end'] != r['recorded']['start'] else "")),
+            T("end_period", "经期结束", "Record that the user's period has ended (today or on the day they say).", PeriodEndArgs,
+              lambda a: self.health.end_period(a.day), "write", summary=lambda r: "已记录结束"),
+            T("log_mood", "记心情", "Note how the user feels today on a 1-5 scale with a few words, when they tell you or agree to note it. Kept on this Mac.",
+              MoodArgs, lambda a: self.health.mood(a.score, a.note), "write", summary=lambda r: f"心情 {r['recorded']['score']}/5"),
+            T("mail_recent", "看邮件", "The user's recent emails across their connected mailboxes: sender, subject, time, unread, and the first lines. Read-only.",
+              MailArgs, None, "mail", summary=lambda r: f"{len(r['messages'])} 封"),
+            T("mail_read", "读邮件", "One email in full, by its id from mail_recent. Read-only.", MailReadArgs, None, "mail",
+              summary=lambda r: r["subject"][:40]),
+            T("recent_conversations", "看最近的对话", "What the user said to you in other conversations over the last few days (their own messages, with the conversation title and time). "
+              "Kept on this Mac.", ConversationsArgs, self.recent_conversations, summary=lambda r: f"{len(r['messages'])} 条"),
+            T("open_session", "开新对话", "Open a separate, quiet conversation for what the user is going through (stress, low mood, anxiety, grief, a relationship, loneliness, "
+              "burnout, self-doubt) when they start sharing it in a conversation that is about something else. The app switches them to it right away and "
+              "your opening message is waiting there. Not when this conversation is already that conversation, and not when they are in danger right now.",
+              OpenSessionArgs, None, "session"),
+            T("agenda", "查看目标和定时任务", "List what you are already tracking and running for the user: their long-term goals and the scheduled work, each with its id. "
+              "Call it before saving a goal or a schedule, so nothing is saved twice.", NoArgs,
+              lambda a: self.agenda.overview(), summary=lambda r: f"{len(r['goals'])} 个目标 · {len(r['schedules'])} 个定时任务"),
+            T("track_goal", "保存长期目标", "Save something the user wants to follow or keep doing over time as a long-term goal they can see under Goals. "
+              "A goal with nearly the same title is updated instead of duplicated.", TrackGoalArgs, None, "agenda"),
+            T("schedule_task", "设置定时任务", "Set up work that runs by itself at a time or on a cadence (a weekly brief, a monthly review, a reminder) and posts its result in this conversation. "
+              "The cadence must be the user's choice: ask first if they have not said how often.", ScheduleArgs, None, "agenda"),
+            T("cancel_schedule", "取消定时任务", "Cancel a scheduled task by its id.", ScheduleIdArgs,
+              lambda a: self.agenda.cancel(a.schedule_id), "write", summary=lambda r: f"已取消 · {r['cancelled']}"[:60]),
             T("update_plan", "更新计划", "Keep a checklist of the parts of a larger piece of work; the user sees it. Call it first with steps (one per line), "
               "then with done (the finished step numbers) whenever a part is finished. Not for a request that is one action or one answer.",
               PlanArgs, None, "goal"),
@@ -508,7 +704,7 @@ class ToolRegistry:
     OPTIONAL = {"web_fetch", "web_search", "load_skill", "home_devices", "home_control", "delegate", "command_output", "stop_command", "find_tools"} | BROWSER_TOOLS
 
     def default_names(self, model=None):
-        return {n for n in self.tools if n not in ("finish_goal", "update_plan") and n not in self.OPTIONAL and n not in self.dynamic} | self.available(model)
+        return {n for n in self.tools if n not in ("finish_goal", "update_plan", "ask_user", "start_task", "open_session", "recent_conversations") and n not in self.OPTIONAL and n not in self.dynamic} | self.available(model)
 
     def schemas(self, names=None):
         names = names or self.default_names()
@@ -803,6 +999,67 @@ class ToolRegistry:
                     self.store.all(f"SELECT id,title,content FROM memories WHERE enabled=1 AND ({memory_where}) ORDER BY updated_at DESC LIMIT 20", pairs))
         return {"memories": memories,
                 "assets": self.store.all(f"SELECT id,name,kind,mime,created_at FROM assets WHERE {asset_where} ORDER BY created_at DESC LIMIT 20", pairs)}
+
+    async def weather(self, a):
+        result = await cards.weather(a.place, a.days)
+        self.outfit_art(result["card"])
+        return result
+
+    def can_draw(self):
+        """True when the image engine is installed on this Mac."""
+        return (self.settings.comfy / "main.py").exists()
+
+    def outfit_art(self, card):
+        """Gives a weather card its outfit illustration: the one already drawn for this kind of weather, or a drawing queued for it.
+        Each kind of weather (how cold, and clear, cloudy, rain or snow) is drawn once by the local image model and kept."""
+        key, prompt = card.pop("art", None), card.pop("art_prompt", None)
+        if not key or not prompt or not self.can_draw():
+            return
+        jobs = self.store.all("SELECT id,status,result FROM jobs WHERE kind='image' AND json_extract(payload,'$.outfit_art')=? AND status IN ('queued','running','succeeded') "
+                              "ORDER BY created_at DESC LIMIT 1", (key,))
+        if jobs and jobs[0]["status"] == "succeeded" and jobs[0]["result"].get("asset_ids"):
+            asset = jobs[0]["result"]["asset_ids"][0]
+            if self.store.one("SELECT id FROM assets WHERE id=?", (asset,)):
+                card["image"] = asset
+                return
+            jobs = []  # the picture was deleted: draw it again
+        if not jobs:
+            request = ImageRequest(prompt=prompt, width=768, height=768, steps=20, seed=7)
+            jobs = [self.store.create_job("image", {**request.model_dump(), "outfit_art": key})]
+        card["image_job"] = jobs[0]["id"]
+
+    def log_expense(self, a):
+        when = None
+        if a.date.strip():
+            try:
+                when = datetime.strptime(a.date.strip(), "%Y-%m-%d").replace(hour=12).timestamp()
+            except ValueError:
+                raise ValueError("date must be YYYY-MM-DD")
+        return self.ledger.recorded(self.ledger.add(a.amount, a.category, a.merchant, a.note, when, income=a.income))
+
+    def set_budget(self, a):
+        self.ledger.set_budget(a.category, a.amount)
+        label = "每月总支出" if a.category == TOTAL else f"每月{a.category}"
+        if not a.amount:
+            return {"removed": a.category, "summary": f"已取消{label}预算"}
+        month = self.ledger.summary("this_month", "" if a.category == TOTAL else a.category)
+        used = round(month["spent"] / a.amount * 100, 1)
+        return {"budget": {"category": a.category, "monthly_limit": a.amount}, "spent_this_month": month["spent"], "used_percent": used, "summary": f"{label}预算 ¥{a.amount:g}",
+                "card": {"kind": "ledger", "title": f"{label}预算", "subtitle": "本月进度", "value": f"¥{a.amount:,.0f}", "icon": "wallet", "bars": [],
+                         "rows": [{"label": "本月已花", "value": f"¥{month['spent']:,.2f}"}, {"label": "已用", "value": f"{used:g}%"}], "note": "超出时我会在看支出时提醒你"}}
+
+    def ledger_transactions(self, a):
+        found = self.ledger.transactions(a.period, a.category, a.merchant, limit=60)
+        return {"period": found["period"], "currency": "CNY", "transactions": [
+            {"time": datetime.fromtimestamp(t["at"]).strftime("%Y-%m-%d %H:%M"), "amount": t["amount_cents"] / 100, "direction": t["direction"], "category": t["category"],
+             "payee": t["merchant"], "note": t["note"]} for t in found["transactions"]]}
+
+    def recent_conversations(self, a):
+        since = time.time() - a.days * 86400
+        rows = self.store.all("SELECT m.content,m.created_at,s.title FROM messages m JOIN sessions s ON s.id=m.session_id "
+                              "WHERE m.role='user' AND m.created_at>=? AND s.incognito=0 ORDER BY m.created_at DESC LIMIT 60", (since,))
+        return {"days": a.days, "messages": [{"time": datetime.fromtimestamp(r["created_at"]).strftime("%m-%d %H:%M"), "conversation": r["title"],
+                                              "said": " ".join(r["content"].split())[:300]} for r in rows]}
 
     def remember(self, title, content):
         if self.memory:

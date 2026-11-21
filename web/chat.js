@@ -8,6 +8,7 @@ import { renderMarkdown } from './md.js';
 import { icon, toolIcon } from './icons.js';
 import { disclosure, ask } from './ui.js';
 import * as voice from './voice.js';
+import { bars } from './ledger.js';
 
 const MODES = [
   ['goal', '目标', 'target', '目标：先列计划，自己一步步做完再汇报；写到一半被截断会自动续写。'],
@@ -171,6 +172,14 @@ async function askAloud(text) {
   if (!last) return '';
   if (last.status === 'failed') throw new Error((last.metadata && last.metadata.error) || '回复失败');
   return stepsOf(last).map((step) => step.text || '').filter(Boolean).pop() || '';
+}
+
+/** Sends one of the offered options as the user's reply in this conversation. */
+function answer(option) {
+  if (sending || liveJob()) return;
+  els.input.value = option;
+  autogrow();
+  send();
 }
 
 /** Starts a new task with this text, as if it had been typed and sent. */
@@ -357,8 +366,9 @@ function renderModes() {
   els.modeHint.textContent = mode ? MODE_HINTS[mode] : '';
 }
 
+/** The reply this conversation is waiting for. Background work does not count: you can keep talking while it runs. */
 function liveJob() {
-  return store.sessionId ? jobsOf(store.sessionId).find(isLive) || null : null;
+  return store.sessionId ? jobsOf(store.sessionId).find((job) => isLive(job) && !(job.payload && job.payload.background)) || null : null;
 }
 
 function updateSend() {
@@ -487,6 +497,47 @@ async function loadMessages(loud) {
   if (sid !== store.sessionId || seq !== loadSeq) return;
   store.messages = rows;
   renderMessages();
+  followSwitch(rows);
+}
+
+// A reply that opened a conversation of its own (a quiet one for what the user is going through) takes the user there, once, as it happens.
+const switched = new Set();
+// Messages Jurvis wrote on its own (a check-in when body data turned) are announced once each: a system notification when the
+// browser allows it, otherwise a note in the page. Nothing is announced for the conversation already open in front of the user.
+const DELIVERED = 'jurvis.outreach.delivered';
+export function announce() {
+  const list = (store.state && store.state.outreach) || [];
+  if (!list.length) return;
+  let done = [];
+  try { done = JSON.parse(localStorage.getItem(DELIVERED) || '[]'); } catch { done = []; }
+  const fresh = list.filter((o) => !done.includes(o.id) && Date.now() / 1000 - o.created_at < 6 * 3600).reverse();
+  if (!fresh.length) return;
+  for (const o of fresh) {
+    done.push(o.id);
+    if (store.sessionId === o.session_id && document.visibilityState === 'visible') continue;
+    const text = o.content.length > 180 ? o.content.slice(0, 180) + '…' : o.content;
+    if ('Notification' in window && Notification.permission === 'granted') {
+      try {
+        const n = new Notification('Jurvis', { body: text, tag: o.id });
+        n.onclick = () => { window.focus(); emit('goto', 'chat'); openSession(o.session_id); n.close(); };
+        continue;
+      } catch { /* some mobile browsers only notify from a service worker: fall back to the page */ }
+    }
+    notify('Jurvis：' + text, 'info');
+  }
+  try { localStorage.setItem(DELIVERED, JSON.stringify(done.slice(-200))); } catch { /* private mode */ }
+}
+
+function followSwitch(rows) {
+  for (const m of rows) {
+    const to = m.metadata && m.metadata.switch_session;
+    if (!to || switched.has(m.id)) continue;
+    switched.add(m.id);
+    if (m.status === 'complete' && Date.now() / 1000 - m.created_at < 300) {
+      Promise.resolve(refreshState()).finally(() => openSession(to));
+      return;
+    }
+  }
 }
 export const refreshMessages = throttle(() => loadMessages(false), 250);
 
@@ -546,8 +597,13 @@ function renderMessages() {
           related.push(jobSig(job));
           if (job && job.status === 'succeeded') for (const id of (job.result && job.result.asset_ids) || []) used.add(id);
         }
+        for (const call of step.calls || []) {
+          if (call.card && call.card.image) used.add(call.card.image);
+        }
       }
-      sig = JSON.stringify([m, last, jobSig(chatJob(m)), related, speech.tts, voice.speakingKey() === m.id]);
+      const after = list[index + 1];
+      node.answer = after && after.role === 'user' ? after.content : null; // what the user answered, when this reply ended on a question
+      sig = JSON.stringify([m, last, node.answer, jobSig(chatJob(m)), related, speech.tts, voice.speakingKey() === m.id]);
     }
     if (sig !== node.sig) {
       node.sig = sig;
@@ -626,12 +682,13 @@ function renderAssistant(node, m, last) {
       goal: h('div', { class: 'goal', hidden: true }),
       plan: h('div', { hidden: true }),
       steps: h('div', { class: 'steps' }),
+      ask: h('div', { class: 'options', hidden: true, role: 'group', 'aria-label': '可选的回答' }),
       status: h('div', { class: 'msg-status' }),
       sources: h('div', { class: 'sources', hidden: true }),
       stepNodes: [],
       sourceSig: '',
     };
-    node.el.append(node.parts.goal, node.parts.plan, node.parts.steps, node.parts.status, node.parts.sources);
+    node.el.append(node.parts.goal, node.parts.plan, node.parts.steps, node.parts.ask, node.parts.status, node.parts.sources);
   }
   const parts = node.parts;
   const meta = m.metadata || {};
@@ -642,7 +699,8 @@ function renderAssistant(node, m, last) {
   parts.goal.hidden = !meta.goal;
   if (meta.goal) {
     parts.goal.className = 'goal ' + (meta.goal.status || 'running');
-    fill(parts.goal, icon('target', 15), h('span', null, '目标 · ' + goalLabel(meta.goal, live)));
+    const title = meta.task && meta.task.title ? `后台任务「${meta.task.title}」· ` : '目标 · ';
+    fill(parts.goal, icon('target', 15), h('span', null, title + goalLabel(meta.goal, live)));
   }
   const plan = Array.isArray(meta.plan) ? meta.plan : [];
   parts.plan.hidden = !plan.length;
@@ -653,7 +711,7 @@ function renderAssistant(node, m, last) {
   steps.forEach((step, i) => {
     let sn = parts.stepNodes[i];
     if (!sn) {
-      sn = { text: null, textEl: h('div', { class: 'md', hidden: true }), callsEl: h('div', { class: 'calls' }), calls: [] };
+      sn = { text: null, textEl: h('div', { class: 'md said', hidden: true }), callsEl: h('div', { class: 'calls' }), calls: [] };
       sn.el = h('div', { class: 'step' }, sn.textEl, sn.callsEl);
       parts.stepNodes[i] = sn;
       parts.steps.append(sn.el);
@@ -664,7 +722,9 @@ function renderAssistant(node, m, last) {
       sn.textEl.hidden = !text;
       fill(sn.textEl, renderMarkdown(text));
     }
-    const calls = Array.isArray(step.calls) ? step.calls : [];
+    // The question a reply ends on is shown as its options, not as a tool call.
+    const calls = (Array.isArray(step.calls) ? step.calls : []).filter((call) => call && call.name !== 'ask_user');
+    sn.el.hidden = !text && !calls.length;
     calls.forEach((call, j) => {
       let cn = sn.calls[j];
       if (!cn) {
@@ -682,10 +742,24 @@ function renderAssistant(node, m, last) {
   });
   while (parts.stepNodes.length > steps.length) parts.stepNodes.pop().el.remove();
 
+  // the options of the question this reply ended on: live for the latest reply, a record of the choice for older ones
+  const options = !live && meta.ask && Array.isArray(meta.ask.options) ? meta.ask.options.map(String) : [];
+  parts.ask.hidden = !options.length;
+  fill(parts.ask, options.map((option) => {
+    const chosen = node.answer === option;
+    return h('button', { class: 'option' + (chosen ? ' chosen' : ''), type: 'button', disabled: !last, 'aria-pressed': last ? null : String(chosen),
+      onclick: () => answer(option) }, h('span', null, option), chosen ? icon('check', 14, 1.8) : null);
+  }));
+
   // status line
   fill(parts.status);
   if (live) {
     parts.status.append(h('span', { class: 'spinner', 'aria-hidden': 'true' }), h('span', { class: 'muted' }, (job && job.phase) || (m.status === 'queued' ? '排队中' : '正在回复')));
+    if (job && job.payload && job.payload.background) {
+      // The composer's stop button belongs to the reply being waited for; background work is stopped here.
+      if (meta.background) parts.status.append(h('span', { class: 'muted' }, '· 已转到后台，做完发在这里，你可以接着聊'));
+      parts.status.append(action('停止', async () => { await post('/api/jobs/' + encodeURIComponent(job.id) + '/cancel'); refreshState(); }, { class: 'btn small' }));
+    }
   } else if (m.status === 'failed' || m.status === 'cancelled' || m.status === 'interrupted') {
     const fallback = m.status === 'failed' ? '回复失败' : m.status === 'cancelled' ? '已停止' : '回复被中断';
     parts.status.append(h('span', { class: m.status === 'failed' ? 'error-text' : 'muted' }, meta.error || (m.status === 'failed' && job && job.error) || fallback));
@@ -776,10 +850,79 @@ function approval(call, m) {
     h('div', { class: 'approval-actions' }, buttons));
 }
 
+// Cards: what a tool call made or found, shown as the thing itself instead of as a tool call.
+// A made thing (goal, schedule, memory, document, task) is one row that opens where it lives; a lookup (weather, price…) shows its figures.
+const MADE = { goal: ['target', 'goals'], schedule: ['clock', 'goals'], memory: ['bookmark', 'memory'], file: ['doc', 'library'], task: ['tasks', null], session: ['leaf', null] };
+const GLYPH = { sun: '☀️', moon: '🌙', partly: '⛅', cloud: '☁️', fog: '🌫️', drizzle: '🌦️', rain: '🌧️', snow: '❄️', storm: '⛈️', coin: '🪙', exchange: '💱', calendar: '📅', wallet: '🧾', heart: '❤️', drop: '🌸' };
+
+function sparkline(series, trend, label) {
+  const points = series.map(Number).filter(Number.isFinite);
+  if (points.length < 3) return null;
+  const low = Math.min(...points), span = Math.max(...points) - low || 1;
+  const path = points.map((p, i) => `${(i / (points.length - 1) * 100).toFixed(2)},${(30 - (p - low) / span * 28 - 1).toFixed(2)}`).join(' ');
+  const box = h('div', { class: 'spark ' + (trend || 'flat'), role: 'img', 'aria-label': label || '近 7 天走势' });
+  box.innerHTML = `<svg viewBox="0 0 100 30" preserveAspectRatio="none"><polyline points="${path}" fill="none" stroke="currentColor" stroke-width="1.5" vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>`;
+  return box;
+}
+
+/** The outfit illustration of a weather card: the picture once it is drawn, a quiet note while it is being drawn. */
+function cardArt(card, job) {
+  const done = job && job.status === 'succeeded' && job.result && Array.isArray(job.result.asset_ids) ? job.result.asset_ids[0] : null;
+  const id = card.image || done;
+  if (id) {
+    const box = h('div', { class: 'info-art' });
+    assetURL(id).then((url) => fill(box, h('img', { src: url, alt: '今天的穿搭插画' })), () => box.remove());
+    return box;
+  }
+  if (card.image_job && job && isLive(job)) return h('div', { class: 'info-art drawing' }, h('span', { class: 'spinner', 'aria-hidden': 'true' }), h('span', { class: 'muted small' }, '正在画穿搭'));
+  return null;
+}
+
+function cardView(card, job) {
+  const made = MADE[card.kind];
+  if (made) {
+    const [glyph, tab] = made;
+    const inner = [h('span', { class: 'made-icon' }, icon(glyph, 18)),
+      h('span', { class: 'made-text' }, h('strong', null, card.title), h('span', { class: 'muted small' }, card.subtitle || ''),
+        card.note ? h('span', { class: 'made-note' }, card.note) : null),
+      tab ? icon('right', 16) : null];
+    if (card.kind === 'session' && card.session_id) {
+      inner[2] = icon('right', 16);
+      return h('button', { class: 'made-card companion', type: 'button', onclick: () => { Promise.resolve(refreshState()).finally(() => openSession(card.session_id)); } }, inner);
+    }
+    return tab ? h('button', { class: 'made-card', type: 'button', onclick: () => emit('goto', tab) }, inner) : h('div', { class: 'made-card still' }, inner);
+  }
+  const rows = Array.isArray(card.rows) ? card.rows : [];
+  const days = Array.isArray(card.days) ? card.days : [];
+  const money = card.kind === 'ledger' || card.kind === 'expense';
+  const body = card.kind === 'health' || card.kind === 'cycle' || card.kind === 'mood';
+  const go = money ? 'ledger' : body ? 'health' : null;
+  return h(go ? 'button' : 'div', { class: 'info-card ' + String(card.kind || ''), type: go ? 'button' : null, onclick: go ? () => emit('goto', go) : null },
+    h('div', { class: 'info-head' },
+      h('div', { class: 'made-text' }, h('strong', null, card.title), card.subtitle ? h('span', { class: 'muted small' }, card.subtitle) : null),
+      GLYPH[card.icon] ? h('span', { class: 'info-glyph', 'aria-hidden': 'true' }, GLYPH[card.icon]) : null),
+    // The figure and what to wear sit beside the temperature: the picture is the advice at a glance.
+    h('div', { class: 'info-split' },
+      h('div', { class: 'info-left' },
+        card.value ? h('div', { class: 'info-value ' + (card.trend || '') }, String(card.value), card.kind === 'countdown' && card.value !== '今天' ? h('span', { class: 'info-unit' }, '天') : null) : null,
+        card.outfit && Array.isArray(card.outfit.wear) ? h('div', { class: 'info-outfit' },
+          h('div', { class: 'chips' }, card.outfit.wear.map((item) => h('span', { class: 'chip static' }, String(item)))),
+          card.outfit.tip ? h('div', { class: 'small' }, card.outfit.tip) : null) : null),
+      card.kind === 'weather' ? cardArt(card, job) : null),
+    Array.isArray(card.series) ? sparkline(card.series, card.trend, card.series_label) : null,
+    Array.isArray(card.bars) && card.bars.length ? bars(card.bars) : null,
+    rows.length ? h('dl', { class: 'info-rows' }, rows.map((row) => h('div', { class: String(row.label || '').length + String(row.value).length > 13 ? 'wide' : null }, row.label ? h('dt', null, row.label) : null, h('dd', null, String(row.value))))) : null,
+    days.length ? h('div', { class: 'info-days' }, days.map((day) => h('div', { class: 'info-day' },
+      h('span', { class: 'muted small' }, day.label), h('span', { 'aria-hidden': 'true' }, GLYPH[day.icon] || ''),
+      h('span', { class: 'small' }, `${day.high}° `, h('span', { class: 'muted' }, `${day.low}°`))))) : null,
+    card.note ? h('div', { class: 'muted small info-note' }, card.note) : null);
+}
+
 function updateCall(cn, call, m, job) {
   const wasOpen = !!(cn.details && cn.details.open);
   cn.details = null;
   if (call.status === 'awaiting') fill(cn.main, approval(call, m));
+  else if (call.card && call.card.title) fill(cn.main, cardView(call.card, job));
   else {
     const body = callBody(call);
     if (body.length) {
@@ -793,6 +936,11 @@ function updateCall(cn, call, m, job) {
   }
   // the linked job: live progress, then its output
   fill(cn.jobEl);
+  if (call.card && call.card.image_job) {  // the drawing for a card is shown inside the card
+    cn.jobEl.hidden = true;
+    cn.mediaEl.hidden = true;
+    return;
+  }
   if (job && isLive(job)) {
     const percent = Math.max(0, Math.min(100, Math.round((job.progress || 0) * 100)));
     cn.jobEl.append(h('span', { class: 'muted small' }, (job.phase || (job.status === 'queued' ? '排队中' : '进行中')) + ' · ' + percent + '%'),

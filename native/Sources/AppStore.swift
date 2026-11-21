@@ -9,6 +9,7 @@ import ImageIO
     @Published var messages: [Message] = []
     @Published var section: Section? = .assistant
     @Published var selectedSession: String?
+    private var followed = Set<String>()  // replies whose opened conversation the user was already taken to
     @Published var selectedProject: String?
     /// Code project the next new conversation is bound to (picked in the composer).
     @Published var codeProjectID: String?
@@ -39,7 +40,8 @@ import ImageIO
     private var engineProcess: Process?
     #endif
     var activeJobs: [Job] { snapshot?.jobs.filter(\.isActive) ?? [] }
-    var images: [Asset] { snapshot?.assets.filter { !$0.isVideo } ?? [] }
+    /// Pictures the user made or added. Illustrations drawn for cards (kind "card") are not theirs to browse.
+    var images: [Asset] { snapshot?.assets.filter { !$0.isVideo && $0.kind != "card" } ?? [] }
     var chatBusy: Bool { chatJob != nil }
     func requireAPI() throws -> API {
         guard let api else {throw APIError.message("请先连接 Mac")}
@@ -102,7 +104,7 @@ import ImageIO
             var tick = 0
             while !Task.isCancelled {
                 // Stream replies quickly; keep the full snapshot at a calmer pace.
-                let streaming = await self?.chatBusy ?? false
+                let streaming = await self?.chatStreaming ?? false
                 try? await Task.sleep(for: .milliseconds(streaming ? 350 : 2000))
                 if Task.isCancelled { break }
                 tick += 1
@@ -120,6 +122,7 @@ import ImageIO
             let state: Snapshot = try await api.request("/api/state")
             // Publishing re-renders every screen; skip it when nothing changed so typing and IME input are never disturbed.
             if state != snapshot { snapshot = state }
+            if let outreach = state.outreach, !outreach.isEmpty { await Notifier.shared.deliver(outreach, store: self) }
             if !connected { connected = true }
             if connectionStatus != "Mac 已连接" { connectionStatus = "Mac 已连接" }
             await refreshMessages()
@@ -145,8 +148,13 @@ import ImageIO
         guard let api, let id = selectedSession else { return }
         if let list: [Message] = try? await api.request("/api/sessions/\(id)/messages"), selectedSession == id {
             if list != messages { messages = list }
+            // A reply that opened a conversation of its own (a quiet one for what the user is going through) takes the user there, once, as it happens.
+            if let opened = list.last(where: { !$0.metadata["switch_session"].string.isEmpty && $0.status == "complete" }), !followed.contains(opened.id) {
+                followed.insert(opened.id)
+                if Date().timeIntervalSince1970 - opened.created_at < 300 { await refresh(); await selectSession(opened.metadata["switch_session"].string); return }
+            }
             // Pick up job/state changes (new images, finished jobs) when the reply completes.
-            if !(list.last?.isLive ?? false) && chatBusy { if let state: Snapshot = try? await api.request("/api/state"), state != snapshot { snapshot = state } }
+            if !list.contains(where: \.isLive) && chatStreaming { if let state: Snapshot = try? await api.request("/api/state"), state != snapshot { snapshot = state } }
         }
     }
     /// Show an error to the user, except cancellations caused by leaving a screen.
@@ -297,7 +305,10 @@ import ImageIO
     func job(_ id: String?) -> Job? { guard let id else { return nil }; return snapshot?.jobs.first { $0.id == id } }
     func asset(_ id: String?) -> Asset? { guard let id else { return nil }; return snapshot?.assets.first { $0.id == id } }
     func outputs(of job: Job) -> [Asset] { job.result["asset_ids"].array.compactMap { asset($0.string) } }
-    var chatJob: Job? { activeJobs.first { $0.kind == "chat" && $0.payload["session_id"].string == selectedSession } }
+    /// The reply this conversation is waiting for. Background work does not count: you can keep talking while it runs.
+    var chatJob: Job? { activeJobs.first { $0.kind == "chat" && $0.payload["session_id"].string == selectedSession && !$0.isBackground } }
+    /// Any reply being written in this conversation, background work included: it is what keeps the messages refreshing.
+    var chatStreaming: Bool { activeJobs.contains { $0.kind == "chat" && $0.payload["session_id"].string == selectedSession } }
     func cancel(_ job: Job) async {
         cancelling.insert(job.id); defer { cancelling.remove(job.id) }
         await perform { let _: Job = try await self.requireAPI().request("/api/jobs/\(job.id)/cancel", method: "POST") }
