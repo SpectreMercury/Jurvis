@@ -207,6 +207,7 @@ on('ask', (text) => { go('chat', false); chat.startTask(text); });
 on('state', () => {
   if (offline) offline.hidden = true;
   chat.onState();
+  chat.announce();
   renderStatus();
   if (store.tab === 'library') library.onState();
   if (store.tab === 'memory') memory.onState();

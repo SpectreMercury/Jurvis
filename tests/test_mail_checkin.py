@@ -128,18 +128,64 @@ def test_check_in_signals_quiet_hours_and_limits(app):
     signals = checkin.signals(today)
     assert any("stress is elevated" in s for s in signals)
     night = datetime.combine(today, datetime.min.time()).replace(hour=23)
-    assert checkin.tick(now=night) is None  # quiet hours
+    assert checkin.tick(now=night) is None  # quiet hours hold it...
     checkin.looked = 0
     noon = night.replace(hour=12)
-    job = checkin.tick(now=noon)
+    job = checkin.tick(now=noon)  # ...and it goes out as soon as they end
     assert job and job["payload"]["checkin"]["signals"] == signals and job["payload"]["background"]
     session = app.state.store.one("SELECT * FROM sessions WHERE id=?", (job["payload"]["session_id"],))
     assert session["persona"] == "companion" and session["title"] == "最近还好吗"
     checkin.looked = 0
-    assert checkin.tick(now=noon) is None  # once a day
+    assert checkin.tick(now=noon) is None  # a sign already reached out about is not said again
+    app.state.store.update_job(job["id"], status="succeeded")
     assert checkin.update(enabled=False)["enabled"] is False
     with pytest.raises(ValueError):
         checkin.update(quiet_start="半夜")
+
+
+def test_a_new_sign_is_reached_out_about_as_the_data_arrives(app):
+    worker, store = app.state.worker, app.state.store
+    checkin, health = worker.checkin, worker.tools.health
+    noon = datetime.combine(date.today(), datetime.min.time()).replace(hour=12)
+    tired(health, date.today())
+    first = checkin.tick(now=noon)
+    store.update_job(first["id"], status="succeeded")
+    checkin.looked = time.time()  # just looked: without new data nothing happens before the next look
+    assert checkin.tick(now=noon) is None
+    health.mood(1, "很烦")
+    health.mood(2)
+    assert checkin.tick(now=noon) is None  # new data is looked at at once, but the last message was just now: held
+    state = checkin.load()
+    checkin.save({**state, "last_at": time.time() - 2 * 3600})
+    checkin.looked = 0
+    job = checkin.tick(now=noon)  # the next look (a few minutes later) sends it, about the new sign only
+    assert job["payload"]["checkin"]["signals"] == ["the moods they noted lately were low"]
+    assert any("stress is elevated" in s for s in job["payload"]["checkin"]["also"])
+    assert job["payload"]["session_id"] == first["payload"]["session_id"]  # the same quiet conversation
+    store.update_job(job["id"], status="succeeded")
+    # the sign goes away (a good night and calm heart today), then comes back: it is new again
+    health.put("apple", date.today(), {"sleep_min": 480, "hrv_ms": 63, "resting_hr": 56})
+    health.put("apple", date.today() - timedelta(1), {"sleep_min": 470, "hrv_ms": 62, "resting_hr": 57})
+    health.put("apple", date.today() - timedelta(2), {"sleep_min": 470, "hrv_ms": 62, "resting_hr": 57})
+    checkin.looked = 0
+    assert checkin.tick(now=noon) is None and "stress" not in checkin.load()["told"]
+    tired(health, date.today())
+    checkin.save({**checkin.load(), "last_at": time.time() - 2 * 3600})
+    checkin.looked = 0
+    again = checkin.tick(now=noon)
+    assert again and any("stress is elevated" in s for s in again["payload"]["checkin"]["signals"])
+
+
+def test_no_check_in_while_the_user_is_talking_it_through(app):
+    worker, store = app.state.worker, app.state.store
+    noon = datetime.combine(date.today(), datetime.min.time()).replace(hour=12)
+    store.execute("INSERT INTO sessions(id,title,created_at,updated_at,persona) VALUES('c','聊聊',?,?,'companion')", (time.time(), time.time()))
+    store.add_message("c", "user", "这几天真的很累")
+    tired(worker.tools.health, date.today())
+    assert worker.checkin.tick(now=noon) is None
+    assert "stress" in worker.checkin.load()["told"]  # known from the conversation, not brought up again later
+    worker.checkin.looked = 0
+    assert worker.checkin.tick(now=noon) is None
 
 
 @pytest.mark.asyncio
@@ -154,7 +200,7 @@ async def test_checking_in_reads_mail_and_conversations_on_the_local_model(app):
     store.execute("UPDATE sessions SET model='miavo:x' WHERE id='w'")
     job = worker.checkin.tick(force=True)
     model = ScriptedModel([
-        Completion("", [call("health_summary", period="last_7_days"), call("mail_recent", days=3), call("recent_conversations", days=3)], "tool_calls"),
+        Completion("I'll take a quiet look first.", [call("health_summary", period="last_7_days"), call("mail_recent", days=3), call("recent_conversations", days=3)], "tool_calls"),
         Completion("这几天好像一直在为那个方案收尾？睡得也比平时少一些。想聊聊的话我在。", [], "stop"),
     ])
     worker.agent.runtime = model
@@ -164,7 +210,10 @@ async def test_checking_in_reads_mail_and_conversations_on_the_local_model(app):
     system = model.calls[0]["messages"][0]["content"]
     assert "Reaching out" in system and "stress is elevated" in system and "Companion conversation" in system
     message = store.one("SELECT * FROM messages WHERE id=?", (job["payload"]["message_id"],))
-    assert message["status"] == "complete" and message["content"].startswith("这几天好像")
+    assert message["status"] == "complete" and message["content"].startswith("这几天好像")  # only the message, not the look-around
+    assert message["metadata"]["checkin"] is True  # still marked after the run, so the apps announce it
+    client = TestClient(app, headers={"Authorization": "Bearer " + app.state.security.local_token})
+    assert [o["id"] for o in client.get("/api/state").json()["outreach"]] == [message["id"]]
     outputs = {c["name"]: c["output"] for c in message["metadata"]["steps"][0]["calls"]}
     assert "方案还要再改" in outputs["mail_recent"] and "老板又不满意" in outputs["recent_conversations"]
 
@@ -193,5 +242,11 @@ def test_settings_endpoints(app):
     assert client.get("/api/checkin", headers=token).json()["enabled"] is True
     assert client.put("/api/checkin", json={"quiet_start": "23:00"}, headers=token).json()["quiet_start"] == "23:00"
     assert client.post("/api/checkin/now", headers=token).status_code == 409
+    store = app.state.store
+    store.execute("INSERT INTO sessions(id,title,created_at,updated_at,persona) VALUES('c','最近还好吗',?,?,'companion')", (time.time(), time.time()))
+    store.add_message("c", "assistant", "这两天睡得有点少？", "complete", {"checkin": True})
+    store.add_message("c", "assistant", "", "queued", {"checkin": True})
+    store.add_message("c", "assistant", "普通回复", "complete")
+    assert [o["content"] for o in client.get("/api/state", headers=token).json()["outreach"]] == ["这两天睡得有点少？"]  # the apps notify these
     mail = client.get("/api/mail", headers=token).json()
     assert mail["accounts"] == [] and {"gmail", "qq", "163", "icloud"} <= {p["kind"] for p in mail["presets"]}

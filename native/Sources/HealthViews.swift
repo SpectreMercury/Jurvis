@@ -1,5 +1,11 @@
 import SwiftUI
 import Charts
+import UserNotifications
+#if os(iOS)
+import UIKit
+#else
+import AppKit
+#endif
 #if os(iOS) && canImport(HealthKit)
 import HealthKit
 #endif
@@ -285,15 +291,39 @@ final class HealthKitSync {
     }
 
     /// Runs when the app comes to the front; does nothing until the user has turned it on once.
-    func syncIfDue(store: AppStore) async {
-        guard enabled, Date().timeIntervalSince1970 - UserDefaults.standard.double(forKey: lastKey) > 1800 else { return }
+    func syncIfDue(store: AppStore?, every: Double = 1800) async {
+        guard enabled, Date().timeIntervalSince1970 - UserDefaults.standard.double(forKey: lastKey) > every else { return }
         _ = try? await sync(store: store, force: false)
     }
 
-    func sync(store: AppStore, force: Bool) async throws -> JSONValue {
+    /// New sleep, heart-rate variability, resting heart rate or a mood logged in Health wakes the app, even in the background,
+    /// and is sent to the Mac right away, so Jurvis can check in on the user as it happens instead of the next time they open the app.
+    /// Set up as the app launches (a background launch included), once the user has turned Apple Health on.
+    private var watching = false
+    func watch() {
+        guard enabled, !watching, HKHealthStore.isHealthDataAvailable() else { return }
+        watching = true
+        let types: [HKSampleType] = [HKQuantityType(.heartRateVariabilitySDNN), HKQuantityType(.restingHeartRate), HKCategoryType(.sleepAnalysis), HKObjectType.stateOfMindType()]
+        for type in types {
+            let query = HKObserverQuery(sampleType: type, predicate: nil) { _, done, error in
+                guard error == nil else { done(); return }
+                Task { @MainActor in
+                    await HealthKitSync.shared.syncIfDue(store: nil, every: 300)
+                    done()
+                }
+            }
+            health.execute(query)
+            health.enableBackgroundDelivery(for: type, frequency: .immediate) { _, _ in }
+        }
+    }
+
+    func sync(store: AppStore?, force: Bool) async throws -> JSONValue {
+        // In the background there may be no window and no store yet: the pairing in the keychain is enough to reach the Mac.
+        guard let api = (try? store?.requireAPI()) ?? Keychain.load().map({ API($0) }) else { throw APIError.message("请先连接 Mac") }
         guard HKHealthStore.isHealthDataAvailable() else { throw HealthKitError.unavailable }
         try await health.requestAuthorization(toShare: [], read: readTypes)
         UserDefaults.standard.set(true, forKey: enabledKey)
+        watch()
         let last = UserDefaults.standard.double(forKey: lastKey)
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())
@@ -361,7 +391,7 @@ final class HealthKitSync {
         }
 
         let body: [String: Any] = ["source": "apple", "days": daily.map { ["day": $0.key, "metrics": $0.value] }, "workouts": workouts, "cycle": cycle, "moods": moods]
-        let result: JSONValue = try await store.requireAPI().request("/api/health/import", method: "POST", body: body)
+        let result: JSONValue = try await api.request("/api/health/import", method: "POST", body: body)
         UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: lastKey)
         return result
     }
@@ -492,13 +522,13 @@ struct AddMailSheet: View {
     }
 }
 
-/// 主动关心: when sleep, stress or recovery clearly worsen, Jurvis checks in on its own, at most once a day and never in quiet hours.
+/// 主动关心: the moment sleep, stress, recovery or mood clearly worsen, Jurvis checks in on its own; quiet hours hold it until morning.
 struct CareSettings: View {
     @EnvironmentObject var store: AppStore
     @State private var care: JSONValue?
 
     var body: some View {
-        RowGroup(title: "主动关心", footnote: "睡眠、压力或恢复明显变差时，Jurvis 会用本机模型看看最近的邮件和对话，再主动问候你一句。每天最多一次，安静时段不打扰。") {
+        RowGroup(title: "主动关心", footnote: "睡眠、压力、恢复或心情一变差，Jurvis 就会用本机模型看看最近的邮件和对话，马上主动问候你，并发通知。同一件事不重复说；安静时段先攒着，到点再发。") {
             InfoRow(title: "身体数据变差时主动问候我") {
                 Toggle("", isOn: Binding(get: { care?["enabled"] == .bool(true) }, set: { on in Task { await update(["enabled": on]) } })).labelsHidden()
             }
@@ -516,5 +546,59 @@ struct CareSettings: View {
 
     func now() async {
         do { let _: JSONValue = try await store.requireAPI().request("/api/checkin/now", method: "POST"); store.error = nil } catch { store.report(error) }
+    }
+}
+
+/// A message Jurvis wrote on its own (a check-in when body data turned), from /api/state.
+struct Outreach: Codable, Equatable, Hashable { var id: String; var session_id: String; var content: String; var created_at: Double; var title: String }
+
+/// Jurvis's own messages reach the user as a notification, once each, as soon as this app sees them.
+/// Tapping one opens its conversation. Nothing is shown for the conversation the user is already looking at.
+@MainActor final class Notifier: NSObject, UNUserNotificationCenterDelegate {
+    static let shared = Notifier()
+    weak var store: AppStore?
+    private let key = "outreach.delivered"
+    private var asked = false
+
+    func deliver(_ list: [Outreach], store: AppStore) async {
+        self.store = store
+        let center = UNUserNotificationCenter.current()
+        if center.delegate == nil { center.delegate = self }
+        var done = UserDefaults.standard.stringArray(forKey: key) ?? []
+        let fresh = list.filter { !done.contains($0.id) && Date().timeIntervalSince1970 - $0.created_at < 6 * 3600 }
+        guard !fresh.isEmpty else { return }
+        if !asked { asked = true; _ = try? await center.requestAuthorization(options: [.alert, .sound, .badge]) }
+        for item in fresh.reversed() {
+            done.append(item.id)
+            if store.selectedSession == item.session_id && Self.appActive { continue }
+            let content = UNMutableNotificationContent()
+            content.title = "Jurvis"
+            content.body = String(item.content.prefix(180))
+            content.sound = .default
+            content.threadIdentifier = "outreach"
+            content.userInfo = ["session_id": item.session_id]
+            try? await center.add(UNNotificationRequest(identifier: item.id, content: content, trigger: nil))
+        }
+        UserDefaults.standard.set(Array(done.suffix(200)), forKey: key)
+    }
+
+    func open(_ session: String) async { await store?.selectSession(session) }
+
+    static var appActive: Bool {
+        #if os(iOS)
+        return UIApplication.shared.applicationState == .active
+        #else
+        return NSApplication.shared.isActive
+        #endif
+    }
+
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+        [.banner, .list, .sound]
+    }
+
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
+        let session = response.notification.request.content.userInfo["session_id"] as? String ?? ""
+        guard !session.isEmpty else { return }
+        await Notifier.shared.open(session)
     }
 }

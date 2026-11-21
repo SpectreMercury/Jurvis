@@ -34,7 +34,7 @@ PROVIDERS = {
 }
 WHOOP_API = "https://api.prod.whoop.com/developer/v2"
 GOOGLE_API = "https://health.googleapis.com/v4/users/me/dataTypes"
-SYNC_EVERY = 3600
+SYNC_EVERY = 900
 FIRST_DAYS = 30
 AGAIN_DAYS = 4
 KINDS = [("running", ("run", "跑")), ("walking", ("walk", "步行")), ("cycling", ("cycl", "bike", "spin", "骑")), ("swimming", ("swim", "游泳")),

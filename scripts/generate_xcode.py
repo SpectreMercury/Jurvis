@@ -44,7 +44,7 @@ def main():
     configs_id=add("projectconfigs",isa="XCConfigurationList",buildConfigurations=configs,defaultConfigurationIsVisible=0,defaultConfigurationName="Debug")
     project=add("project",isa="PBXProject",attributes={"LastUpgradeCheck":"2700","BuildIndependentTargetsInParallel":"YES"},buildConfigurationList=configs_id,compatibilityVersion="Xcode 14.0",developmentRegion="zh-Hans",hasScannedForEncodings=0,knownRegions=["zh-Hans","en","Base"],mainGroup=group,productRefGroup=productgroup,projectDirPath="",projectRoot="",targets=targets)
     (NATIVE/"JurvisMobile.entitlements").write_text('<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
-        '<plist version="1.0">\n<dict>\n\t<key>com.apple.developer.healthkit</key>\n\t<true/>\n\t<key>com.apple.developer.healthkit.access</key>\n\t<array/>\n</dict>\n</plist>\n')
+        '<plist version="1.0">\n<dict>\n\t<key>com.apple.developer.healthkit</key>\n\t<true/>\n\t<key>com.apple.developer.healthkit.access</key>\n\t<array/>\n\t<key>com.apple.developer.healthkit.background-delivery</key>\n\t<true/>\n</dict>\n</plist>\n')
     folder=NATIVE/"Jurvis.xcodeproj";folder.mkdir(exist_ok=True)
     (folder/"project.pbxproj").write_text("// !$*UTF8*$!\n"+render({"archiveVersion":1,"classes":{},"objectVersion":56,"objects":objects,"rootObject":project})+"\n")
     info={"CFBundleDisplayName":"Jurvis","CFBundleName":"Jurvis","CFBundleIdentifier":"$(PRODUCT_BUNDLE_IDENTIFIER)","CFBundleExecutable":"$(EXECUTABLE_NAME)","CFBundlePackageType":"APPL","CFBundleShortVersionString":"$(MARKETING_VERSION)","CFBundleVersion":"$(CURRENT_PROJECT_VERSION)",

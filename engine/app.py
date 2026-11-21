@@ -97,6 +97,10 @@ def create_app(settings=None, *, run_worker=True):
                 "assets":store.all("SELECT * FROM assets ORDER BY created_at DESC LIMIT 500"),
                 "projects":store.all("SELECT * FROM projects ORDER BY updated_at DESC LIMIT 100"),
                 "memories":store.all(MEMORY_COLUMNS+" ORDER BY updated_at DESC LIMIT 500"),
+                # Messages Jurvis wrote on its own lately: the apps show each one as a notification, once.
+                "outreach":store.all("""SELECT m.id,m.session_id,m.content,m.created_at,s.title FROM messages m JOIN sessions s ON s.id=m.session_id
+                                        WHERE json_extract(m.metadata,'$.checkin') AND m.status='complete' AND m.content!='' AND m.created_at>=?
+                                        ORDER BY m.created_at DESC LIMIT 5""",(time.time()-86400,)),
                 "chat_model":worker.llm.chat_model(),
                 "runtime":{"active":runtime.active,"memory_used_gib":round(psutil.virtual_memory().used/2**30,1),"memory_total_gib":round(psutil.virtual_memory().total/2**30,1)},
                 "last_event":(store.one("SELECT MAX(id) AS id FROM events")["id"] or 0)}

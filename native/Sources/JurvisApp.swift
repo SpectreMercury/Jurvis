@@ -6,6 +6,9 @@ import SwiftUI
 struct JurvisApp: App {
     @StateObject private var store = AppStore()
     @Environment(\.scenePhase) private var phase
+    #if os(iOS) && canImport(HealthKit)
+    init() { HealthKitSync.shared.watch() }  // a background launch for new Health data comes through here too
+    #endif
     var body: some Scene {
         WindowGroup {
             RootView().environmentObject(store).tint(Color.ink)

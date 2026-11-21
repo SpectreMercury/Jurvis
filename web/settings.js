@@ -37,7 +37,7 @@ export function mount(container) {
     section('语音', els.voice, '语音识别和朗读都在这台 Mac 上完成，录音不会发到别处。'),
     section('记忆', els.memory),
     section('邮件', els.mail, '只读：Jurvis 只看、不发、不标已读。密码只存在这台 Mac 上。默认只有本机模型能读邮件。'),
-    section('主动关心', els.care, '睡眠、压力或恢复明显变差时，Jurvis 会用本机模型看看最近的邮件和对话，然后主动问候你一句。每天最多一次。'),
+    section('主动关心', els.care, '睡眠、压力、恢复或心情一变差，Jurvis 就会用本机模型看看最近的邮件和对话，马上主动问候你，并发通知。同一件事不重复说，安静时段先攒着，到点再发。'),
     section('技能', els.skills, '技能是一份写给 Jurvis 的做法说明（SKILL.md），它会在合适的时候照着做。'),
     section('MCP 服务', els.mcp, '通过 MCP 给 Jurvis 接入外部工具。'),
     section('智能家居', els.home),
@@ -397,6 +397,9 @@ function addMail(apply) {
 }
 
 // ---------------------------------------------------------------- 主动关心
+function askToNotify() {
+  if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission().catch(() => {});
+}
 function renderCare() {
   const el = els.care;
   if (failed(el, 'care') || !data.care) return;
@@ -407,10 +410,13 @@ function renderCare() {
     return input;
   };
   fill(el,
-    toggle('身体数据变差时主动问候我', c.enabled, async (want) => { data.care = await put('/api/checkin', { enabled: want }); }),
+    toggle('身体数据一变差就主动问候我', c.enabled, async (want) => { if (want) askToNotify(); data.care = await put('/api/checkin', { enabled: want }); }),
     h('div', { class: 'control-row' }, h('span', { class: 'control-label grow' }, '安静时段（不打扰）'), time('quiet_start'), h('span', { class: 'muted' }, '到'), time('quiet_end')),
     c.last_at ? h('p', { class: 'muted small' }, '上一次问候：' + new Date(c.last_at * 1000).toLocaleString('zh-CN')) : null,
+    'Notification' in window && Notification.permission !== 'granted'
+      ? h('p', { class: 'muted small' }, Notification.permission === 'denied' ? '浏览器关掉了通知，问候只会出现在页面里。' : '打开上面的开关时会请求通知权限。') : null,
     h('div', { class: 'row' }, action('现在看看', async () => {
+      askToNotify();
       try { await post('/api/checkin/now'); notify('Jurvis 正在看看你最近怎么样，写好了会出现在对话里', 'info'); } catch (err) { notify(err.message, 'info'); }
     }, { class: 'btn small' })));
 }

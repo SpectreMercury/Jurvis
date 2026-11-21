@@ -502,6 +502,32 @@ async function loadMessages(loud) {
 
 // A reply that opened a conversation of its own (a quiet one for what the user is going through) takes the user there, once, as it happens.
 const switched = new Set();
+// Messages Jurvis wrote on its own (a check-in when body data turned) are announced once each: a system notification when the
+// browser allows it, otherwise a note in the page. Nothing is announced for the conversation already open in front of the user.
+const DELIVERED = 'jurvis.outreach.delivered';
+export function announce() {
+  const list = (store.state && store.state.outreach) || [];
+  if (!list.length) return;
+  let done = [];
+  try { done = JSON.parse(localStorage.getItem(DELIVERED) || '[]'); } catch { done = []; }
+  const fresh = list.filter((o) => !done.includes(o.id) && Date.now() / 1000 - o.created_at < 6 * 3600).reverse();
+  if (!fresh.length) return;
+  for (const o of fresh) {
+    done.push(o.id);
+    if (store.sessionId === o.session_id && document.visibilityState === 'visible') continue;
+    const text = o.content.length > 180 ? o.content.slice(0, 180) + '…' : o.content;
+    if ('Notification' in window && Notification.permission === 'granted') {
+      try {
+        const n = new Notification('Jurvis', { body: text, tag: o.id });
+        n.onclick = () => { window.focus(); emit('goto', 'chat'); openSession(o.session_id); n.close(); };
+        continue;
+      } catch { /* some mobile browsers only notify from a service worker: fall back to the page */ }
+    }
+    notify('Jurvis：' + text, 'info');
+  }
+  try { localStorage.setItem(DELIVERED, JSON.stringify(done.slice(-200))); } catch { /* private mode */ }
+}
+
 function followSwitch(rows) {
   for (const m of rows) {
     const to = m.metadata && m.metadata.switch_session;

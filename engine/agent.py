@@ -192,9 +192,9 @@ COMPANION_OPEN = """- When the user starts sharing something that is weighing on
 """
 MAIL = "- You can read the user's recent email (mail_recent, then mail_read for one message). Read-only: you cannot send, move or mark anything. Quote senders and subjects as they are; never invent a message.\n"
 CHECKIN = """
-Reaching out: the user did not write to you. You are checking in on your own, because their body data shows a change: {signals}.
+Reaching out: the user did not write to you. You are checking in on your own, right as their body data changed: {signals}.{also}
 Before you write, look quietly: call health_summary for the last few days, mail_recent for the last three days, and recent_conversations for what they told you lately. See whether something there plausibly explains it (a deadline, a hard email, a conflict, travel, a worry they mentioned).
-Then write one short, warm message, like a friend texting, in the language they use with you:
+Look first, without saying anything. Then write one short, warm message, like a friend texting, in the language they use with you (it is all they will see):
 - If you found a plausible link, mention it gently and as a guess ("这几天好像一直在为那个方案收尾？"), never as a conclusion and never by listing their emails or data.
 - If nothing explains it, simply care: say you noticed they seem to have had a tiring few days, and that you are here.
 - Mention at most one figure, only if it helps. No advice list, no diagnosis, no headings. End with a low-pressure invitation they can ignore.
@@ -430,7 +430,9 @@ class Agent:
         if self.persona == "companion":
             system += "\n" + COMPANION.format(brief=(session.get("brief") or "(nothing before this conversation)").strip()) + "\n"
         if self.checkin:
-            system += CHECKIN.format(signals="; ".join(self.checkin.get("signals") or ["a tiring stretch"]))
+            also = self.checkin.get("also") or []
+            system += CHECKIN.format(signals="; ".join(self.checkin.get("signals") or ["a tiring stretch"]),
+                                     also=(" Already known and mentioned before, so not news: " + "; ".join(also) + ".") if also else "")
         if self.mode == "goal":
             system += GOAL + (GOAL_PLAN if "update_plan" in self.tool_names(p["session_id"], goal=True) else "") + (SCHEDULED.format(title=self.task["title"], when=self.task["scheduled"]) if self.task and self.task.get("scheduled") else TASK if self.task else "")
         elif self.mode == "plan":
@@ -564,13 +566,17 @@ class Agent:
             meta["goal"] = {"status": "running", "reviews": 0}
         if self.task:
             meta["task"] = {k: self.task[k] for k in ("title", "scheduled") if self.task.get(k)}
+        if self.checkin:
+            meta["checkin"] = True  # the apps announce these as notifications
         background, began = bool(p.get("background")), time.monotonic()
         last_save = 0.0
 
         def save(status="streaming", force=False):
             nonlocal last_save
             if force or time.monotonic() - last_save > .25:
-                content = "\n\n".join(s["text"] for s in steps if s["text"])
+                said = [s["text"] for s in steps if s["text"]]
+                # A check-in is one message: what the model said while looking around ("let me take a look…") is not part of it.
+                content = (said[-1] if said else "") if self.checkin else "\n\n".join(said)
                 self.store.update_message(mid, content, status, meta)
                 last_save = time.monotonic()
 

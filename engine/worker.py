@@ -156,9 +156,9 @@ class Worker:
                 except Exception:
                     log.exception("Scheduled tasks could not be started")
                 if not self.syncing or self.syncing.done():
-                    self.syncing=asyncio.create_task(self.health_sync.tick())  # connected health accounts, about once an hour
+                    self.syncing=asyncio.create_task(self.health_sync.tick())  # connected health accounts, every 15 minutes
                 try:
-                    self.checkin.tick()  # body data turned: check in on the user, at most once a day
+                    self.checkin.tick()  # new health data or a sign that just appeared: check in on the user now
                 except Exception:
                     log.exception("Check-in could not be started")
             await asyncio.sleep(.2 if self.running else .4)

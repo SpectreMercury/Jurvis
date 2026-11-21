@@ -151,6 +151,7 @@ struct RuntimeInfo: Codable, Equatable {
 struct Snapshot: Codable, Equatable {
     var version: String; var sessions: [Session]; var jobs: [Job]; var assets: [Asset]; var projects: [Project]; var memories: [Memory]
     var runtime: RuntimeInfo; var last_event: Int
+    var outreach: [Outreach]?
 }
 struct ModelInfo: Codable, Identifiable { var id: String; var title: String; var installed: Bool; var verified: Bool; var active: Bool; var kind: String }
 struct ModelState: Codable { var models: [ModelInfo]; var media_runtime_installed: Bool; var addresses: [String] }
