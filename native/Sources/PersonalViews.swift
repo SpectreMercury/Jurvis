@@ -338,7 +338,9 @@ struct InvitationView: View {
                         .padding(12).background(.white, in: RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous))
                 }
                 Text(invitation.url).font(.jMono).foregroundStyle(Color.inkSoft).textSelection(.enabled)
-                if (invitation.urls ?? []).contains(where: { URL(string: $0)?.host.map(API.isTailscale) ?? false }) {
+                if (invitation.urls ?? []).contains(where: { URL(string: $0)?.host.map { !API.isIPAddress($0) } ?? false }) {
+                    Label("已包含这台 Mac 的公网地址，出门后手机无需安装 Tailscale 也能连接", systemImage: "globe").font(.jSmall).foregroundStyle(Color.signal)
+                } else if (invitation.urls ?? []).contains(where: { URL(string: $0)?.host.map(API.isTailscale) ?? false }) {
                     Label("已包含这台 Mac 的 Tailscale 地址，出门后也能连接", systemImage: "network").font(.jSmall).foregroundStyle(Color.signal)
                 } else {
                     Text("想在外面使用：在 Mac 和手机上登录同一个 Tailscale 账号，再重新生成邀请。").font(.jSmall).foregroundStyle(Color.inkSoft).multilineTextAlignment(.center)

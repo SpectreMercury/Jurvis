@@ -34,7 +34,7 @@ def test_private_state_requires_authentication(app):
 
 
 def test_pairing_is_single_use_revocable_and_not_admin(client,app):
-    invite=app.state.security.pairing('127.0.0.1')
+    invite=app.state.security.pairing(['https://127.0.0.1:18777'])
     token=client.post('/pair',json={'name':'iPad','code':invite['code']}).json()
     assert client.post('/pair',json={'name':'duplicate','code':invite['code']}).status_code==400
     with TestClient(app) as remote:
@@ -48,7 +48,7 @@ def test_pairing_is_single_use_revocable_and_not_admin(client,app):
 
 def test_pairing_expiry_and_rate_limit(app):
     security=app.state.security
-    invitation=security.pairing('127.0.0.1')
+    invitation=security.pairing(['https://127.0.0.1:18777'])
     security.codes[invitation['code']]=time.time()-1
     with pytest.raises(ValueError,match='过期'):security.pair(invitation['code'],'test','source')
     for _ in range(7):
@@ -243,6 +243,7 @@ def test_pairing_invitation_carries_the_tailscale_address(client,app,monkeypatch
     assert engine.security.ipaddress.ip_address('100.101.102.103') in engine.security.TAILNET
     assert engine.security.ipaddress.ip_address('100.63.0.1') not in engine.security.TAILNET
     monkeypatch.setattr(engine.app,'reach_addresses',lambda:['192.168.1.20','100.101.102.103'])
+    monkeypatch.setattr(engine.app,'funnel_url',lambda port:None)
     invite=client.post('/api/pairing').json()
     port=app.state.security.settings.port
     assert invite['url']==f'https://192.168.1.20:{port}'
@@ -256,3 +257,27 @@ def test_pairing_invitation_carries_the_tailscale_address(client,app,monkeypatch
     # with only Tailscale up there is still an invitation
     monkeypatch.setattr(engine.app,'reach_addresses',lambda:['100.101.102.103'])
     assert client.post('/api/pairing').json()['urls']==[f'https://100.101.102.103:{port}']
+
+
+def test_a_funnel_is_offered_last_so_devices_reach_the_mac_from_anywhere(client,app,monkeypatch):
+    from urllib.parse import urlparse,parse_qs
+    import engine.app
+    from engine.security import funnel_from_config
+    port=app.state.security.settings.port
+    host='mac.tail1234.ts.net'
+    config={'TCP':{'443':{'HTTPS':True}},'Web':{f'{host}:443':{'Handlers':{'/':{'Proxy':f'https+insecure://127.0.0.1:{port}'}}}},'AllowFunnel':{f'{host}:443':True}}
+    assert funnel_from_config(config,port)==f'https://{host}'
+    # served only inside the tailnet, or forwarding somewhere else: not a public address of the engine
+    assert funnel_from_config({**config,'AllowFunnel':{}},port) is None
+    assert funnel_from_config(config,port+1) is None
+    assert funnel_from_config({'Web':{f'{host}:8443':{'Handlers':{'/':{'Proxy':f'127.0.0.1:{port}'}}}},'AllowFunnel':{f'{host}:8443':True}},port)==f'https://{host}:8443'
+    assert funnel_from_config({},port) is None
+    monkeypatch.setattr(engine.app,'reach_addresses',lambda:['192.168.1.20'])
+    monkeypatch.setattr(engine.app,'funnel_url',lambda p:f'https://{host}')
+    invite=client.post('/api/pairing').json()
+    assert invite['urls']==[f'https://192.168.1.20:{port}',f'https://{host}']
+    assert parse_qs(urlparse(invite['link']).query)['alt']==[f'https://{host}']
+    assert client.get('/api/reach').json()=={'urls':invite['urls']}
+    # an address set by hand wins over detection
+    monkeypatch.setattr(app.state.security.settings,'public_url','https://jurvis.example.com/')
+    assert client.get('/api/reach').json()['urls'][-1]=='https://jurvis.example.com'

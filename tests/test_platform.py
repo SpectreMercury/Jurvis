@@ -477,7 +477,7 @@ async def test_declined_mcp_call_does_not_run(app, tmp_path):
 
 
 def test_remote_devices_cannot_add_a_command_server(app):
-    paired = app.state.security.pair(app.state.security.pairing("192.168.1.2")["code"], "iPhone", "test")
+    paired = app.state.security.pair(app.state.security.pairing(["https://192.168.1.2:18777"])["code"], "iPhone", "test")
     with TestClient(app, headers={"Authorization": f"Bearer {paired['token']}"}) as remote:
         assert remote.put("/api/mcp/x", json={"command": "/bin/sh"}).status_code == 403
 

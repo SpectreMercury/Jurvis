@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     data: Path = ROOT / "data"
     host: str = "0.0.0.0"
     port: int = 18777
+    public_url: str = ""                      # an https address that reaches the engine from the internet; empty finds a Tailscale Funnel
     llm_port: int = 18778
     comfy_port: int = 18779
     max_upload_bytes: int = 32 * 1024 * 1024

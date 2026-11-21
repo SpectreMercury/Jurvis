@@ -19,7 +19,7 @@ from .runtime import Runtime
 from .schemas import ChatCreate,CommandDecision,SessionCreate,SessionUpdate,ImageRequest,VideoRequest,ProjectCreate,ProjectProduce,ProjectUpdate,MemoryCreate,PairRequest,SettingsUpdate,SpeakRequest,ProviderUpdate,SkillSave,McpServerSave,ConnectorSave,HomeControl
 from .llm import LOCAL,split
 from .speech import Speech,SpeechError,MAX_AUDIO_BYTES,IDLE_SECONDS
-from .security import Security,lan_addresses,reach_addresses
+from .security import Security,funnel_url,lan_addresses,reach_addresses
 from .store import Store,dumps,new_id
 from .worker import Worker
 from .coding import CodeConnect,CodeTask,CodeCommand
@@ -671,14 +671,21 @@ def create_app(settings=None, *, run_worker=True):
     @app.post("/api/pairing")
     async def invitation(request:Request):
         local_only(request)
-        addresses=reach_addresses()
-        if not addresses:raise HTTPException(409,"未找到可用的网络地址，请连接 Wi-Fi、以太网或 Tailscale")
-        return security.pairing(addresses[0],addresses[1:])
+        urls=await reach_urls()
+        if not urls:raise HTTPException(409,"未找到可用的网络地址，请连接 Wi-Fi、以太网或 Tailscale")
+        return security.pairing(urls)
+
+    async def reach_urls():
+        """The local network first, then Tailscale, then a public address (a Tailscale Funnel) last."""
+        urls=[f"https://{address}:{settings.port}" for address in reach_addresses()]
+        public=settings.public_url.strip().rstrip("/") or await asyncio.to_thread(funnel_url,settings.port)
+        if public and public.startswith("https://"):urls.append(public)
+        return list(dict.fromkeys(urls))
 
     @app.get("/api/reach")
     async def reach():
-        # Paired devices ask for this so they learn a new address (Tailscale switched on later) without pairing again.
-        return {"urls":[f"https://{address}:{settings.port}" for address in reach_addresses()]}
+        # Paired devices ask for this so they learn a new address (Tailscale or a Funnel switched on later) without pairing again.
+        return {"urls":await reach_urls()}
 
     @app.get("/api/devices")
     async def devices():return store.all("SELECT id,name,created_at,last_seen,revoked FROM devices ORDER BY created_at DESC")

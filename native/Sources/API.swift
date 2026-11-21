@@ -53,10 +53,20 @@ final class API: NSObject, URLSessionDelegate, @unchecked Sendable {
             completionHandler(.performDefaultHandling, nil); return
         }
         let hash = SHA256.hash(data: SecCertificateCopyData(cert) as Data).map { String(format: "%02x", $0) }.joined()
-        guard hash == connection.fingerprint.lowercased() else {
+        if hash == connection.fingerprint.lowercased() {
+            completionHandler(.useCredential, URLCredential(trust: trust)); return
+        }
+        // A public name (a Tailscale Funnel's *.ts.net, say) is served with a certificate the system already trusts:
+        // let the system check it. An address given as an IP must be this Mac's own pinned certificate.
+        if Self.isIPAddress(challenge.protectionSpace.host) {
             completionHandler(.cancelAuthenticationChallenge, nil); return
         }
-        completionHandler(.useCredential, URLCredential(trust: trust))
+        completionHandler(.performDefaultHandling, nil)
+    }
+    static func isIPAddress(_ host: String) -> Bool {
+        var v4 = in_addr(), v6 = in6_addr()
+        let bare = host.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        return inet_pton(AF_INET, bare, &v4) == 1 || inet_pton(AF_INET6, bare, &v6) == 1
     }
     func request<T: Decodable>(_ path: String, method: String = "GET", body: Any? = nil) async throws -> T {
         guard let url = URL(string: base + path) else { throw APIError.message("连接地址无效") }
