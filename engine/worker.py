@@ -19,7 +19,9 @@ from .coding import Coding
 from .shell import Shell
 from .browser import Browser
 from .llm import LLM,Prefs
+from .asks import Asks
 from .memory import Memory
+from .stream import Stream
 from .skills import Skills
 from .home import Home
 from .mcp import Mcp
@@ -65,6 +67,9 @@ class Worker:
         self.agent=Agent(settings,store,runtime,self.tools,self.media,self.shell,self.llm,self.memory,self.skills)
         self.health_sync=HealthSync(settings,self.tools.health,store)
         self.checkin=Checkin(settings,store,self.tools.health)
+        self.stream=Stream(store)
+        self.asks=Asks(store)
+        self.records_after=0.0
         self.task=None
         self.running={}      # job id -> (task, lane)
         self.active=None     # the local-lane task and its job id
@@ -161,6 +166,10 @@ class Worker:
                     self.checkin.tick()  # new health data or a sign that just appeared: check in on the user now
                 except Exception:
                     log.exception("Check-in could not be started")
+                try:
+                    self.keep_records()
+                except Exception:
+                    log.exception("Records of finished conversations could not be queued")
             await asyncio.sleep(.2 if self.running else .4)
 
     async def execute(self,job,lane):
@@ -187,6 +196,7 @@ class Worker:
             log.exception("Job %s failed",job["id"])
             if job["kind"]=="memory":  # upkeep the user never asked for: fail quietly
                 self.store.update_job(job["id"],status="failed",phase="记忆整理未完成",error=str(exc)[:2000])
+                self.records_after=time.monotonic()+600  # the model is unreachable or refused: do not ask again right away
             else:
                 self.store.update_job(job["id"],status="failed",phase="需要处理",error=str(exc)[:2000])
             if job["kind"]=="chat":
@@ -199,11 +209,27 @@ class Worker:
 
     def after_chat(self,session_id):
         """Queues memory extraction and summarizing for a conversation that just got a reply."""
+        self.asks.sync(session_id)  # a reply that ended on a question: it now waits for the user's answer
         if not self.memory.pending(session_id):
             return
         if self.store.one("SELECT id FROM jobs WHERE kind='memory' AND status='queued' AND json_extract(payload,'$.session_id')=?",(session_id,)):
             return
         self.store.create_job("memory",{"session_id":session_id})
+
+    def keep_records(self):
+        """Keeps the user's notes and the memories the same, and queues the write-up of stretches of the conversation that have gone
+        quiet (and, once a night, the tidy-up) while nothing else is going on."""
+        self.memory.vault.sync()
+        if self.running or time.monotonic()<self.records_after or not self.memory.prefs()["enabled"]:
+            return
+        if self.store.one("SELECT id FROM jobs WHERE status='queued' LIMIT 1"):
+            return
+        if self.memory.due():
+            self.store.create_job("memory",{"session_id":"","nightly":True})
+            return
+        stale=self.memory.stale(limit=1)
+        if stale:
+            self.store.create_job("memory",{"session_id":stale[0]["id"]})
 
     async def handle(self,job):
         kind,p,ident=job["kind"],job["payload"],job["id"]
@@ -227,6 +253,8 @@ class Worker:
             return await self.tools.ledger.classify(self.runtime)
         if kind=="memory":
             self.store.update_job(ident,phase="正在整理记忆",progress=.2)
+            if p.get("nightly"):
+                return await self.memory.consolidate(self.llm.tool_model(None))
             return await self.memory.process(p["session_id"])
         if kind=="plan":
             project=self.store.one("SELECT * FROM projects WHERE id=?",(p["project_id"],))

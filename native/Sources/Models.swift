@@ -49,6 +49,12 @@ enum JSONValue: Codable, Hashable {
 }
 
 struct Session: Codable, Identifiable, Hashable { var id: String; var title: String; var created_at: Double; var updated_at: Double; var code_project_id: String?; var allow_commands: Int? }
+/// One page of the one conversation: its messages oldest first, whether there is more either side, and the stretch the user is in.
+struct StreamPage: Codable { var messages: [Message]; var earlier: Bool; var later: Bool; var current: String? }
+struct StreamHit: Codable, Identifiable, Hashable { var id: String; var session_id: String; var role: String; var title: String; var created_at: Double; var snippet: String }
+struct StreamHits: Codable { var results: [StreamHit] }
+/// A question Jurvis asked that the user has not decided yet. It waits above the composer wherever they are in the conversation.
+struct WaitingQuestion: Codable, Identifiable, Hashable { var id: String; var session_id: String; var message_id: String; var question: String; var options: [String]; var asked_at: Double; var title: String }
 struct Message: Codable, Identifiable, Equatable {
     var id: String; var session_id: String; var role: String; var content: String; var status: String
     var created_at: Double; var metadata: JSONValue
@@ -152,6 +158,9 @@ struct Snapshot: Codable, Equatable {
     var version: String; var sessions: [Session]; var jobs: [Job]; var assets: [Asset]; var projects: [Project]; var memories: [Memory]
     var runtime: RuntimeInfo; var last_event: Int
     var outreach: [Outreach]?
+    var questions: [WaitingQuestion]?
+    /// Where the user's notes are kept as Markdown on the Mac.
+    var vault: String?
 }
 struct ModelInfo: Codable, Identifiable { var id: String; var title: String; var installed: Bool; var verified: Bool; var active: Bool; var kind: String }
 struct ModelState: Codable { var models: [ModelInfo]; var media_runtime_installed: Bool; var addresses: [String] }
@@ -170,10 +179,10 @@ struct WorkspaceContent: Codable, Identifiable { var name: String; var content: 
 enum Section: String, CaseIterable, Identifiable {
     case assistant = "对话", drama = "短剧", library = "素材", tasks = "任务", home = "家居", goals = "目标", health = "健康", ledger = "账本", memory = "记忆", files = "文件", settings = "设置"
     var id: String { rawValue }
-    /// The name shown in navigation. Conversations are "任务" there, so the job queue is "后台任务".
+    /// The name shown in navigation. The job queue is "后台任务": what runs without the user waiting on it.
     var title: String {
         switch self {
-        case .assistant: return "新任务"
+        case .assistant: return "对话"
         case .tasks: return "后台任务"
         default: return rawValue
         }
@@ -206,11 +215,11 @@ enum Section: String, CaseIterable, Identifiable {
 }
 
 enum Hub: String, CaseIterable, Identifiable {
-    case tasks = "任务", library = "作品库", agenda = "目标", home = "家居", settings = "设置"
+    case tasks = "对话", library = "作品库", agenda = "目标", home = "家居", settings = "设置"
     var id: String { rawValue }
     var icon: String {
         switch self {
-        case .tasks: return "checklist"
+        case .tasks: return "text.bubble"
         case .library: return "square.grid.2x2"
         case .agenda: return "scope"
         case .home: return "house"

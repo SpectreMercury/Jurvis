@@ -11,6 +11,7 @@ export function mount(root) {
   els.search.addEventListener('input', render);
   els.count = h('span', { class: 'muted small' });
   els.list = h('div', { class: 'cards single' });
+  els.vault = h('p', { class: 'muted small', hidden: true });
   root.append(h('div', { class: 'page' },
     h('header', { class: 'page-head' }, h('h1', null, '记忆'),
       h('div', { class: 'row' },
@@ -26,6 +27,7 @@ export function mount(root) {
           await del('/api/memories');
           await loadState();
         }, { class: 'btn danger small' }))),
+    els.vault,
     h('div', { class: 'row' }, els.search, els.count),
     els.list));
 }
@@ -34,6 +36,9 @@ export function activate() { sig = ''; render(); }
 export function onState() { render(); }
 
 function render() {
+  const vault = store.state && store.state.vault;
+  els.vault.hidden = !vault;
+  if (vault) els.vault.textContent = `这些记忆同时以 Markdown 保存在 Mac 上的 ${vault}，可以用 Obsidian 打开；在那里改动一行，就是改动一条记忆。`;
   const all = (store.state && store.state.memories) || [];
   const q = els.search.value.trim().toLowerCase();
   const shown = q ? all.filter((m) => [m.title, m.content, ...(m.tags || [])].join('\n').toLowerCase().includes(q)) : all;

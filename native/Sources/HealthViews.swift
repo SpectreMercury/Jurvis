@@ -570,7 +570,7 @@ struct Outreach: Codable, Equatable, Hashable { var id: String; var session_id: 
         if !asked { asked = true; _ = try? await center.requestAuthorization(options: [.alert, .sound, .badge]) }
         for item in fresh.reversed() {
             done.append(item.id)
-            if store.selectedSession == item.session_id && Self.appActive { continue }
+            if store.section == .assistant && !store.streamPast && Self.appActive { continue }  // it is on screen as it arrives
             let content = UNMutableNotificationContent()
             content.title = "Jurvis"
             content.body = String(item.content.prefix(180))
@@ -582,7 +582,7 @@ struct Outreach: Codable, Equatable, Hashable { var id: String; var session_id: 
         UserDefaults.standard.set(Array(done.suffix(200)), forKey: key)
     }
 
-    func open(_ session: String) async { await store?.selectSession(session) }
+    func open(_ session: String) async { store?.section = .assistant; await store?.loadNewest() }
 
     static var appActive: Bool {
         #if os(iOS)

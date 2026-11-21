@@ -1,6 +1,6 @@
 // 目标: what Jurvis keeps doing for the user over time. Long-term goals it tracks and work it runs on a schedule.
 // Both are set up in conversation; here they are listed and can be removed.
-import { store, h, fill, get, del, action } from './core.js';
+import { store, h, fill, get, del, action, sheet, emit, shortTime } from './core.js';
 import * as ui from './ui.js';
 import { icon } from './icons.js';
 
@@ -46,11 +46,13 @@ function render(agenda) {
     goal.detail ? h('p', { class: 'memory-content' }, goal.detail) : null,
     h('div', { class: 'row spread' },
       h('span', { class: 'muted small' }, '记于 ' + day(goal.created_at)),
-      action('删除', async () => {
-        if (!await ui.ask(`删除目标“${goal.title}”？`)) return;
-        await del('/api/goals/' + encodeURIComponent(goal.id));
-        await refresh();
-      }, { class: 'btn small' }))))
+      h('div', { class: 'row' },
+        action('打开', () => openSpace(goal), { class: 'btn small' }),
+        action('删除', async () => {
+          if (!await ui.ask(`删除目标“${goal.title}”？`)) return;
+          await del('/api/goals/' + encodeURIComponent(goal.id));
+          await refresh();
+        }, { class: 'btn small' })))))
     : empty('还没有长期目标', '告诉 Jurvis 你想长期跟踪或坚持的事，它会记在这里。'));
   fill(els.schedules, schedules.length ? schedules.map((item) => h('article', { class: 'card memory' },
     h('div', { class: 'row' }, icon('clock', 15), h('strong', null, item.title), h('span', { class: 'badge' }, item.when)),
@@ -63,4 +65,28 @@ function render(agenda) {
         await refresh();
       }, { class: 'btn small' }))))
     : empty('还没有定时任务', '让 Jurvis 按周或按月帮你做一件事，或者到点提醒你。'));
+}
+
+/** A goal opened as its space: what Jurvis knows about it, how often it looks at it, and where the two of you talked about it. */
+async function openSpace(goal) {
+  const space = await get('/api/spaces/' + encodeURIComponent(goal.id));
+  const part = (title, ...kids) => h('section', { class: 'space-part' }, h('h3', { class: 'group-title' }, title), ...kids);
+  let close = () => {};
+  const body = h('div', { class: 'space' },
+    part('知道的', space.facts.length
+      ? h('ul', { class: 'space-facts' }, space.facts.map((fact) => h('li', null, fact.content)))
+      : h('p', { class: 'muted small' }, '还没有记下什么。聊到这件事时，Jurvis 会把了解到的放在这里。')),
+    part('节奏', space.schedules.length
+      ? h('div', { class: 'cards single' }, space.schedules.map((item) => h('article', { class: 'card memory' },
+        h('div', { class: 'row' }, icon('clock', 15), h('strong', null, item.title), h('span', { class: 'badge' }, item.when)),
+        h('p', { class: 'muted small' }, '下次 ' + day(item.next_run)))))
+      : h('p', { class: 'muted small' }, '没有定时。可以在对话里说“每周给我一份简报”。')),
+    part('聊到过', space.stretches.length
+      ? h('div', { class: 'session-list' }, space.stretches.map((stretch) => h('div', { class: 'session-row' },
+        h('button', { class: 'session-open hit', type: 'button', onclick: () => { close(); emit('open-stretch', stretch.id); } },
+          h('span', { class: 'session-text' }, h('span', { class: 'session-title' }, stretch.title || '对话'),
+            h('span', { class: 'session-sub' }, shortTime(stretch.updated_at) + (stretch.text ? ' · ' + stretch.text.replace(/\s+/g, ' ').slice(0, 60) : '')))))))
+      : h('p', { class: 'muted small' }, '还没有相关的对话。')),
+    space.file ? h('p', { class: 'muted small space-file' }, '笔记文件：' + space.file) : null);
+  close = sheet(goal.title, body, { wide: true });
 }

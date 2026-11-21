@@ -16,7 +16,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from . import __version__,drama
 from .config import Settings
 from .runtime import Runtime
-from .schemas import ChatCreate,CommandDecision,SessionCreate,SessionUpdate,ImageRequest,VideoRequest,ProjectCreate,ProjectProduce,ProjectUpdate,MemoryCreate,PairRequest,SettingsUpdate,SpeakRequest,ProviderUpdate,SkillSave,McpServerSave,ConnectorSave,HomeControl
+from .schemas import ChatCreate,StreamCreate,CommandDecision,SessionCreate,SessionUpdate,ImageRequest,VideoRequest,ProjectCreate,ProjectProduce,ProjectUpdate,MemoryCreate,PairRequest,SettingsUpdate,SpeakRequest,ProviderUpdate,SkillSave,McpServerSave,ConnectorSave,HomeControl
 from .llm import LOCAL,split
 from .speech import Speech,SpeechError,MAX_AUDIO_BYTES,IDLE_SECONDS
 from .security import Security,funnel_url,lan_addresses,reach_addresses
@@ -25,7 +25,7 @@ from .worker import Worker
 from .coding import CodeConnect,CodeTask,CodeCommand
 
 
-MEMORY_COLUMNS="SELECT id,title,content,enabled,created_at,updated_at,importance,durable,tags,source,session_id,embed_model FROM memories"
+MEMORY_COLUMNS="SELECT id,title,content,enabled,created_at,updated_at,importance,durable,tags,source,session_id,embed_model,page FROM memories"
 
 
 
@@ -97,6 +97,10 @@ def create_app(settings=None, *, run_worker=True):
                 "assets":store.all("SELECT * FROM assets ORDER BY created_at DESC LIMIT 500"),
                 "projects":store.all("SELECT * FROM projects ORDER BY updated_at DESC LIMIT 100"),
                 "memories":store.all(MEMORY_COLUMNS+" ORDER BY updated_at DESC LIMIT 500"),
+                # What Jurvis asked and the user has not decided yet: kept in front of them wherever they are in the conversation.
+                "questions":worker.asks.pending(),
+                # Where the user's notes are kept as Markdown, to open in Obsidian or any editor.
+                "vault":str(worker.memory.vault.root),
                 # Messages Jurvis wrote on its own lately: the apps show each one as a notification, once.
                 "outreach":store.all("""SELECT m.id,m.session_id,m.content,m.created_at,s.title FROM messages m JOIN sessions s ON s.id=m.session_id
                                         WHERE json_extract(m.metadata,'$.checkin') AND m.status='complete' AND m.content!='' AND m.created_at>=?
@@ -145,21 +149,58 @@ def create_app(settings=None, *, run_worker=True):
     @app.post("/api/sessions/{ident}/messages")
     async def send(ident:str,body:ChatCreate):
         if not store.one("SELECT id FROM sessions WHERE id=?",(ident,)):raise HTTPException(404,"对话不存在")
+        return enqueue(body,ident)
+
+    @app.get("/api/stream")
+    async def stream_page(before:float|None=None,after:float|None=None,start:str|None=None,at:str|None=None,limit:int=120):
+        """The one conversation, a page at a time: the newest page, or the page before/after a time, or from a stretch or a message."""
+        return worker.stream.page(before=before,after=after,start=start,at=at,limit=limit)
+
+    @app.delete("/api/questions/{ident}")
+    async def drop_question(ident:str):
+        """The user does not want to decide this one: it stops waiting."""
+        if not worker.asks.dismiss(ident):raise HTTPException(404,"这个问题已经不在等了")
+        return {"ok":True}
+
+    @app.get("/api/stream/search")
+    async def stream_search(q:str="",limit:int=30):
+        return {"results":worker.stream.search(q,limit)}
+
+    @app.post("/api/stream/messages")
+    async def stream_send(body:StreamCreate):
+        """A message into the one conversation: it continues what the user is in, or begins something new after a pause."""
+        if body.code_project_id:worker.coding.project(body.code_project_id)
+        if body.model is not None:check_model(body.model)
+        return enqueue(body)
+
+    def enqueue(body,ident=None):
+        """Stores the user's message with the reply to come and queues the reply. Without ident the message goes into the stream."""
+        stream=ident is None
         key="chat:"+body.request_id
         prior=store.one("SELECT * FROM jobs WHERE idempotency_key=?",(key,))
         if prior:
-            if prior["payload"].get("input")!=body.model_dump() or prior["payload"].get("session_id")!=ident:
+            if prior["payload"].get("input")!=body.model_dump() or (not stream and prior["payload"].get("session_id")!=ident):
                 raise HTTPException(409,"请求标识已用于不同消息")
             return prior
-        # Background work does not hold the conversation: only a reply the user is waiting for does.
-        if store.one("SELECT id FROM jobs WHERE kind='chat' AND status IN ('queued','running') AND json_extract(payload,'$.session_id')=? AND json_extract(payload,'$.background') IS NULL",(ident,)):
+        # Background work does not hold the conversation: only a reply the user is waiting for does. The stream is one conversation, so one reply at a time.
+        waiting="SELECT id FROM jobs WHERE kind='chat' AND status IN ('queued','running') AND json_extract(payload,'$.background') IS NULL"
+        if store.one(waiting if stream else waiting+" AND json_extract(payload,'$.session_id')=?",() if stream else (ident,)):
             raise HTTPException(409,"请等待当前回复结束，或先停止它")
         for asset in body.asset_ids:
             worker.media.asset(asset)
+        if stream:
+            # An answer to a question that is still waiting goes back to where it was asked, with what led up to it.
+            asked=store.one("SELECT session_id FROM questions WHERE id=? AND status='pending'",(body.answer_to,)) if body.answer_to else None
+            if asked:
+                ident=asked["session_id"];worker.stream.focus(ident)
+            else:
+                ident=worker.stream.route(code_project_id=body.code_project_id,incognito=body.incognito,fresh=body.fresh)
+            if body.model is not None:store.execute("UPDATE sessions SET model=? WHERE id=?",(check_model(body.model),ident))
+        answered=worker.asks.heard(ident,body.content,body.answer_to if stream else None)
         now=time.time();user_id,message_id,job_id=new_id(),new_id(),new_id()
-        payload={"session_id":ident,"message_id":message_id,"input":body.model_dump()}
+        payload={"session_id":ident,"message_id":message_id,"input":body.model_dump(),**({"stream":True} if stream else {})}
         with store.connection() as db:
-            db.execute("INSERT INTO messages(id,session_id,role,content,status,created_at,metadata) VALUES(?,?,'user',?,'complete',?,?)",(user_id,ident,body.content,now,dumps({"asset_ids":body.asset_ids,"mode":body.mode,**({"voice":True} if body.voice else {})})))
+            db.execute("INSERT INTO messages(id,session_id,role,content,status,created_at,metadata) VALUES(?,?,'user',?,'complete',?,?)",(user_id,ident,body.content,now,dumps({"asset_ids":body.asset_ids,"mode":body.mode,**({"voice":True} if body.voice else {}),**({"answer":{"id":answered["id"],"message_id":answered["message_id"],"question":answered["question"]}} if answered else {})})))
             db.execute("INSERT INTO messages(id,session_id,role,content,status,created_at) VALUES(?,?,'assistant','','queued',?)",(message_id,ident,now+.0001))
             db.execute("INSERT INTO jobs(id,kind,status,payload,created_at,updated_at,idempotency_key) VALUES(?,'chat','queued',?,?,?,?)",(job_id,dumps(payload),now,now,key))
             db.execute("UPDATE sessions SET title=CASE WHEN title='新对话' THEN ? ELSE title END,updated_at=? WHERE id=?",(body.content[:40],now,ident))
@@ -305,6 +346,13 @@ def create_app(settings=None, *, run_worker=True):
     async def agenda():
         """The long-term goals and the scheduled work, for the Goals view."""
         return {"goals":worker.tools.agenda.goals(),"schedules":worker.tools.agenda.schedules()}
+
+    @app.get("/api/spaces/{ident}")
+    async def space(ident:str):
+        """A long-term goal opened as its space: its notes, its rhythm, and where it was talked about."""
+        view=worker.memory.space_view(ident)
+        if not view:raise HTTPException(404,"这个目标不存在")
+        return view
 
     @app.delete("/api/goals/{ident}")
     async def delete_goal(ident:str):

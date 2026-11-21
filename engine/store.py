@@ -69,6 +69,15 @@ class Store:
                                ("persona", "TEXT"), ("brief", "TEXT"), ("parent_id", "TEXT")):
                 if name not in columns:
                     db.execute(f"ALTER TABLE sessions ADD COLUMN {name} {kind}")
+            # The user sees one conversation. A session row is one stretch of it, about one thing (engine/stream.py);
+            # focused_at is when the user's attention was last put on it: where their next message continues.
+            if "focused_at" not in columns:
+                db.execute("ALTER TABLE sessions ADD COLUMN focused_at REAL")
+            # The record of a finished stretch, by which it is found again later (engine/memory.py).
+            db.execute("""CREATE TABLE IF NOT EXISTS digests(
+                session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,text TEXT NOT NULL,
+                upto REAL NOT NULL,embedding BLOB,embed_model TEXT)""")
+            db.execute("CREATE INDEX IF NOT EXISTS messages_time ON messages(created_at)")
             columns = [r[1] for r in db.execute("PRAGMA table_info(memories)")]
             for name, kind in (("importance", "REAL NOT NULL DEFAULT 0.5"), ("durable", "INTEGER NOT NULL DEFAULT 1"), ("tags", "TEXT NOT NULL DEFAULT '[]'"),
                                ("source", "TEXT NOT NULL DEFAULT 'manual'"), ("session_id", "TEXT"), ("embedding", "BLOB"), ("embed_model", "TEXT"), ("used_at", "REAL")):

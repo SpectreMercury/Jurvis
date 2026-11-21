@@ -28,11 +28,11 @@ struct JurvisApp: App {
         .windowToolbarStyle(.unifiedCompact(showsTitle: false))
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button("新任务") { Task { await store.newChat() } }.keyboardShortcut("n")
+                Button("新话题") { Task { await store.newChat() } }.keyboardShortcut("n")
             }
             CommandGroup(after: .sidebar) {
                 ForEach(Array(Section.allCases.enumerated()), id: \.element) { index, section in
-                    Button(section == .assistant ? "任务" : section.title) { store.section = section }.keyboardShortcut(KeyEquivalent(Swift.Character("\(index + 1)")), modifiers: .command)
+                    Button(section == .assistant ? "对话" : section.title) { store.section = section }.keyboardShortcut(KeyEquivalent(Swift.Character("\(index + 1)")), modifiers: .command)
                 }
             }
         }
@@ -151,7 +151,7 @@ struct HubView: View {
     }
 }
 
-/// Recent tasks under their dates.
+/// The stretches of the conversation under their dates.
 private func grouped(_ sessions: [Session]) -> [(String, [Session])] {
     let calendar = Calendar.current
     var buckets: [(String, [Session])] = [("今天", []), ("昨天", []), ("近 7 天", []), ("更早", [])]
@@ -164,25 +164,54 @@ private func grouped(_ sessions: [Session]) -> [(String, [Session])] {
     return buckets.filter { !$0.1.isEmpty }
 }
 
-/// Asks before a task is deleted, wherever the list lives.
+/// Asks before a stretch of the conversation is deleted, wherever the list lives.
 private struct DeleteTaskDialog: ViewModifier {
     @EnvironmentObject var store: AppStore
     @Binding var pending: Session?
     @Binding var deleting: Set<String>
     func body(content: Content) -> some View {
-        content.confirmationDialog("删除这个任务？", isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } }), titleVisibility: .visible) {
+        content.confirmationDialog("删除这段对话？", isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } }), titleVisibility: .visible) {
             Button("删除", role: .destructive) {
                 if let session = pending {
                     deleting.insert(session.id)
                     Task { await store.deleteSession(session.id); deleting.remove(session.id) }
                 }
             }
-        } message: { Text("对话记录会从 Mac 上删除，生成的素材和文件会保留。") }
+        } message: { Text("这段对话会从 Mac 上删除，生成的素材和文件会保留。") }
+    }
+}
+
+/// What was said that contains the words being searched for; a row opens the conversation at that message.
+private struct StreamHitRows: View {
+    @EnvironmentObject var store: AppStore
+    var query: String
+    var opened: () -> Void = {}
+    @State private var hits: [StreamHit] = []
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if !hits.isEmpty { Eyebrow(text: "说到过").padding(.horizontal, 10).padding(.top, 12).padding(.bottom, 4) }
+            ForEach(hits) { hit in
+                Button { Task { await store.open(message: hit.id) }; opened() } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(hit.snippet).font(.jCallout).foregroundStyle(Color.ink).lineLimit(2).multilineTextAlignment(.leading)
+                        Text(StretchMark.label(hit.created_at) + " · " + hit.title).font(.jSmall).foregroundStyle(Color.inkFaint).lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.vertical, 6).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .task(id: query) {
+            guard query.trimmingCharacters(in: .whitespaces).count >= 2 else { hits = []; return }
+            try? await Task.sleep(for: .milliseconds(300))  // wait for the typing to pause
+            if Task.isCancelled { return }
+            hits = await store.searchStream(query)
+        }
     }
 }
 
 #if os(macOS)
-/// Navigation: the brand, the places, then every task with where it stands, and the model at the bottom.
+/// Navigation: the brand, the places, then the conversation so far, stretch by stretch, and the model at the bottom.
 struct Sidebar: View {
     @EnvironmentObject var store: AppStore
     @State private var query = ""
@@ -209,15 +238,16 @@ struct Sidebar: View {
                 ForEach([Hub.library, .agenda, .home, .settings]) { hubRow($0) }
             }
             .padding(.horizontal, 10)
-            Eyebrow(text: "任务").padding(.horizontal, 20).padding(.top, 18).padding(.bottom, 6)
+            Eyebrow(text: "对话记录").padding(.horizontal, 20).padding(.top, 18).padding(.bottom, 6)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
                     ForEach(sessions.prefix(200)) { session in sessionRow(session) }
                     if store.snapshot == nil {
-                        LoadingState(text: "正在载入任务")
+                        LoadingState(text: "正在载入对话")
                     } else if sessions.isEmpty {
-                        Text(query.isEmpty ? "还没有任务" : "没有匹配的任务").font(.jCallout).foregroundStyle(Color.inkSoft).padding(10)
+                        Text(query.isEmpty ? "还没有对话" : "没有这个名字的对话").font(.jCallout).foregroundStyle(Color.inkSoft).padding(10)
                     }
+                    if !query.isEmpty { StreamHitRows(query: query) }
                 }
                 .padding(.horizontal, 10).padding(.bottom, 10)
             }
@@ -231,14 +261,14 @@ struct Sidebar: View {
         let selected = store.section == .assistant && store.selectedSession == session.id
         let job = store.chatJob(of: session)
         let waiting = job?.phase.hasPrefix("等待你确认") ?? false
-        return Button { Task { await store.selectSession(session.id) } } label: {
+        return Button { Task { await store.open(stretch: session.id) } } label: {
             HStack(spacing: 10) {
                 Group {
                     if waiting { StatusMark(state: .waiting, size: 16) }
                     else if job?.status == "running" { StatusMark(state: .running, size: 16) }
                     else if job != nil { StatusMark(state: .pending, size: 16) }
                     else {
-                        Image(systemName: session.code_project_id != nil ? "chevron.left.forwardslash.chevron.right" : "checkmark.circle")
+                        Image(systemName: session.code_project_id != nil ? "chevron.left.forwardslash.chevron.right" : "text.bubble")
                             .font(.system(size: 14, weight: .light)).foregroundStyle(Color.inkSoft)
                     }
                 }
@@ -252,27 +282,28 @@ struct Sidebar: View {
             .sidebarRow(selected: selected)
         }
         .buttonStyle(SidebarRowStyle())
-        .contextMenu { Button("删除任务", role: .destructive) { pendingDelete = session } }
+        .contextMenu { Button("删除这段对话", role: .destructive) { pendingDelete = session } }
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
+    /// The conversation goes on by itself; this only says that what comes next is about something else.
     var newTaskRow: some View {
-        let selected = (store.section == .assistant || store.section == nil) && store.selectedSession == nil
+        let selected = (store.section == .assistant || store.section == nil) && store.fresh
         return Button { Task { await store.newChat() } } label: {
             HStack(spacing: 10) {
                 Image(systemName: "square.and.pencil").font(.system(size: 14, weight: .light)).frame(width: 18)
-                Text("新任务").font(.jCallout).lineLimit(1)
+                Text("新话题").font(.jCallout).lineLimit(1)
                 Spacer()
                 Text("⌘N").font(.jSmall).foregroundStyle(Color.inkFaint)
             }
             .foregroundStyle(Color.ink)
             .sidebarRow(selected: selected)
         }
-        .buttonStyle(SidebarRowStyle()).help("新任务（⌘N）")
-        .accessibilityLabel("新任务").accessibilityAddTraits(selected ? .isSelected : [])
+        .buttonStyle(SidebarRowStyle()).help("换个话题（⌘N）")
+        .accessibilityLabel("新话题").accessibilityAddTraits(selected ? .isSelected : [])
     }
 
-    /// Search is a row like the others; typing in it filters the tasks below.
+    /// Search is a row like the others; typing in it finds stretches by name and messages by what was said.
     var searchRow: some View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass").font(.system(size: 14, weight: .light)).frame(width: 18)
@@ -375,10 +406,12 @@ struct ConnectionIndicator: View {
 #endif
 
 #if os(iOS)
-/// iPhone and iPad: four places behind a tab bar; a task opens over the list.
+/// iPhone and iPad: four places behind a tab bar; the first is the one conversation.
 struct PhoneRoot: View {
     @EnvironmentObject var store: AppStore
-    @State private var path: [String] = []
+    /// The list of earlier stretches is open over the conversation.
+    @State private var history = false
+    @State private var keyboard = false
 
     var hub: Hub { (store.section ?? .assistant).hub }
 
@@ -411,13 +444,20 @@ struct PhoneRoot: View {
         Group {
             switch hub {
             case .tasks:
-                NavigationStack(path: $path) {
-                    PhoneTasksView(open: { path = ["run"] })
-                        .safeAreaInset(edge: .bottom, spacing: 0) { if !rail { TabBar() } }
-                        .navigationDestination(for: String.self) { _ in
-                            ChatView().toolbar { ToolbarItem(placement: .topBarTrailing) { runMenu } }
+                NavigationStack {
+                    ChatView()
+                        .safeAreaInset(edge: .bottom, spacing: 0) { if !rail && !keyboard { TabBar() } }  // while typing, the keyboard takes the tabs' place
+                        .toolbar {
+                            ToolbarItem(placement: .topBarLeading) {
+                                Button { history = true } label: { Image(systemName: "clock.arrow.circlepath").frame(width: 44, height: 44).contentShape(Rectangle()) }
+                                    .accessibilityLabel("对话记录")
+                            }
+                            ToolbarItem(placement: .topBarTrailing) { runMenu }
                         }
                 }
+                .sheet(isPresented: $history) { PhoneTasksView(open: { history = false }).environmentObject(store) }
+                .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboard = true }
+                .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboard = false }
             default:
                 NavigationStack {
                     HubView(hub: hub)
@@ -435,17 +475,14 @@ struct PhoneRoot: View {
         guard let start = AppStore.checkStart else { return }
         for _ in 0..<40 where store.snapshot == nil { try? await Task.sleep(for: .milliseconds(250)) }
         if let section = Section.allCases.first(where: { $0.rawValue == start }), section != .assistant { store.section = section; return }
-        guard ["new", "task"].contains(start) else { return }
         if start == "new" { await store.newChat() }
-        else if let session = store.snapshot?.sessions.first { await store.selectSession(session.id) }
-        path = ["run"]
     }
 
     var runMenu: some View {
         Menu {
-            Button { Task { await store.newChat() } } label: { Label("新任务", systemImage: "square.and.pencil") }
+            Button { Task { await store.newChat() } } label: { Label("新话题", systemImage: "square.and.pencil") }
             if let id = store.selectedSession {
-                Button(role: .destructive) { path = []; Task { await store.deleteSession(id) } } label: { Label("删除任务", systemImage: "trash") }
+                Button(role: .destructive) { Task { await store.deleteSession(id) } } label: { Label("删除这段对话", systemImage: "trash") }
             }
         } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44).contentShape(Rectangle()) }
         .accessibilityLabel("更多")
@@ -506,7 +543,7 @@ struct TabRail: View {
     }
 }
 
-/// Every task: the ones waiting for a yes on top, then what is running, then the rest by date.
+/// The conversation so far, stretch by stretch: the ones waiting for a yes on top, then what is running, then the rest by date.
 struct PhoneTasksView: View {
     @EnvironmentObject var store: AppStore
     var open: () -> Void
@@ -533,10 +570,11 @@ struct PhoneTasksView: View {
                 if !active.isEmpty { group("进行中", active) }
                 ForEach(grouped(rest), id: \.0) { title, items in group(title, items) }
                 if store.snapshot == nil {
-                    LoadingState(text: "正在载入任务")
-                } else if sessions.isEmpty {
-                    EmptyState(icon: "checklist", title: query.isEmpty ? "还没有任务" : "没有匹配的任务", detail: "把想要的结果交给 Jurvis，它会列出计划、动手去做，需要你点头的时候再来问。")
+                    LoadingState(text: "正在载入对话")
+                } else if sessions.isEmpty && query.isEmpty {
+                    EmptyState(icon: "text.bubble", title: "还没有对话", detail: "把想要的结果交给 Jurvis，它会列出计划、动手去做，需要你点头的时候再来问。")
                 }
+                if !query.isEmpty { StreamHitRows(query: query, opened: open) }
             }
             .padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 12)
             .frame(maxWidth: 640).frame(maxWidth: .infinity)
@@ -569,7 +607,7 @@ struct PhoneTasksView: View {
     var searchField: some View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass").font(.system(size: 15, weight: .light)).foregroundStyle(Color.inkSoft)
-            TextField("搜索任务", text: $query).textFieldStyle(.plain).font(.jBody).focused($searchFocused).submitLabel(.search)
+            TextField("搜索说过的话", text: $query).textFieldStyle(.plain).font(.jBody).focused($searchFocused).submitLabel(.search)
             if !query.isEmpty {
                 Button { query = "" } label: { Image(systemName: "xmark.circle").foregroundStyle(Color.inkFaint).frame(width: 44, height: 44).contentShape(Rectangle()) }
                     .buttonStyle(.plain).accessibilityLabel("清除搜索")
@@ -581,7 +619,7 @@ struct PhoneTasksView: View {
     }
 
     func show(_ session: Session) {
-        Task { await store.selectSession(session.id) }
+        Task { await store.open(stretch: session.id) }
         open()
     }
 
@@ -626,15 +664,15 @@ struct PhoneTasksView: View {
             .frame(minHeight: 60).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .contextMenu { Button("删除任务", role: .destructive) { pendingDelete = session } }
+        .contextMenu { Button("删除这段对话", role: .destructive) { pendingDelete = session } }
     }
 
-    /// The way in to a new task, always under the thumb.
+    /// Back to the conversation to say something new, always under the thumb.
     var newTask: some View {
         Button { Task { await store.newChat() }; open() } label: {
             HStack(spacing: 10) {
                 Image(systemName: "square.and.pencil").font(.system(size: 16, weight: .light)).foregroundStyle(Color.inkSoft)
-                Text("交给 Jurvis 一个新任务").font(.jBody).foregroundStyle(Color.inkFaint).lineLimit(1)
+                Text("换个话题，交给 Jurvis 一件新的事").font(.jBody).foregroundStyle(Color.inkFaint).lineLimit(1)
                 Spacer(minLength: 8)
                 Image(systemName: "arrow.up").font(.system(size: 14, weight: .medium)).foregroundStyle(Color.inkReversed)
                     .frame(width: 36, height: 36).background(Color.ink, in: Circle())
@@ -643,7 +681,7 @@ struct PhoneTasksView: View {
             .surface(radius: 26, edge: .stroke)
         }
         .buttonStyle(PressStyle())
-        .accessibilityLabel("新任务")
+        .accessibilityLabel("新话题")
         .padding(.horizontal, 12).padding(.vertical, 10)
         .frame(maxWidth: 640).frame(maxWidth: .infinity)
         .background(Color.canvas)

@@ -7,7 +7,12 @@ struct MemoryView: View {
     @State private var editing: Memory?
     @State private var adding = false
     var body: some View {
-        Page(title: "记忆", subtitle: "启用的记忆会作为背景信息带入每次对话。你也可以在对话里说「请记住……」。", width: 860) {
+        Page(title: "记忆", subtitle: "启用的记忆会作为背景信息带入每次对话。它们同时以 Markdown 保存在 Mac 上，可以用 Obsidian 打开：在那里改动一行，就是改动一条记忆。", width: 860) {
+            #if os(macOS)
+            if let vault = store.snapshot?.vault {
+                Button { NSWorkspace.shared.open(URL(fileURLWithPath: vault)) } label: { Label("打开笔记文件夹", systemImage: "folder") }.buttonStyle(.jurvis(.secondary))
+            }
+            #endif
             Button { adding = true } label: { Label("添加", systemImage: "plus") }.buttonStyle(.jurvis(.primary))
         } content: {
             if store.snapshot == nil {

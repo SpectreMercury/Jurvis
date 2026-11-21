@@ -37,7 +37,8 @@ struct ChatView: View {
     @State private var pasteMonitor: Any?
     #endif
 
-    var isHome: Bool { store.visibleMessages.isEmpty && store.selectedSession == nil }
+    /// Nothing has been said yet: the conversation has not begun.
+    var isHome: Bool { store.visibleMessages.isEmpty && !store.streamEarlier && !store.loadingSession }
     /// Phone width: one column, a one-line composer, finger-sized controls.
     var narrow: Bool {
         #if os(iOS)
@@ -93,8 +94,6 @@ struct ChatView: View {
         #if os(macOS)
         .onAppear { focused = true }  // on iPhone this would pop the keyboard and swallow the next tap
         #endif
-        // A draft belongs to the conversation it was typed in.
-        .onChange(of: store.selectedSession) { _, _ in input = ""; attachments = [] }
         #if os(macOS)
         // ⌘V with an image on the clipboard attaches it; plain text still pastes into the field.
         .onAppear { pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
@@ -108,7 +107,7 @@ struct ChatView: View {
         .toolbar {
             ToolbarItem(placement: .principal) {
                 VStack(spacing: 1) {
-                    Text(store.currentSession?.title ?? "新任务").font(.jHeading).lineLimit(1)
+                    Text(store.currentSession?.title ?? "Jurvis").font(.jHeading).lineLimit(1)
                     if let status = store.runStatus { RunStatusLine(text: status) }
                 }
             }
@@ -207,10 +206,22 @@ struct ChatView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 22) {
-                        if store.loadingSession && store.messages.isEmpty { LoadingState(text: "正在打开任务") }
-                        ForEach(store.visibleMessages) { message in
-                            if message.isUser { UserMessage(message: message, open: { store.view($0) }) }
-                            else { AssistantMessage(message: message, open: { store.view($0) }) }
+                        if store.loadingSession && store.messages.isEmpty { LoadingState(text: "正在打开对话") }
+                        if store.streamEarlier {
+                            ActionButton(title: "更早的对话", busyTitle: "正在载入", kind: .ghost, scale: .small) { await store.loadEarlier() }
+                                .frame(maxWidth: .infinity)
+                        }
+                        let shown = store.visibleMessages
+                        ForEach(Array(shown.enumerated()), id: \.element.id) { index, message in
+                            // One conversation, in stretches: where a new one begins, the time says how long ago that was.
+                            if message.id != "outgoing", index == 0 || shown[index - 1].session_id != message.session_id {
+                                StretchMark(time: message.created_at)
+                            }
+                            Group {
+                                if message.isUser { UserMessage(message: message, open: { store.view($0) }) }
+                                else { AssistantMessage(message: message, open: { store.view($0) }) }
+                            }
+                            .id(message.id)
                         }
                         if store.visibleMessages.last?.id == "outgoing" {
                             HStack(spacing: 8) { SignalDot(); Text("正在发送").font(.jSmall).foregroundStyle(Color.inkSoft) }
@@ -221,15 +232,34 @@ struct ChatView: View {
                     .frame(maxWidth: Metrics.readable).frame(maxWidth: .infinity)
                 }
                 .scrollDismissesKeyboard(.interactively)
-                .onChange(of: store.messages.last?.content) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
-                .onChange(of: store.messages.last?.steps.flatMap(\.calls).count) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
-                .onChange(of: store.visibleMessages.count) { _, _ in withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("bottom", anchor: .bottom) } }
-                .onAppear { proxy.scrollTo("bottom", anchor: .bottom) }
+                .onChange(of: store.messages.last?.content) { _, _ in settle(proxy) }
+                .onChange(of: store.messages.last?.steps.flatMap(\.calls).count) { _, _ in settle(proxy) }
+                .onChange(of: store.visibleMessages.count) { _, _ in settle(proxy, animated: true) }
+                .onChange(of: store.scrollTarget) { _, target in if target != nil { settle(proxy) } }  // clearing it is not a reason to move
+                .onAppear { settle(proxy) }
             }
-            if store.currentSession?.allow_commands == 1, let id = store.selectedSession {
+            WaitingQuestions()
+                .frame(maxWidth: Metrics.readable)
+                .padding(.horizontal, narrow ? 12 : 24).padding(.top, 6)
+            if store.streamPast {
+                HStack(spacing: 6) {
+                    Image(systemName: "clock.arrow.circlepath")
+                    Text("这是较早的对话").lineLimit(1)
+                    ActionButton(title: "回到现在", busyTitle: "正在载入", kind: .ghost, scale: .small) { await store.loadNewest() }
+                }
+                .font(.jSmall).foregroundStyle(Color.inkSoft).padding(.top, 6)
+            } else if store.fresh {
+                HStack(spacing: 6) {
+                    Image(systemName: "square.and.pencil")
+                    Text("下一条消息会开始一个新话题").lineLimit(1)
+                    Button("取消") { store.fresh = false; store.projectPicked = false }.buttonStyle(.plain).foregroundStyle(Color.ink)
+                }
+                .font(.jSmall).foregroundStyle(Color.inkSoft).padding(.top, 6)
+            }
+            if store.currentSession?.allow_commands == 1, let id = store.selectedSession, !store.streamPast {
                 HStack(spacing: 6) {
                     Image(systemName: "terminal")
-                    Text("这个任务里的命令会直接运行").lineLimit(1)
+                    Text("这段对话里的命令会直接运行").lineLimit(1)
                     ActionButton(title: "改为每次确认", busyTitle: "正在修改", kind: .ghost, scale: .small) { await store.setAllowCommands(id, false) }
                 }
                 .font(.jSmall).foregroundStyle(Color.inkSoft).padding(.top, 6)
@@ -240,11 +270,26 @@ struct ChatView: View {
         }
     }
 
+    /// Keeps the newest message in view, or brings the one that was asked for to the top (an old stretch, a search result).
+    func settle(_ proxy: ScrollViewProxy, animated: Bool = false) {
+        if let target = store.scrollTarget {
+            proxy.scrollTo(target, anchor: .top)
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(400))  // the list is still laying itself out: hold the position meanwhile
+                proxy.scrollTo(target, anchor: .top)
+                if store.scrollTarget == target { store.scrollTarget = nil }
+            }
+        } else if !store.streamPast {
+            if animated { withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("bottom", anchor: .bottom) } }
+            else { proxy.scrollTo("bottom", anchor: .bottom) }
+        }
+    }
+
     #if os(macOS)
-    /// The task's name and where it stands.
+    /// What is being talked about and where it stands.
     var header: some View {
         HStack(spacing: 10) {
-            Text(store.currentSession?.title ?? "新任务").font(.jSection).lineLimit(1).truncationMode(.tail)
+            Text(store.streamPast ? "较早的对话" : store.currentSession?.title ?? "Jurvis").font(.jSection).lineLimit(1).truncationMode(.tail)
             if let status = store.runStatus { Badge(text: status, tone: .active) }
             Spacer(minLength: 8)
             if let job = store.chatJob, !store.isCancelling(job) {
@@ -394,29 +439,25 @@ struct ChatView: View {
         .fixedSize()
     }
 
-    /// Binds a new conversation to a code project; an existing one shows its project.
+    /// The code project being worked in. Picking another, or none, applies from the next message on.
     @ViewBuilder func projectChip(compact: Bool, scale: Chip.Scale = .regular) -> some View {
-        if store.selectedSession != nil {
-            if let project = store.activeProject { Chip(title: project.name, icon: "chevron.left.forwardslash.chevron.right", on: true, compact: compact, scale: scale) {} .disabled(true) }
-        } else {
-            Menu {
-                ForEach(store.codeProjects) { project in
-                    Button { store.codeProjectID = project.id } label: {
-                        if project.id == store.codeProjectID { Label(project.name, systemImage: "checkmark") } else { Text(project.name) }
-                    }
+        Menu {
+            ForEach(store.codeProjects) { project in
+                Button { store.codeProjectID = project.id; store.projectPicked = true } label: {
+                    if project.id == store.activeProject?.id { Label(project.name, systemImage: "checkmark") } else { Text(project.name) }
                 }
-                if store.codeProjectID != nil { Button("不关联项目") { store.codeProjectID = nil } }
-                #if os(macOS)
-                Divider()
-                Button { connecting = true } label: { Label("连接项目文件夹…", systemImage: "folder.badge.plus") }
-                #endif
-            } label: {
-                Chip(title: linkingProject ? "正在连接" : store.activeProject?.name ?? "代码", icon: "chevron.left.forwardslash.chevron.right", on: store.activeProject != nil, compact: compact && store.activeProject == nil && !linkingProject, busy: linkingProject, scale: scale) {}
-                    .allowsHitTesting(false)
             }
-            .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
-            .help("让这个任务关联一个代码项目")
+            if store.activeProject != nil { Button("不关联项目") { store.codeProjectID = nil; store.projectPicked = true } }
+            #if os(macOS)
+            Divider()
+            Button { connecting = true } label: { Label("连接项目文件夹…", systemImage: "folder.badge.plus") }
+            #endif
+        } label: {
+            Chip(title: linkingProject ? "正在连接" : store.activeProject?.name ?? "代码", icon: "chevron.left.forwardslash.chevron.right", on: store.activeProject != nil, compact: compact && store.activeProject == nil && !linkingProject, busy: linkingProject, scale: scale) {}
+                .allowsHitTesting(false)
         }
+        .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+        .help("接下来在一个代码项目里工作")
     }
 
     /// Dictation into the field, and the hands-free conversation. Each shows only when the Mac has the model it needs.
@@ -582,8 +623,12 @@ struct AssistantMessage: View {
                 if !message.content.isEmpty { MarkdownText(text: message.content) }
             } else {
                 ForEach(Array(steps.enumerated()), id: \.offset) { _, step in
-                    // What the assistant says is a message of its own, one per step; tool traces sit between them.
-                    if !step.text.isEmpty { said(step.text) }
+                    // What the assistant says comes as a few short messages, the way a person writes; tool traces sit between them.
+                    if !step.text.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(Array(Bubbles.split(step.text).enumerated()), id: \.offset) { _, part in said(part) }
+                        }
+                    }
                     // The question a reply ends on is shown as its options, not as a tool call.
                     let calls = step.calls.filter { $0.name != "ask_user" }
                     if !calls.isEmpty { ToolTrace(messageID: message.id, calls: calls, open: open) }
@@ -605,10 +650,11 @@ struct AssistantMessage: View {
             .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(Color.hairline))
     }
 
-    /// What the user answered, when this reply ended on a question: the message that follows it.
+    /// What the user answered, when this reply ended on a question: the message picked for it later, or the one that follows it.
     var answer: String? {
+        if let picked = store.messages.first(where: { $0.isUser && $0.metadata["answer"]["message_id"].string == message.id }) { return picked.content }
         guard let index = store.messages.firstIndex(where: { $0.id == message.id }), index + 1 < store.messages.count,
-              store.messages[index + 1].isUser else { return nil }
+              store.messages[index + 1].isUser, store.messages[index + 1].session_id == message.session_id else { return nil }
         return store.messages[index + 1].content
     }
 
@@ -792,7 +838,7 @@ struct CardView: View {
         .accessibilityElement(children: .combine)
         if kind == "session", !card["session_id"].string.isEmpty {
             // A conversation the assistant opened for what the user is going through: a tap goes there.
-            Button { Task { await store.selectSession(card["session_id"].string) } } label: { content.contentShape(Rectangle()) }.buttonStyle(.plain).accessibilityHint("打开这个对话")
+            Button { Task { await store.open(stretch: card["session_id"].string) } } label: { content.contentShape(Rectangle()) }.buttonStyle(.plain).accessibilityHint("转到这段对话")
         } else if let place = Self.places[kind] {
             Button { store.section = place } label: { content.contentShape(Rectangle()) }.buttonStyle(.plain).accessibilityHint("打开" + place.rawValue)
         } else {
@@ -1356,6 +1402,125 @@ extension NSItemProvider {
             _ = loadDataRepresentation(for: .image) { data, error in
                 if let data { done.resume(returning: data) } else { done.resume(throwing: error ?? CocoaError(.fileReadUnknown)) }
             }
+        }
+    }
+}
+
+/// Where a stretch of the conversation begins: the time, in the middle, like a pause between two talks.
+struct StretchMark: View {
+    var time: Double
+    var body: some View {
+        Text(Self.label(time)).font(.jSmall).foregroundStyle(Color.inkFaint)
+            .frame(maxWidth: .infinity).padding(.top, 6)
+            .accessibilityLabel("对话时间 " + Self.label(time))
+    }
+    private static let clock: DateFormatter = { let f = DateFormatter(); f.dateFormat = "HH:mm"; return f }()
+    static func label(_ time: Double) -> String {
+        let date = Date(timeIntervalSince1970: time), calendar = Calendar.current
+        let clock = Self.clock.string(from: date)
+        if calendar.isDateInToday(date) { return clock }
+        if calendar.isDateInYesterday(date) { return "昨天 " + clock }
+        let sameYear = calendar.component(.year, from: date) == calendar.component(.year, from: Date())
+        return (sameYear ? "" : "\(calendar.component(.year, from: date))年") + "\(calendar.component(.month, from: date))月\(calendar.component(.day, from: date))日 " + clock
+    }
+}
+
+/// A reply's text as the few messages it would be in a chat: split between plain paragraphs. Lists, tables and quotes stay with
+/// the paragraph that leads into them; long or structured writing (code, a document) stays whole.
+enum Bubbles {
+    static func plain(_ part: String) -> Bool {
+        !part.split(separator: "\n", omittingEmptySubsequences: false).contains { line in
+            let text = line.drop { $0 == " " || $0 == "\t" }
+            if line.hasPrefix("    ") && !text.isEmpty { return true }
+            if let first = text.first, "#>|".contains(first) { return true }
+            if let first = text.first, "-*+•".contains(first), text.dropFirst().first == " " { return true }
+            let digits = text.prefix { $0.isNumber }
+            if !digits.isEmpty, let mark = text.dropFirst(digits.count).first, ".)、".contains(mark) { return true }
+            return false
+        }
+    }
+    static func split(_ text: String) -> [String] {
+        guard text.count <= 1500, !text.contains("```"), !text.contains("~~~") else { return [text] }
+        var parts: [String] = [], current: [Substring] = []
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            if line.allSatisfy(\.isWhitespace) {
+                if !current.isEmpty { parts.append(current.joined(separator: "\n")); current = [] }
+            } else { current.append(line) }
+        }
+        if !current.isEmpty { parts.append(current.joined(separator: "\n")) }
+        var out: [String] = [], before = true
+        for part in parts {
+            let now = plain(part)
+            if !out.isEmpty && !(now && before) { out[out.count - 1] += "\n\n" + part } else { out.append(part) }
+            before = now
+        }
+        while out.count > 4 { let tail = out.removeLast(); out[out.count - 1] += "\n\n" + tail }
+        return out.isEmpty ? [text] : out
+    }
+}
+
+/// What Jurvis asked and the user has not decided yet, one question at a time, above the composer wherever they are in the conversation.
+struct WaitingQuestions: View {
+    @EnvironmentObject var store: AppStore
+    @State private var index = 0
+    @State private var sending: String?
+    #if os(macOS)
+    private let tap: CGFloat = 32
+    #else
+    private let tap: CGFloat = 44
+    #endif
+
+    var body: some View {
+        let items = store.waitingQuestions
+        if !items.isEmpty {
+            let at = min(index, items.count - 1)
+            let asked = items[at]
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 10) {
+                    Text(items.count > 1 ? "等你决定 · \(at + 1)/\(items.count)" : "等你决定").font(.jSmall).foregroundStyle(Color.signal)
+                    Spacer(minLength: 8)
+                    if items.count > 1 {
+                        Button("下一个") { index = (at + 1) % items.count }.buttonStyle(.plain).font(.jSmall).foregroundStyle(Color.inkSoft)
+                    }
+                    Button { Task { await store.dropQuestion(asked.id) } } label: {
+                        Image(systemName: "xmark").font(.system(size: 11, weight: .medium)).foregroundStyle(Color.inkSoft)
+                            .frame(width: tap, height: 28).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain).help("不用决定了").accessibilityLabel("不用决定了")
+                }
+                Button { Task { await store.open(message: asked.message_id) } } label: {
+                    Text(asked.question).font(.jBody).foregroundStyle(Color.ink).multilineTextAlignment(.leading).frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).accessibilityHint("转到当时说到的地方")
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(asked.options, id: \.self) { option in
+                            Button {
+                                guard sending == nil else { return }
+                                sending = option
+                                Task {
+                                    do { try await store.send(option, assets: [], answerTo: asked.id) } catch { store.report(error) }
+                                    sending = nil
+                                }
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Text(option).font(.jCallout).lineLimit(1)
+                                    if sending == option { ProgressView().controlSize(.small) }
+                                }
+                                .foregroundStyle(Color.ink).padding(.horizontal, 12).frame(minHeight: tap)
+                                .overlay(Capsule().strokeBorder(Color.stroke, style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+                                .contentShape(Capsule())
+                            }
+                            .buttonStyle(.plain).disabled(sending != nil || store.chatBusy)
+                        }
+                    }
+                    .padding(.vertical, 1)
+                }
+            }
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            .background(Color.card, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Color.hairline))
         }
     }
 }

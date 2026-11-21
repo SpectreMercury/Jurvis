@@ -20,6 +20,8 @@ from .agenda import make_rule
 from .runtime import strip_markup
 from .shell import excerpt
 from .store import dumps, new_id
+from .stream import Stream
+from .asks import Asks
 from .llm import LOCAL
 from .tools import Outcome
 
@@ -45,7 +47,7 @@ SYSTEM = """You are Jurvis, the user's personal assistant running locally on the
 
 How to work:
 - Use tools whenever they make the answer more accurate or actually do what the user asked; answer directly when no tool is needed.
-- You may call several tools in one turn and keep going until the request is done. Before calling tools you may write one short sentence about what you are doing.
+- You may call several tools in one turn and keep going until the request is done. When the work will take more than a moment (a search, several tool calls, reading files), first write one short sentence about what you are about to do.
 - Never claim something happened without a tool result. If a tool fails, say what failed and suggest a next step.
 - You can only act through the tools you are given. With run_command you can run shell commands on this Mac; the user approves each one before it runs. When the user asks you to install something (packages, plugins, models), run a script, or check or change something on the Mac, do it with run_command instead of telling them what to type. Run one step at a time, read the output, and check the result (for example the installed version) before saying it worked.
 {web}
@@ -84,6 +86,17 @@ NOTE_MEMORIES = ("What you remember about the user from earlier conversations (d
 UNKNOWN = ("Personal facts about me that are neither here nor in our conversation (birthday, age, address, family, job) are unknown to you: "
            "when I ask for one, say you do not know it and ask me; never make one up.\n")
 NOTE_EXCERPTS = "Passages from earlier in this conversation that this message may refer to, verbatim:\n{excerpts}\n"
+# We have one long conversation; only its current stretch is replayed. The rest comes back through these notes.
+PORTRAIT = ("\nWhat you know about me in general (data, kept in {path}, which I can read and correct). Have it in mind and use it silently; "
+            "never recite it or say where it comes from:\n{portrait}\n")
+NOTE_RECENT = ("What we talked about just before this, for continuity (data). Use it when this message continues or refers to it; "
+               "never bring it up on your own:\n{recent}\n")
+NOTE_RELATED = ("Earlier conversations of ours that this message may be about, with when they were (data). Use them the same way; "
+                "if I ask about something from back then that is not here, say you do not have the details instead of guessing:\n{related}\n")
+NOTE_PAST = "Passages from those earlier conversations, verbatim:\n{excerpts}\n"
+NOTE_ANSWER = "This message is my answer to a question you asked me earlier: {question}\n"
+NOTE_WAITING = ("Questions you asked me earlier that I have not answered; they are still shown to me with their options (data). Do not ask them again. "
+                "If this message answers one, take it as the answer. When what we are doing here comes to a natural stop, you may remind me of one, in a clause:\n{questions}\n")
 KEEP_AFTER_FOLD = 16         # messages left verbatim after older ones are folded into the summary
 WRITER = """You are writing one section of a longer piece for the user. Write only this section, complete and ready to publish, starting with its heading line.
 No preamble, no notes to the user, no summary of earlier sections, no "to be continued". Keep names, facts, tone and format consistent with the brief and with what came before, and move the piece forward: new scenes, new events, new dialogue.
@@ -166,7 +179,11 @@ SPOKEN = ("- The user is talking to you by voice and your reply will be read alo
           "is longer than that, say the gist and offer to go on, or put the details into a file with save_file and say that you did. "
           "What the user said was transcribed from speech, so a word may be misheard; go with the likely meaning, and ask only if it changes what you would do.\n")
 ASSIST = """- You are the user's assistant, not a search box. Give something useful first, then ask: when a request is broad or misses a detail, answer with what you already know or found, state the assumption you made, and only then ask for what would make it better. A reply that is only a question is for requests you truly cannot start on.
-- When your reply ends on a choice that is the user's to make (which direction, how often, which of a few things to do first), call ask_user with the question and 2 to 4 short options instead of listing the options in prose. The call comes after everything else and ends your turn. Do not call it after an answer that leaves nothing to decide, and never more than once in a reply.
+- Match the pace to what was asked. A plain question gets its answer and nothing more. Something open (exploring a subject, planning, choosing a direction) goes one step at a time: give what there is to give for this step, then stop on the choice of where to go next, and leave the later steps for when they are chosen. Something the user asked you to carry out, you carry out: settle what you must know at the start, then finish it, and stop only where the ways really part.
+- Ask only when all three hold: you are unsure, getting it wrong would cost the user something (their time, money, something sent or changed, a long piece redone), and neither this conversation nor what you know about them settles it. Otherwise decide, say in a few words what you assumed, and go on. Whatever does not depend on the answer you do first, in the same reply.
+- When your reply ends on a choice that is the user's to make (which direction, how often, which of a few things to do first), call ask_user with the question and 2 to 4 short options instead of listing the options in prose. Put the option you would pick first and give your reason for it in a clause of your text. When it is something they may not want to take further now, make the last option a way out in their voice, such as 先不做，帮我留意着. The call comes after everything else and ends your turn. Do not call it after an answer that leaves nothing to decide, and never more than once in a reply.
+- When the user takes the way out on something that goes on over time, keep it for them (track_goal when you have it), say so in a clause, and do not ask again.
+- When the user asks about something else in the middle of this, answer that briefly, then say in one line where you two were, without repeating what was already said.
 - When the user tells you about something they follow or do over time, treat it as something to help with from now on, not as a single question: note it, give the current picture in brief, and offer the next step.
 - Write the way a person messages: the conclusion first, short paragraphs, concrete figures with their date and source. Save long structured writing for when the user asks for a document.
 """
@@ -300,6 +317,8 @@ class Agent:
     def __init__(self, settings, store, runtime, tools, media, shell, llm=None, memory=None, skills=None):
         self.settings, self.store, self.runtime, self.tools, self.media, self.shell = settings, store, runtime, tools, media, shell
         self.llm, self.memory, self.skills = llm, memory, skills
+        self.stream = Stream(store)
+        self.asks = Asks(store)
         self.model = None
 
     async def run(self, job):
@@ -319,6 +338,8 @@ class Agent:
 
     # ---- context ----
     async def context(self, p, job=None):
+        if p.get("stream") and self.memory and not p.get("task") and not p.get("checkin"):
+            await self.reroute(p)
         session = self.store.one("SELECT * FROM sessions WHERE id=?", (p["session_id"],)) or {}
         self.model = self.llm.chat_model(session.get("model")) if self.llm else None
         scale = CLOUD_SCALE if self.cloud else 1
@@ -366,8 +387,13 @@ class Agent:
         if self.memory:
             memories = await self.memory.for_turn(session, self.request, messages)
             memories = [{"title": m["title"], "content": m["content"]} for m in memories]
-            excerpts = self.memory.excerpts(p["session_id"], self.folded(session), self.request)
+            # The rest of our one conversation: the stretches just before this one, and older ones this message seems to be about.
+            around = ({"recent": [], "related": []} if self.task or self.checkin
+                      else await self.memory.background(session, self.request, wide=self.cloud))
+            others = [] if self.incognito else [item["id"] for item in around["related"] + around["recent"]]
+            excerpts = self.memory.excerpts(p["session_id"], self.folded(session), self.request, others=others)
         else:
+            around = {"recent": [], "related": []}
             memories = self.store.all("SELECT title,content FROM memories WHERE enabled=1 ORDER BY updated_at DESC LIMIT 10")
             memories = [{"title": m["title"], "content": m["content"][:1200]} for m in memories]
             excerpts = []
@@ -376,8 +402,24 @@ class Agent:
         if memories:
             note += NOTE_MEMORIES.format(memories=dumps(memories))
         note += UNKNOWN
-        if excerpts:
-            note += NOTE_EXCERPTS.format(excerpts="\n---\n".join(f"User: {e['user']}\nAssistant: {e['assistant']}" for e in excerpts))
+        answer = latest["metadata"].get("answer") if latest and not self.task and not self.checkin else None
+        if answer:
+            before = self.store.one("SELECT id FROM messages WHERE session_id=? AND role='assistant' AND status='complete' AND id!=? ORDER BY created_at DESC LIMIT 1",
+                                    (p["session_id"], p["message_id"]))
+            if not before or before["id"] != answer.get("message_id"):  # other things were said since: say which question this answers
+                note += NOTE_ANSWER.format(question=answer.get("question", ""))
+        waiting = [] if self.incognito or self.task or self.checkin else self.asks.elsewhere(p["session_id"])
+        if waiting:
+            note += NOTE_WAITING.format(questions=dumps(waiting))
+        if around["recent"]:
+            note += NOTE_RECENT.format(recent=dumps([{k: item[k] for k in ("when", "title", "text")} for item in around["recent"]]))
+        if around["related"]:
+            note += NOTE_RELATED.format(related=dumps([{k: item[k] for k in ("when", "title", "text")} for item in around["related"]]))
+        here, past = [e for e in excerpts if "when" not in e], [e for e in excerpts if "when" in e]
+        if past:
+            note += NOTE_PAST.format(excerpts="\n---\n".join(f"[{e['when']}]\nUser: {e['user']}\nAssistant: {e['assistant']}" for e in past[:3 if self.cloud else 1]))
+        if here:
+            note += NOTE_EXCERPTS.format(excerpts="\n---\n".join(f"User: {e['user']}\nAssistant: {e['assistant']}" for e in here))
         note += "</jurvis_context>"
         if self.task or self.checkin or not messages or messages[-1]["role"] != "user":
             messages.append({"role": "user", "content": self.request})
@@ -405,6 +447,9 @@ class Agent:
             system += HOME
         if "load_skill" in names:
             system += self.skills.prompt()
+        portrait = self.memory.portrait() if self.memory and not self.incognito and self.memory.prefs()["enabled"] else ""
+        if portrait:
+            system += PORTRAIT.format(path=self.memory.portrait_file, portrait=portrait)
         if session.get("summary"):
             system += SUMMARY.format(summary=session["summary"])
         if self.mode in MODES:
@@ -444,6 +489,24 @@ class Agent:
         if getattr(self, "spoken", False):
             system += SPOKEN
         return [{"role": "system", "content": system + coding}, *messages]
+
+    async def reroute(self, p):
+        """A message that changes the subject begins a new stretch of the conversation, so the old subject stops riding along in the context."""
+        session = self.store.one("SELECT persona,code_project_id FROM sessions WHERE id=?", (p["session_id"],)) or {}
+        if session.get("persona") or session.get("code_project_id"):
+            return  # a quiet conversation and work in a code project end when the user leaves them, not on a change of wording
+        asked = self.store.one("SELECT content,metadata FROM messages WHERE session_id=? AND role='user' ORDER BY created_at DESC LIMIT 1", (p["session_id"],))
+        if not asked or asked["metadata"].get("mode") or asked["metadata"].get("answer"):
+            return  # an answer to a question was put where the question is
+        back = self.memory.returning(p["session_id"], asked["content"])
+        if back:
+            self.stream.move(p, back)  # they stepped aside for a moment and are back on what they were doing
+            return
+        where = await self.memory.shifted(p["session_id"], asked["content"])
+        if where is True:
+            self.stream.split(p)
+        elif where:
+            self.stream.move(p, where)  # back on something from earlier today
 
     @staticmethod
     def folded(session):
@@ -793,7 +856,10 @@ class Agent:
                     elif call["name"] == "ask_user":
                         # said is False when this reply did work with tools but has not told the user anything yet
                         worked = any(c["status"] == "ok" and c["name"] != "ask_user" for s in steps for c in s["calls"])
-                        outcome, ended = self.ask_user(arguments, goal, step, meta, said=False if worked and not any(s["text"] for s in steps) else None)
+                        told = sum(len(s["text"].strip()) for s in steps if s is not step) + len(step["text"].strip())
+                        quiet = not worked and told <= len(str(arguments.get("question") or "") if isinstance(arguments, dict) else "") + 4
+                        outcome, ended = self.ask_user(arguments, goal, step, meta, said=False if worked and not any(s["text"] for s in steps) else None,
+                                                       again=quiet and self.only_asked(p))
                     elif tool and tool.effect == "command":
                         outcome = await self.command(job, p, entry, arguments, save)
                         handback = handback or bool(outcome.result.get("declined"))
@@ -906,13 +972,14 @@ class Agent:
         self.store.execute("INSERT INTO sessions(id,title,created_at,updated_at,model,incognito,persona,brief,parent_id) VALUES(?,?,?,?,?,?,?,?,?)",
                            (ident, args.title.strip(), now, now, parent.get("model"), int(parent.get("incognito") or 0), args.kind, args.brief.strip(), p["session_id"]))
         self.store.add_message(ident, "assistant", args.opening.strip(), "complete", {"opened_from": p["session_id"]})
+        self.stream.focus(ident)  # what the user says next belongs there
         self.store.event("sessions", ident)
         meta["switch_session"] = ident
-        card = {"kind": "session", "title": args.title.strip(), "subtitle": "新对话 · 陪你聊聊", "session_id": ident, "icon": "leaf",
+        card = {"kind": "session", "title": args.title.strip(), "subtitle": "陪你聊聊", "session_id": ident, "icon": "leaf",
                 "note": args.opening.strip()[:120]}
         return Outcome(True, {"session_id": ident, "opened": True, "card": card,
-                              "note": "Opened, and the app is moving me there now; your opening message is waiting for me. Reply here with one short sentence "
-                                      "that you opened a quiet conversation for this and we will continue there. Nothing else."}, f"已开新对话 · {args.title.strip()}"[:60])
+                              "note": "Opened: your opening message follows right after this reply, in the same conversation, and from my next message on "
+                                      "you are in that quiet mode. Reply here with one short, warm sentence that leads into it. Nothing else."}, f"已开新对话 · {args.title.strip()}"[:60])
 
     @staticmethod
     def made(name, arguments, outcome):
@@ -940,6 +1007,8 @@ class Agent:
             args = tool.args.model_validate(arguments if isinstance(arguments, dict) else {})
             if tool.name == "track_goal":
                 goal = agenda.track(p["session_id"], args.title, args.detail)
+                if self.memory and not self.incognito:
+                    self.memory.space(goal)  # the goal has a page of its own: what is learned about it gathers there
                 note = ("This goal was already tracked; its detail is updated." if goal["existing"] else "Saved. The user sees it under Goals.")
                 return Outcome(True, {"goal_id": goal["id"], "title": goal["title"], "note": note,
                                       "card": {"kind": "goal", "title": goal["title"], "subtitle": "长期目标"}}, ("已有 · " if goal["existing"] else "已保存 · ") + goal["title"][:40])
@@ -953,9 +1022,17 @@ class Agent:
                               "note": "Scheduled. Each run posts its result in this conversation. Tell me when the first run is.",
                               "card": {"kind": "schedule", "title": made["title"], "subtitle": "定时任务 · " + made["when"]}}, f"{made['when']} · 首次 {made['next']}"[:80])
 
-    def ask_user(self, arguments, goal, step, meta, said=None):
+    def only_asked(self, p):
+        """True when the reply before this one, in this stretch, was a question and nothing else."""
+        last = self.store.one("SELECT content,metadata FROM messages WHERE session_id=? AND role='assistant' AND status='complete' AND id!=? ORDER BY created_at DESC LIMIT 1",
+                              (p["session_id"], p["message_id"]))
+        ask = last and last["metadata"].get("ask")
+        return bool(ask) and len(last["content"].strip()) <= len(str(ask.get("question") or "")) + 4
+
+    def ask_user(self, arguments, goal, step, meta, said=None, again=False):
         """Returns (outcome, ended). The question closes the reply and its options are kept for the UI to show as buttons;
-        the turn ends here, so asking costs no further model call and the model cannot talk past its own question."""
+        the turn ends here, so asking costs no further model call and the model cannot talk past its own question.
+        again: the last reply was only a question too, and this one has given nothing yet."""
         if goal:
             return Outcome(False, {"error": "In goal mode ask me through finish_goal with status blocked."}, "目标模式下不可用"), None
         try:
@@ -972,6 +1049,19 @@ class Agent:
         if len(options) < 2:
             return Outcome(False, {"error": "Give 2 to 4 options, one per line. For a question with an open answer, just ask it in your reply."}, "选项不足"), None
         question = args.question.strip()
+        habit = None if getattr(self, "incognito", False) or getattr(self, "settled", False) else self.asks.habit(question, options)
+        if habit:
+            # Asked before, answered the same way each time: it goes with that instead of asking, and says so.
+            self.settled = True
+            return Outcome(False, {"error": f"Not shown: I have answered this kind of question {habit[1]} times before, each time with “{habit[0]}”. "
+                                            "Take that as my choice now, say in one clause that you went with it as before, and carry on with the work in this reply. "
+                                            "Ask only if something here makes this time different."}, "按以往的选择"), None
+        if again and not getattr(self, "pressed", False):
+            # Two questions in a row with nothing in between is an interview, not help: one push to do the work first.
+            self.pressed = True
+            return Outcome(False, {"error": "Not shown: your last reply was only a question, and I answered it. Do not ask again with nothing to show for it. "
+                                            "Do the work now with what I have told you, say in a clause what you assumed, and give me the result in this reply. "
+                                            "You may call ask_user after that, if a real choice is left."}, "先做再问"), None
         if said is False and not getattr(self, "pressed", False):
             # It did things for the user and then only asks: one push to say what it did and what it knows before the question.
             self.pressed = True

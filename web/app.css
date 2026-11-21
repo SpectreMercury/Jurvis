@@ -824,3 +824,34 @@ button.info-card:focus-visible { outline: 2px solid var(--ink); outline-offset: 
 .cycle-day.today { outline: 2px solid var(--ink); outline-offset: 1px; }
 .made-card.companion { border-color: var(--green); }
 .info-card.health .info-value, .info-card.cycle .info-value { font-size: 28px; line-height: 36px; }
+
+/* The one conversation: where a stretch of it begins, and the line above the composer about what is open. */
+.stretch-mark { align-self: center; font-size: 12px; line-height: 16px; color: var(--ink-faint); padding-top: 4px; }
+.msgs > .earlier { align-self: center; }
+.msgs > .earlier[hidden] { display: none; }
+.stream-note { display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 13px; line-height: 18px; color: var(--ink-soft); padding-bottom: 8px; }
+.stream-note[hidden] { display: none; }
+.stream-note .link { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; background: none; border: 0; padding: 0; font: inherit; cursor: pointer; }
+.side-stream { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.side-search { height: 34px; padding: 0 10px; border: 1px solid var(--line, rgba(127,127,127,.25)); border-radius: 8px; background: transparent; color: inherit; font: inherit; font-size: 14px; outline-offset: 2px; }
+.session-list[hidden] { display: none; }
+/* A search result is two lines everywhere: what was said, then when and in which stretch. */
+.session-open.hit { height: auto; min-height: 44px; padding-top: 6px; padding-bottom: 6px; }
+.session-open.hit .session-sub { display: block; font-size: 12px; }
+/* Several short messages in one reply sit closer to each other than to what comes next. */
+.said-group { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; min-width: 0; }
+.said-group[hidden] { display: none; }
+/* What is waiting for the user to decide: one question at a time, above the composer. */
+.tray { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px 12px; margin-bottom: 8px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
+.tray[hidden] { display: none; }
+.tray-head { display: flex; align-items: center; gap: 10px; font-size: 12px; line-height: 16px; color: var(--ink-faint); }
+.tray-head .tray-label { flex: 1; }
+.tray-head .link { color: var(--ink-soft); background: none; border: 0; padding: 0; font: inherit; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.tray-question { text-align: left; background: none; border: 0; padding: 0; font: inherit; color: var(--ink); cursor: pointer; white-space: normal; overflow-wrap: anywhere; width: 100%; }
+.tray-options { display: flex; flex-wrap: wrap; gap: 8px; }
+.tray-options .option { min-height: 36px; padding: 6px 12px; }
+@media (pointer: coarse) { .tray-options .option { min-height: 44px; } }
+/* A goal's space: its notes, its rhythm, and where it was talked about. */
+.space { display: flex; flex-direction: column; gap: 4px; }
+.space-facts { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
+.space-file { padding-top: 16px; overflow-wrap: anywhere; }

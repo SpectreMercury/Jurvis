@@ -4,7 +4,13 @@ import UniformTypeIdentifiers
 // 目标 and 账本: what Jurvis keeps doing for the user over time, and what the user spent.
 // Both are set up in conversation; these pages list them and let the user remove or correct entries.
 
-struct Goal: Codable, Identifiable, Equatable { var id: String; var title: String; var detail: String; var created_at: Double }
+struct Goal: Codable, Identifiable, Equatable { var id: String; var title: String; var detail: String; var created_at: Double; var page: String? }
+/// A goal opened as its space: what Jurvis knows about it, how often it looks at it, and where it was talked about.
+struct Space: Codable {
+    struct Fact: Codable, Identifiable { var id: String; var content: String }
+    struct Stretch: Codable, Identifiable { var id: String; var title: String; var updated_at: Double; var text: String }
+    var goal: Goal; var file: String?; var facts: [Fact]; var schedules: [Schedule]; var stretches: [Stretch]
+}
 struct Schedule: Codable, Identifiable, Equatable {
     var id: String; var title: String; var brief: String; var when: String; var next_run: Double; var last_run: Double?
 }
@@ -38,6 +44,7 @@ func yuan(_ cents: Int) -> String {
 struct GoalsView: View {
     @EnvironmentObject var store: AppStore
     @State private var agenda: Agenda?
+    @State private var opened: Goal?
 
     var body: some View {
         Page(title: "目标", subtitle: "告诉 Jurvis 你想长期跟踪的事，或者让它按周、按月帮你做一件事，它们会出现在这里。", width: 860) { EmptyView() } content: {
@@ -51,6 +58,7 @@ struct GoalsView: View {
                         HStack {
                             Text("记于 " + goal.created_at.dayAndTime).font(.jSmall).foregroundStyle(Color.inkFaint)
                             Spacer()
+                            Button { opened = goal } label: { Label("打开", systemImage: "rectangle.portrait.on.rectangle.portrait") }.buttonStyle(.jurvis(.secondary, .small))
                             ActionButton(title: "删除", busyTitle: "正在删除", icon: "trash", kind: .danger, scale: .small) {
                                 let _: JSONValue = try await store.requireAPI().request("/api/goals/\(goal.id)", method: "DELETE")
                                 await load()
@@ -82,6 +90,7 @@ struct GoalsView: View {
             }
         }
         .task { while !Task.isCancelled { await load(); try? await Task.sleep(for: .seconds(5)) } }
+        .sheet(item: $opened) { SpaceView(goal: $0).environmentObject(store) }
     }
 
     func load() async {
@@ -234,5 +243,72 @@ struct LedgerRow: View {
             let _: JSONValue = try await store.requireAPI().request("/api/ledger/transactions/\(entry.id)", method: "DELETE")
             await changed()
         } catch { store.report(error) }
+    }
+}
+
+/// A long-term goal as one place: its notes, its rhythm, and the conversations about it.
+struct SpaceView: View {
+    @EnvironmentObject var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    var goal: Goal
+    @State private var space: Space?
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(goal.title).font(.jSection).lineLimit(3)
+                    Spacer(minLength: 12)
+                    Button("完成") { dismiss() }.buttonStyle(.jurvis(.secondary, .small)).keyboardShortcut(.cancelAction)
+                }
+                if let space {
+                    Eyebrow(text: "知道的")
+                    if space.facts.isEmpty { Text("还没有记下什么。聊到这件事时，Jurvis 会把了解到的放在这里。").font(.jCallout).foregroundStyle(Color.inkSoft) }
+                    ForEach(space.facts) { fact in
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text("•").foregroundStyle(Color.inkFaint)
+                            Text(fact.content).font(.jBody).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    Eyebrow(text: "节奏").padding(.top, 6)
+                    if space.schedules.isEmpty { Text("没有定时。可以在对话里说「每周给我一份简报」。").font(.jCallout).foregroundStyle(Color.inkSoft) }
+                    ForEach(space.schedules) { item in
+                        HStack(spacing: 8) {
+                            Image(systemName: "calendar.badge.clock").foregroundStyle(Color.inkSoft)
+                            Text(item.title).font(.jBody).lineLimit(1)
+                            Badge(text: item.when, tone: .neutral)
+                            Spacer(minLength: 8)
+                            Text("下次 " + item.next_run.dayAndTime).font(.jSmall).foregroundStyle(Color.inkFaint)
+                        }
+                    }
+                    Eyebrow(text: "聊到过").padding(.top, 6)
+                    if space.stretches.isEmpty { Text("还没有相关的对话。").font(.jCallout).foregroundStyle(Color.inkSoft) }
+                    ForEach(space.stretches) { stretch in
+                        Button { dismiss(); Task { await store.open(stretch: stretch.id) } } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(stretch.title).font(.jBody).foregroundStyle(Color.ink).lineLimit(1)
+                                Text(StretchMark.label(stretch.updated_at) + (stretch.text.isEmpty ? "" : " · " + stretch.text)).font(.jSmall).foregroundStyle(Color.inkFaint).lineLimit(2)
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    #if os(macOS)
+                    if let file = space.file {
+                        Button { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: file)]) } label: { Label("在访达中显示笔记文件", systemImage: "folder") }
+                            .buttonStyle(.jurvis(.secondary, .small)).padding(.top, 8)
+                    }
+                    #endif
+                } else {
+                    LoadingState(text: "正在打开")
+                }
+            }
+            .padding(24).frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .background(Color.canvas)
+        #if os(macOS)
+        .frame(minWidth: 520, idealWidth: 620, minHeight: 420, idealHeight: 620)
+        #endif
+        .task { space = try? await store.requireAPI().request("/api/spaces/\(goal.id)") }
     }
 }

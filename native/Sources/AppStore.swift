@@ -8,11 +8,22 @@ import ImageIO
     @Published var snapshot: Snapshot?
     @Published var messages: [Message] = []
     @Published var section: Section? = .assistant
+    /// The stretch of the one conversation the user is in; nil once it has gone quiet and the next message begins a new one.
     @Published var selectedSession: String?
-    private var followed = Set<String>()  // replies whose opened conversation the user was already taken to
+    /// The stream is loaded from this time on; scrolling back moves it earlier.
+    private var streamFrom: Double?
+    /// There is more of the conversation before what is loaded.
+    @Published var streamEarlier = false
+    /// What is loaded stops short of the present: an old part of the conversation is open.
+    @Published var streamPast = false
+    /// A message to bring into view once, instead of the newest one.
+    @Published var scrollTarget: String?
+    /// The next message begins a new subject, whatever was being talked about.
+    @Published var fresh = false
     @Published var selectedProject: String?
-    /// Code project the next new conversation is bound to (picked in the composer).
+    /// Code project picked in the composer for what is said next; `projectPicked` tells a pick of "none" from no pick at all.
     @Published var codeProjectID: String?
+    @Published var projectPicked = false
     @Published var codeProjects: [CodeProject] = []
     @Published var error: String?
     @Published var connected = false
@@ -144,18 +155,56 @@ import ImageIO
         try? Keychain.save(updated)
         #endif
     }
+    /// How many messages are kept loaded while following the conversation; past that the view starts over from the newest.
+    private static let streamLimit = 400
+    private static func stamp(_ time: Double) -> String { String(format: "%.6f", time) }
+
+    /// Brings the loaded part of the conversation up to date. While an old part is open it is left as it is.
     func refreshMessages() async {
-        guard let api, let id = selectedSession else { return }
-        if let list: [Message] = try? await api.request("/api/sessions/\(id)/messages"), selectedSession == id {
-            if list != messages { messages = list }
-            // A reply that opened a conversation of its own (a quiet one for what the user is going through) takes the user there, once, as it happens.
-            if let opened = list.last(where: { !$0.metadata["switch_session"].string.isEmpty && $0.status == "complete" }), !followed.contains(opened.id) {
-                followed.insert(opened.id)
-                if Date().timeIntervalSince1970 - opened.created_at < 300 { await refresh(); await selectSession(opened.metadata["switch_session"].string); return }
-            }
-            // Pick up job/state changes (new images, finished jobs) when the reply completes.
-            if !list.contains(where: \.isLive) && chatStreaming { if let state: Snapshot = try? await api.request("/api/state"), state != snapshot { snapshot = state } }
-        }
+        guard let api, !streamPast else { return }
+        guard let from = streamFrom else { await loadNewest(); return }
+        guard let page: StreamPage = try? await api.request("/api/stream?after=\(Self.stamp(from))&limit=\(Self.streamLimit)") else { return }
+        if page.later { await loadNewest(); return }  // grown too long to keep whole: start over from the newest
+        apply(page)
+        // Pick up job/state changes (new images, finished jobs) when the reply completes.
+        if !page.messages.contains(where: \.isLive) && chatStreaming { if let state: Snapshot = try? await api.request("/api/state"), state != snapshot { snapshot = state } }
+    }
+    private func apply(_ page: StreamPage) {
+        if page.messages != messages { messages = page.messages }
+        if page.earlier != streamEarlier { streamEarlier = page.earlier }
+        if page.current != selectedSession { selectedSession = page.current }
+    }
+    /// The newest page: where the conversation is now.
+    func loadNewest() async {
+        guard let api, let page: StreamPage = try? await api.request("/api/stream") else { return }
+        streamPast = false
+        streamFrom = (page.messages.first?.created_at ?? Date().timeIntervalSince1970) - 0.00001
+        apply(page)
+    }
+    /// Scrolling back: the page before what is loaded, with the view kept on what was at the top.
+    func loadEarlier() async {
+        guard let api, let first = messages.first, streamEarlier,
+              let page: StreamPage = try? await api.request("/api/stream?before=\(Self.stamp(first.created_at))") else { return }
+        streamFrom = (page.messages.first?.created_at ?? first.created_at) - 0.00001
+        scrollTarget = first.id
+        messages = page.messages + messages
+        streamEarlier = page.earlier
+    }
+    /// Opens the conversation at an earlier stretch, or at one message of it (a search result).
+    func open(stretch: String? = nil, message: String? = nil) async {
+        guard let api else { return }
+        section = .assistant; loadingSession = true; defer { loadingSession = false }
+        let query = message.map { "at=\($0)" } ?? "start=\(stretch ?? "")"
+        guard let page: StreamPage = try? await api.request("/api/stream?\(query)&limit=\(Self.streamLimit)") else { return }
+        streamPast = page.later
+        streamFrom = (page.messages.first?.created_at ?? Date().timeIntervalSince1970) - 0.00001
+        scrollTarget = message ?? page.messages.first { $0.session_id == stretch }?.id ?? page.messages.first?.id
+        apply(page)
+    }
+    func searchStream(_ text: String) async -> [StreamHit] {
+        guard let api, let query = text.addingPercentEncoding(withAllowedCharacters: .alphanumerics),
+              let found: StreamHits = try? await api.request("/api/stream/search?q=\(query)") else { return [] }
+        return found.results
     }
     /// Show an error to the user, except cancellations caused by leaving a screen.
     func report(_ failure: Error) {
@@ -171,38 +220,37 @@ import ImageIO
         if let outgoing, messages.count == outgoingBase { return messages + [outgoing] }
         return messages
     }
-    /// A new conversation is created on the engine when its first message is sent.
-    func newChat(project: String? = nil) async { selectedSession = nil; messages = []; codeProjectID = project; section = .assistant }
+    /// The next message begins a new subject; with a project, work in that code project.
+    func newChat(project: String? = nil) async {
+        fresh = true; section = .assistant
+        if let project { codeProjectID = project; projectPicked = true }
+        if streamPast { await loadNewest() }
+    }
     var currentSession: Session? { snapshot?.sessions.first { $0.id == selectedSession } }
-    /// The code project of the open conversation, or the one picked for the next new conversation.
+    /// The code project being worked in: the one just picked in the composer, else the one of the stretch the user is in.
     var activeProject: CodeProject? {
-        let id = selectedSession == nil ? codeProjectID : currentSession?.code_project_id
+        let id = projectPicked ? codeProjectID : fresh ? nil : currentSession?.code_project_id
         return codeProjects.first { $0.id == id }
     }
-    func selectSession(_ id: String) async {
-        selectedSession = id; messages = []; section = .assistant; loadingSession = true
-        // Messages first: they are what the user is waiting to see.
-        await refreshMessages()
-        if selectedSession == id { loadingSession = false }
-        await refresh()
-    }
+    func selectSession(_ id: String) async { await open(stretch: id); await refresh() }
     /// `voice` marks a message from the voice conversation: the reply will be read aloud.
-    @discardableResult func send(_ text: String, assets: [String], mode: String? = nil, voice: Bool = false) async throws -> Job {
+    /// `answerTo` is the waiting question this message answers: it goes back to where the question was asked.
+    @discardableResult func send(_ text: String, assets: [String], mode: String? = nil, voice: Bool = false, answerTo: String? = nil) async throws -> Job {
         guard let api else { throw APIError.message("请先连接 Mac") }
+        if streamPast { await loadNewest() }  // what is said now belongs at the end, not in the old part that was open
         outgoingBase = messages.count
         outgoing = Message(id: "outgoing", session_id: selectedSession ?? "", role: "user", content: text, status: "complete",
                            created_at: Date().timeIntervalSince1970, metadata: .object(["asset_ids": .array(assets.map { .string($0) })]))
         defer { outgoing = nil }
-        if selectedSession == nil {
-            var body: [String: Any] = ["title": "新对话"]
-            if let project = codeProjectID { body["code_project_id"] = project }
-            let session: Session = try await api.request("/api/sessions",method:"POST",body:body)
-            selectedSession = session.id
-        }
         var body: [String: Any] = ["content": text, "asset_ids": assets, "request_id": UUID().uuidString]
         if let mode { body["mode"] = mode }
         if voice { body["voice"] = true }
-        let job: Job = try await api.request("/api/sessions/\(selectedSession!)/messages",method:"POST",body:body)
+        if let answerTo { body["answer_to"] = answerTo } else if fresh { body["fresh"] = true }
+        if projectPicked { body["code_project_id"] = codeProjectID ?? "" }
+        // The engine decides which stretch of the conversation this continues, or begins a new one.
+        let job: Job = try await api.request("/api/stream/messages",method:"POST",body:body)
+        fresh = false; projectPicked = false
+        selectedSession = job.payload["session_id"].string
         await refresh()
         return job
     }
@@ -300,15 +348,15 @@ import ImageIO
     }
     func disconnect() {
         polling?.cancel(); api?.close(); api = nil; Keychain.clear(); connected = false
-        snapshot = nil; messages = []; mediaCache = [:]; connectionStatus = "请与 Mac 配对"
+        snapshot = nil; messages = []; streamFrom = nil; streamPast = false; selectedSession = nil; mediaCache = [:]; connectionStatus = "请与 Mac 配对"
     }
     func job(_ id: String?) -> Job? { guard let id else { return nil }; return snapshot?.jobs.first { $0.id == id } }
     func asset(_ id: String?) -> Asset? { guard let id else { return nil }; return snapshot?.assets.first { $0.id == id } }
     func outputs(of job: Job) -> [Asset] { job.result["asset_ids"].array.compactMap { asset($0.string) } }
-    /// The reply this conversation is waiting for. Background work does not count: you can keep talking while it runs.
-    var chatJob: Job? { activeJobs.first { $0.kind == "chat" && $0.payload["session_id"].string == selectedSession && !$0.isBackground } }
-    /// Any reply being written in this conversation, background work included: it is what keeps the messages refreshing.
-    var chatStreaming: Bool { activeJobs.contains { $0.kind == "chat" && $0.payload["session_id"].string == selectedSession } }
+    /// The reply the conversation is waiting for. Background work does not count: you can keep talking while it runs.
+    var chatJob: Job? { activeJobs.first { $0.kind == "chat" && !$0.isBackground } }
+    /// Any reply being written, background work included: it is what keeps the messages refreshing.
+    var chatStreaming: Bool { activeJobs.contains { $0.kind == "chat" } }
     func cancel(_ job: Job) async {
         cancelling.insert(job.id); defer { cancelling.remove(job.id) }
         await perform { let _: Job = try await self.requireAPI().request("/api/jobs/\(job.id)/cancel", method: "POST") }
@@ -335,10 +383,17 @@ import ImageIO
     func setAllowCommands(_ session: String, _ allow: Bool) async {
         await perform { let _: Session = try await self.requireAPI().request("/api/sessions/\(session)", method: "PATCH", body: ["allow_commands": allow]) }
     }
+    /// What is waiting to be decided, except the question the conversation ends on: its options are right there under it.
+    var waitingQuestions: [WaitingQuestion] { (snapshot?.questions ?? []).filter { $0.message_id != messages.last?.id } }
+    /// The user does not want to decide this one: it stops waiting.
+    func dropQuestion(_ id: String) async {
+        await perform { let _: JSONValue = try await self.requireAPI().request("/api/questions/\(id)", method: "DELETE") }
+    }
     func deleteSession(_ id: String) async {
         await perform {
             let _: JSONValue = try await self.requireAPI().request("/api/sessions/\(id)", method: "DELETE")
-            if self.selectedSession == id { self.selectedSession = nil; self.messages = [] }
+            if self.selectedSession == id { self.selectedSession = nil }
+            await self.loadNewest()
         }
     }
     func saveProject(_ project: Project) async throws {

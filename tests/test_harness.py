@@ -210,6 +210,22 @@ async def test_a_question_with_options_ends_the_reply_and_is_kept_for_the_button
 
 
 @pytest.mark.asyncio
+async def test_a_second_question_in_a_row_with_nothing_given_is_sent_back_to_do_the_work(app):
+    first = [call("ask_user", question="你目前的跑步基础是怎样的？", options="完全没跑过\n偶尔跑过\n有基础")]
+    model = ScriptedModel([Completion("", first, "tool_calls")])
+    _, message = await run(app, model, "我想开始跑步，帮我做个计划")
+    assert message["metadata"]["ask"]["question"] == "你目前的跑步基础是怎样的？"
+    again = [call("ask_user", question="你每周能跑几次？", options="两次\n三次")]
+    after = [{**call("ask_user", question="要不要设个每周提醒？", options="要\n先不用"), "id": "call_after"}]
+    model = ScriptedModel([Completion("", again, "tool_calls"),
+                           Completion("按每周三次给你排了八周：前两周跑一分钟走两分钟，之后每两周加一分钟。", after, "tool_calls")])
+    _, message = await run(app, model, "偶尔跑过")
+    calls = [c for s in message["metadata"]["steps"] for c in s["calls"]]
+    assert [c["status"] for c in calls] == ["error", "ok"] and "Do the work now" in calls[0]["output"]
+    assert message["content"].startswith("按每周三次给你排了八周") and message["metadata"]["ask"]["question"] == "要不要设个每周提醒？"
+
+
+@pytest.mark.asyncio
 async def test_a_question_already_written_in_the_reply_is_not_shown_twice_and_one_option_is_refused(app):
     model = ScriptedModel([
         Completion("按周还是按月更新？", [call("ask_user", question="按周还是按月更新？", options="按周\n按月")], "tool_calls"),
