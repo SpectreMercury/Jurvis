@@ -9,7 +9,7 @@ import logging
 import secrets
 import time
 from datetime import date, datetime, timedelta, timezone
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import httpx
 
@@ -22,6 +22,8 @@ PROVIDERS = {
         "token": "https://api.prod.whoop.com/oauth/oauth2/token",
         "scope": "offline read:recovery read:cycles read:sleep read:workout read:body_measurement",
         "console": "https://developer-dashboard.whoop.com",
+        "detail": "恢复、睡眠、日负荷、心率变异性和运动",
+        "setup": "在 WHOOP 开发者后台新建一个 App：Redirect URL 填下面的回调地址，权限勾选 read:recovery、read:cycles、read:sleep、read:workout、read:body_measurement 和 offline。然后把 Client ID 和 Client Secret 填在这里。",
     },
     "google": {
         "name": "Google Health",
@@ -30,6 +32,8 @@ PROVIDERS = {
         "scope": " ".join("https://www.googleapis.com/auth/googlehealth." + s for s in
                           ("activity_and_fitness.readonly", "health_metrics_and_measurements.readonly", "sleep.readonly")),
         "console": "https://console.cloud.google.com/apis/credentials",
+        "detail": "Fitbit、Pixel Watch 和 Google 健康里的睡眠、步数、心率和运动",
+        "setup": "在 Google Cloud 控制台启用 Google Health API，新建一个 OAuth 客户端（类型选 Web 应用），「已获授权的重定向 URI」填下面的回调地址。然后把客户端 ID 和客户端密钥填在这里。",
     },
 }
 WHOOP_API = "https://api.prod.whoop.com/developer/v2"
@@ -78,22 +82,56 @@ class HealthSync:
         tmp.replace(self.path)
 
     def client(self, provider):
+        """The OAuth app to connect with: from .env when set there, otherwise the one the user entered in the app."""
         cid = getattr(self.settings, f"{provider}_client_id", "")
         secret = getattr(self.settings, f"{provider}_client_secret", "")
-        return cid, secret
+        if cid and secret:
+            return cid, secret
+        saved = self.load().get("clients", {}).get(provider, {})
+        return saved.get("id", ""), saved.get("secret", "")
+
+    def set_client(self, provider, cid, secret):
+        """The user's own OAuth app, entered in 设置. A blank secret keeps the saved one; both blank removes it."""
+        if provider not in PROVIDERS:
+            raise ValueError("unknown provider")
+        data = self.load()
+        clients = data.setdefault("clients", {})
+        cid, secret = (cid or "").strip(), (secret or "").strip()
+        if not cid and not secret:
+            clients.pop(provider, None)
+        else:
+            secret = secret or clients.get(provider, {}).get("secret", "")
+            if not cid or not secret:
+                raise ValueError("请同时填写 Client ID 和 Client Secret")
+            clients[provider] = {"id": cid, "secret": secret}
+        self.save(data)
+        return self.status()
 
     def redirect(self, provider):
         base = (self.settings.oauth_base or getattr(self.settings, "public_url", "") or f"https://localhost:{self.settings.port}").rstrip("/")
         return f"{base}/oauth/{provider}"
 
     def status(self):
+        """Every health connector: Apple Health and Apple Fitness (read on the iPhone), then WHOOP and Google Health (OAuth)."""
         tokens = self.load()
-        out = []
+        apple = next((s for s in self.health.sources() if s["source"] == "apple"), None)
+        since = time.time() - 30 * 86400
+        workouts = self.health.store.one("SELECT COUNT(*) AS n FROM health_workouts WHERE source='apple' AND start>=?", (since,))["n"]
+        out = [
+            {"provider": "apple", "name": "Apple 健康", "kind": "device", "connected": bool(apple), "configured": True,
+             "synced_at": apple and apple["synced_at"], "error": None, "detail": "睡眠、步数、心率、心率变异性、体重、经期和心情（Apple Watch 的数据也在这里）"},
+            {"provider": "fitness", "name": "Apple 健身", "kind": "device", "connected": bool(apple), "configured": True,
+             "synced_at": apple and apple["synced_at"], "error": None, "workouts_30_days": workouts,
+             "detail": "体能训练、活动能量、锻炼分钟和步行跑步距离，随 Apple 健康一起同步"},
+        ]
+        env = {key for key in PROVIDERS if getattr(self.settings, f"{key}_client_id", "") and getattr(self.settings, f"{key}_client_secret", "")}
         for key, p in PROVIDERS.items():
             cid, secret = self.client(key)
             t = tokens.get(key, {})
-            out.append({"provider": key, "name": p["name"], "configured": bool(cid and secret), "connected": bool(t.get("refresh_token") or t.get("access_token")),
-                        "synced_at": t.get("synced_at"), "error": t.get("error"), "redirect_uri": self.redirect(key), "console": p["console"]})
+            out.append({"provider": key, "name": p["name"], "kind": "oauth", "configured": bool(cid and secret), "connected": bool(t.get("refresh_token") or t.get("access_token")),
+                        "synced_at": t.get("synced_at"), "error": t.get("error"), "redirect_uri": self.redirect(key), "console": p["console"],
+                        "detail": p["detail"], "setup": p["setup"], "client_id": cid, "client_from": "env" if key in env else "app" if cid else None,
+                        "on_this_mac": urlparse(self.redirect(key)).hostname in ("localhost", "127.0.0.1")})
         return out
 
     def connect(self, provider):
@@ -101,7 +139,7 @@ class HealthSync:
             raise ValueError("unknown provider")
         cid, secret = self.client(provider)
         if not (cid and secret):
-            raise ValueError(f"先在 .env 里填 JURVIS_{provider.upper()}_CLIENT_ID 和 JURVIS_{provider.upper()}_CLIENT_SECRET，回调地址填 {self.redirect(provider)}")
+            raise ValueError(f"先在「设置 → 健康与运动」里填 {PROVIDERS[provider]['name']} 的 Client ID 和 Client Secret，回调地址填 {self.redirect(provider)}")
         state = secrets.token_urlsafe(24)
         now = time.time()
         self.pending = {s: v for s, v in self.pending.items() if now - v[1] < 900}

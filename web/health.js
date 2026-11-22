@@ -1,7 +1,8 @@
 // 健康: sleep, activity, heart and recovery from Apple Health (the iPhone app), WHOOP and Google Health, and the menstrual cycle.
 // This page reads them straight from the Mac. Models see only period summaries, and the cycle only the local model.
-import { store, h, fill, get, post, del, action, notify } from './core.js';
+import { store, h, fill, get, post, put, del, run, action, notify, sheet } from './core.js';
 import * as ui from './ui.js';
+import { brandMark } from './connect.js';
 
 let sig = null;
 let loading = null;
@@ -38,26 +39,62 @@ const ago = (seconds) => {
 };
 
 function accounts(page) {
-  const apple = (page.sources || []).find((s) => s.source === 'apple');
-  const rows = [h('div', { class: 'health-account' },
-    h('div', { class: 'made-text' }, h('strong', null, 'Apple 健康'),
-      h('span', { class: 'muted small' }, apple ? `已同步 · ${ago(apple.synced_at)}` : '在 iPhone 上打开 Jurvis，允许读取健康数据后会自动同步')))];
-  for (const a of page.accounts || []) {
-    const sub = a.connected ? (a.error ? a.error : `已连接 · ${a.synced_at ? '同步于 ' + ago(a.synced_at) : '正在同步'}`)
-      : a.configured ? '未连接' : `需要先在 .env 填 ${a.provider.toUpperCase()} 的 OAuth 应用，回调地址：${a.redirect_uri}`;
-    const buttons = a.connected
-      ? [action('立即同步', async () => { const r = await post('/api/health/sync/' + a.provider); notify(`已同步 ${r.days} 天、${r.workouts} 次运动`, 'info'); sig = null; refresh(); }, { class: 'btn small' }),
-        action('断开', async () => { if (!await ui.ask(`断开 ${a.name}？已同步的数据会保留。`)) return; await del('/api/health/connect/' + a.provider); sig = null; refresh(); }, { class: 'btn small' })]
-      : a.configured ? [action('连接', async () => { const r = await post('/api/health/connect/' + a.provider); window.open(r.url, '_blank', 'noopener'); }, { class: 'btn primary small' })] : [];
-    rows.push(h('div', { class: 'health-account' }, h('div', { class: 'made-text' }, h('strong', null, a.name), h('span', { class: 'muted small' }, sub)), h('div', { class: 'row' }, buttons)));
-  }
-  fill(els.accounts, rows);
+  fill(els.accounts, connectorRows(page.accounts || [], () => { sig = null; refresh(); }));
+}
+
+// ---------------------------------------------------------------- connectors
+// Apple Health and Apple Fitness are read on the iPhone; WHOOP and Google Health are connected with an OAuth app of the user's own,
+// entered here (or in .env). The same rows are on the 健康 page and under 设置 → 健康与运动.
+function deviceHint(c) {
+  if (c.connected) return `已同步 · ${ago(c.synced_at)}` + (c.provider === 'fitness' ? ` · 最近 30 天 ${c.workouts_30_days || 0} 次运动` : '');
+  return '在 iPhone 上打开 Jurvis →「健康」→「同步 Apple 健康」，允许读取后自动同步';
+}
+
+export function connectorRows(list, changed) {
+  return list.map((c) => {
+    let sub, buttons = [];
+    if (c.kind === 'device') sub = deviceHint(c);
+    else if (c.connected) {
+      sub = c.error || `已连接 · ${c.synced_at ? '同步于 ' + ago(c.synced_at) : '正在同步'}`;
+      buttons = [action('立即同步', async () => { const r = await post('/api/health/sync/' + c.provider); notify(`已同步 ${r.days} 天、${r.workouts} 次运动`, 'info'); changed(); }, { class: 'btn small' }),
+        action('断开', async () => { if (!await ui.ask(`断开 ${c.name}？已同步的数据会保留。`)) return; await del('/api/health/connect/' + c.provider); changed(); }, { class: 'btn small' })];
+    } else {
+      sub = c.configured ? (c.on_this_mac ? '未连接 · 请在这台 Mac 上点「连接」' : '未连接') : '需要先填一个你自己的开发者应用（只需一次）';
+      buttons = [h('button', { class: 'btn small', type: 'button', onclick: () => setup(c, changed) }, '设置')];
+      if (c.configured) buttons.push(action('连接', async () => { const r = await post('/api/health/connect/' + c.provider); window.open(r.url, '_blank', 'noopener'); }, { class: 'btn primary small' }));
+    }
+    return h('div', { class: 'health-account' }, brandMark(c.name, '', c.provider),
+      h('div', { class: 'made-text grow' }, h('strong', null, c.name), h('span', { class: 'muted small' }, c.detail || ''), h('span', { class: (c.error ? 'error-text' : 'muted') + ' small' }, sub)),
+      h('div', { class: 'row' }, buttons));
+  });
+}
+
+function setup(c, changed) {
+  const id = h('input', { class: 'input', autocomplete: 'off', autocapitalize: 'off', spellcheck: false, value: c.client_id || '', placeholder: 'Client ID' });
+  const secret = h('input', { class: 'input', type: 'password', autocomplete: 'off', placeholder: c.configured ? '留空则保留已保存的密钥' : 'Client Secret' });
+  const save = h('button', { class: 'btn primary', type: 'submit' }, '保存');
+  const copy = h('button', { class: 'btn small', type: 'button', onclick: () => navigator.clipboard.writeText(c.redirect_uri).then(() => notify('已复制回调地址', 'info'), () => {}) }, '复制');
+  const form = h('form', { class: 'stack' },
+    h('p', { class: 'muted small' }, c.setup),
+    h('a', { href: c.console, target: '_blank', rel: 'noopener', class: 'small' }, '打开 ' + c.name + ' 开发者后台 ↗'),
+    h('label', { class: 'field' }, h('span', null, '回调地址'), h('div', { class: 'row' }, h('code', { class: 'break grow' }, c.redirect_uri), copy)),
+    c.client_from === 'env' ? h('p', { class: 'muted small' }, '现在用的是 .env 里的应用；在这里保存的只在 .env 没填时生效。') : null,
+    h('label', { class: 'field' }, h('span', null, 'Client ID'), id),
+    h('label', { class: 'field' }, h('span', null, 'Client Secret'), secret),
+    h('p', { class: 'muted small' }, '只保存在这台 Mac 上（data/security/health.json），不会再发回任何设备。'),
+    h('div', { class: 'row end' }, save));
+  const close = sheet(c.name, form);
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const ok = await run(save, async () => { await put('/api/health/client/' + c.provider, { client_id: id.value, client_secret: secret.value }); });
+    if (ok) { close(); changed(); notify(`已保存，可以点「连接」了`, 'info'); }
+  });
 }
 
 function summary(s) {
   if (!s.days_with_data) {
     fill(els.summary, h('div', { class: 'empty' }, h('p', { class: 'empty-title' }, '还没有健康数据'),
-      h('p', { class: 'muted' }, '在 iPhone 上打开 Jurvis 同步 Apple 健康，或者连接 WHOOP / Google Health。')));
+      h('p', { class: 'muted' }, '在 iPhone 上打开 Jurvis 同步 Apple 健康，或者在上面连接 WHOOP / Google Health。')));
     return;
   }
   const facts = [];

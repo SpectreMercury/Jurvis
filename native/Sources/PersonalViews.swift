@@ -234,6 +234,7 @@ struct SettingsView: View {
                 connection
                 AssistantModelSettings()
                 VoiceSettings()
+                HealthConnectors()
                 MailSettings()
                 CareSettings()
                 models

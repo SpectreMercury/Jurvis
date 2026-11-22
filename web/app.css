@@ -855,3 +855,6 @@ button.info-card:focus-visible { outline: 2px solid var(--ink); outline-offset: 
 .space { display: flex; flex-direction: column; gap: 4px; }
 .space-facts { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
 .space-file { padding-top: 16px; overflow-wrap: anywhere; }
+.health-account .made-text { display: flex; flex-direction: column; gap: 1px; flex: 1; }
+.health-account > .row { flex-wrap: wrap; justify-content: flex-end; flex-shrink: 0; }
+@media (max-width: 560px) { .health-account { flex-wrap: wrap; } .health-account > .row { width: 100%; } }

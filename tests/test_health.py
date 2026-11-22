@@ -109,7 +109,9 @@ def test_the_page_and_the_iphone_import(app):
     assert client.post("/api/health/import", json={"source": "whoop", "days": []}, headers=token).status_code == 400
     page = client.get("/api/health", headers=token).json()
     assert page["days"][-1]["steps"] == 9000 and "made_up" not in page["days"][-1] and page["workouts"][0]["kind_label"] == "瑜伽"
-    assert page["cycle"]["periods_recorded"] == 1 and {a["provider"] for a in page["accounts"]} == {"whoop", "google"}
+    assert page["cycle"]["periods_recorded"] == 1 and [a["provider"] for a in page["accounts"]] == ["apple", "fitness", "whoop", "google"]
+    apple, fitness = page["accounts"][:2]
+    assert apple["connected"] and fitness["connected"] and fitness["workouts_30_days"] == 1
     assert client.post("/api/health/period", json={"start": today, "flow": "heavy"}, headers=token).json()["recorded"]["flow"] == "大量"
     assert client.get("/api/health").status_code == 401
 
@@ -117,11 +119,29 @@ def test_the_page_and_the_iphone_import(app):
 def test_connecting_an_account_needs_the_users_own_oauth_app(tmp_path):
     settings = Settings(data=tmp_path / "d", whoop_client_id="cid", whoop_client_secret="sec", oauth_base="https://mac.example.ts.net")
     sync = HealthSync(settings, Health(Store(tmp_path / "h.db")), None)
-    with pytest.raises(ValueError, match="JURVIS_GOOGLE_CLIENT_ID"):
+    with pytest.raises(ValueError, match="健康与运动"):
         sync.connect("google")
     url = sync.connect("whoop")["url"]
     assert url.startswith("https://api.prod.whoop.com/oauth/oauth2/auth?") and "redirect_uri=https%3A%2F%2Fmac.example.ts.net%2Foauth%2Fwhoop" in url and "offline" in url
-    assert [s["configured"] for s in sync.status()] == [True, False]
+    oauth = {s["provider"]: s for s in sync.status() if s["kind"] == "oauth"}
+    assert oauth["whoop"]["configured"] and oauth["whoop"]["client_from"] == "env" and not oauth["google"]["configured"]
+
+
+def test_the_oauth_app_can_be_entered_in_the_app(app):
+    client = TestClient(app, headers={"Authorization": "Bearer " + app.state.security.local_token})
+    google = lambda r: next(c for c in r.json()["connectors"] if c["provider"] == "google")
+    assert not google(client.get("/api/health/connectors"))["configured"]
+    assert client.post("/api/health/connect/google").status_code == 400  # said plainly, not a server error
+    assert client.put("/api/health/client/google", json={"client_id": "123.apps.googleusercontent.com"}).status_code == 400  # a secret is needed
+    saved = google(client.put("/api/health/client/google", json={"client_id": "123.apps.googleusercontent.com", "client_secret": "s3cret"}))
+    assert saved["configured"] and saved["client_from"] == "app" and saved["client_id"].startswith("123")
+    assert "s3cret" not in client.get("/api/health/connectors").text
+    assert "client_id=123.apps.googleusercontent.com" in client.post("/api/health/connect/google").json()["url"]
+    # a new ID with the secret left blank keeps the saved secret
+    assert google(client.put("/api/health/client/google", json={"client_id": "456.apps.googleusercontent.com"}))["configured"]
+    assert app.state.worker.health_sync.client("google") == ("456.apps.googleusercontent.com", "s3cret")
+    assert not google(client.put("/api/health/client/google", json={}))["configured"]  # both blank removes it
+    assert app.state.worker.health_sync.tick  # the saved app sits next to the tokens without being taken for one
 
 
 def test_the_oauth_return_needs_no_token_but_a_fresh_state(app):
