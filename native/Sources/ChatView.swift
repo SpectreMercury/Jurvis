@@ -29,6 +29,9 @@ struct ChatView: View {
     @State private var attachments: [Asset] = []
     @State private var mode: ComposerMode?
     @State private var width: CGFloat = 800
+    /// The room the container gives this view. The view's own measured width cannot tell a phone from a tablet once it is laid out wide:
+    /// the wide composer does not shrink, so the view overflows a screen that got narrower (a phone that was folded) and keeps reading as wide.
+    var available: CGFloat?
     /// The voice conversation is open.
     @State private var talking = false
     @ObservedObject private var voice = Voice.shared
@@ -42,7 +45,7 @@ struct ChatView: View {
     /// Phone width: one column, a one-line composer, finger-sized controls.
     var narrow: Bool {
         #if os(iOS)
-        return width < Metrics.phoneWidth
+        return (available ?? width) < Metrics.phoneWidth
         #else
         return false
         #endif
@@ -232,6 +235,9 @@ struct ChatView: View {
                     .frame(maxWidth: Metrics.readable).frame(maxWidth: .infinity)
                 }
                 .scrollDismissesKeyboard(.interactively)
+                #if os(iOS)
+                .simultaneousGesture(TapGesture().onEnded { focused = false })  // a tap on the conversation puts the keyboard away
+                #endif
                 .onChange(of: store.messages.last?.content) { _, _ in settle(proxy) }
                 .onChange(of: store.messages.last?.steps.flatMap(\.calls).count) { _, _ in settle(proxy) }
                 .onChange(of: store.visibleMessages.count) { _, _ in settle(proxy, animated: true) }
@@ -366,6 +372,14 @@ struct ChatView: View {
         }
     }
 
+    var hideKeyboardButton: some View {
+        Button { focused = false } label: {
+            Image(systemName: "keyboard.chevron.compact.down").font(.system(size: 15, weight: .regular)).foregroundStyle(Color.inkSoft)
+                .frame(width: 44, height: 44).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain).accessibilityLabel("收起键盘")
+    }
+
     var field: some View {
         TextField(placeholder, text: $input, axis: .vertical)
             .textFieldStyle(.plain).font(.system(size: 15)).lineLimit(1...10)
@@ -387,7 +401,8 @@ struct ChatView: View {
                 HStack(alignment: .bottom, spacing: 2) {
                     addButton.disabled(attachments.count + uploading >= 4)
                     field.padding(.vertical, 11)
-                    voiceButtons
+                    // While typing, the keyboard has its own dictation key: the room goes to a way to put the keyboard away.
+                    if focused { hideKeyboardButton } else { voiceButtons }
                     sendButton
                 }
             } else {
@@ -403,6 +418,9 @@ struct ChatView: View {
                         }
                     }
                     Spacer(minLength: 4)
+                    #if os(iOS)
+                    if focused { hideKeyboardButton }
+                    #endif
                     voiceButtons
                     sendButton
                 }

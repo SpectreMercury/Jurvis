@@ -427,12 +427,13 @@ struct PhoneRoot: View {
             let strip = insets.trailing - insets.leading >= 40 ? insets.trailing : 0
             let rail = strip == 0 && size.size.width >= Self.railWidth
             HStack(spacing: 0) {
-                pages(rail: rail || strip > 0)
+                pages(rail: rail || strip > 0, width: size.size.width - (rail ? 64 : 0))
                 if rail { TabRail() }
             }
             .overlay {
                 if strip > 0 {
                     HStack(spacing: 0) { Spacer(minLength: 0); TabRail(width: strip) }.ignoresSafeArea(.container, edges: .trailing)
+                        .ignoresSafeArea(.keyboard, edges: .bottom)  // the keyboard covers the lower tabs; it does not push them up under the clock
                 }
             }
         }
@@ -440,12 +441,12 @@ struct PhoneRoot: View {
         .task { await openForUICheck() }
     }
 
-    @ViewBuilder func pages(rail: Bool) -> some View {
+    @ViewBuilder func pages(rail: Bool, width: CGFloat) -> some View {
         Group {
             switch hub {
             case .tasks:
                 NavigationStack {
-                    ChatView()
+                    ChatView(available: width)
                         .safeAreaInset(edge: .bottom, spacing: 0) { if !rail && !keyboard { TabBar() } }  // while typing, the keyboard takes the tabs' place
                         .toolbar {
                             ToolbarItem(placement: .topBarLeading) {
