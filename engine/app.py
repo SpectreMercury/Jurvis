@@ -419,13 +419,23 @@ def create_app(settings=None, *, run_worker=True):
 
     @app.post("/api/health/connect/{provider}")
     async def health_connect(provider:str):
-        return worker.health_sync.connect(provider)
+        try:return worker.health_sync.connect(provider)
+        except ValueError as exc:raise HTTPException(400,str(exc))
 
     @app.post("/api/health/sync/{provider}")
     async def health_sync_now(provider:str):
         try:return await worker.health_sync.sync(provider)
         except ValueError as exc:raise HTTPException(400,str(exc))
         except httpx.HTTPError as exc:raise HTTPException(502,f"连不上 {provider}：{exc}")
+
+    @app.get("/api/health/connectors")
+    async def health_connectors():return {"connectors":worker.health_sync.status()}
+
+    @app.put("/api/health/client/{provider}")
+    async def health_client(provider:str,body:dict):
+        """The user's own WHOOP or Google OAuth app, entered in 设置 instead of .env. The secret is never sent back."""
+        try:return {"connectors":worker.health_sync.set_client(provider,str(body.get("client_id") or ""),str(body.get("client_secret") or ""))}
+        except ValueError as exc:raise HTTPException(400,str(exc))
 
     @app.delete("/api/health/connect/{provider}")
     async def health_disconnect(provider:str):

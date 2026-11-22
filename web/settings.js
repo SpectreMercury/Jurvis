@@ -5,6 +5,7 @@ import {
 import * as ui from './ui.js';
 import * as connect from './connect.js';
 import * as voiceKit from './voice.js';
+import { connectorRows } from './health.js';
 
 const SKILL_TEMPLATE = `---
 name: 我的技能
@@ -17,7 +18,7 @@ description: 一句话说明什么时候应该使用这个技能
 2. 第二步……
 `;
 
-const data = { skills: null, mcp: null, home: null, devices: null, mail: null, care: null };
+const data = { health: null, skills: null, mcp: null, home: null, devices: null, mail: null, care: null };
 const fail = {};
 const els = {};
 let root = null;
@@ -29,13 +30,14 @@ function section(title, body, hint) {
 export function mount(container) {
   root = container;
   connect.onChange((next) => { if (next) { data.home = next; renderHome(); } });
-  for (const name of ['models', 'voice', 'memory', 'mail', 'care', 'skills', 'mcp', 'home', 'devices']) els[name] = h('div', { class: 'stack' }, h('p', { class: 'muted' }, '正在读取…'));
+  for (const name of ['models', 'voice', 'memory', 'health', 'mail', 'care', 'skills', 'mcp', 'home', 'devices']) els[name] = h('div', { class: 'stack' }, h('p', { class: 'muted' }, '正在读取…'));
   els.about = h('p', { class: 'muted small' });
   container.append(h('div', { class: 'page' },
     h('header', { class: 'page-head' }, h('h1', null, '设置')),
     section('模型', els.models),
     section('语音', els.voice, '语音识别和朗读都在这台 Mac 上完成，录音不会发到别处。'),
     section('记忆', els.memory),
+    section('健康与运动', els.health, '睡眠、运动、心率和经期只存在这台 Mac 上；模型只看到汇总数字。'),
     section('邮件', els.mail, '只读：Jurvis 只看、不发、不标已读。密码只存在这台 Mac 上。默认只有本机模型能读邮件。'),
     section('主动关心', els.care, '睡眠、压力、恢复或心情一变差，Jurvis 就会用本机模型看看最近的邮件和对话，马上主动问候你，并发通知。同一件事不重复说，安静时段先攒着，到点再发。'),
     section('技能', els.skills, '技能是一份写给 Jurvis 的做法说明（SKILL.md），它会在合适的时候照着做。'),
@@ -62,6 +64,7 @@ export function activate() {
   loadSettings().then(() => { delete fail.settings; }).catch((err) => { if (!quiet(err)) fail.settings = err.message; }).then(() => { renderModels(); renderMemory(); renderHome(); });
   voiceKit.status(true).then((result) => { data.voice = result; renderVoice(); });
   loadPart('skills', '/api/skills', (r) => r, renderSkills);
+  loadPart('health', '/api/health/connectors', (r) => r.connectors, renderHealth);
   loadPart('mail', '/api/mail', (r) => r, renderMail);
   loadPart('care', '/api/checkin', (r) => r, renderCare);
   loadPart('mcp', '/api/mcp', (r) => r.servers || [], renderMcp);
@@ -358,6 +361,12 @@ function editMcp(server, apply) {
 }
 
 // ---------------------------------------------------------------- 邮件
+function renderHealth() {
+  const el = els.health;
+  if (failed(el, 'health') || !data.health) return;
+  fill(el, h('div', { class: 'health-accounts' }, connectorRows(data.health, () => loadPart('health', '/api/health/connectors', (r) => r.connectors, renderHealth))));
+}
+
 function renderMail() {
   const el = els.mail;
   if (failed(el, 'mail') || !data.mail) return;

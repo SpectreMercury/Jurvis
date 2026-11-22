@@ -55,49 +55,13 @@ struct HealthView: View {
     #endif
 
     func accounts(_ page: JSONValue) -> some View {
-        let apple = page["sources"].array.first { $0["source"].string == "apple" }
-        return VStack(spacing: 0) {
-            account("Apple 健康", detail: apple.map { "已同步 · " + ago($0["synced_at"].number) } ?? appleHint) { EmptyView() }
-            ForEach(Array(page["accounts"].array.enumerated()), id: \.offset) { _, a in
-                Divider().overlay(Color.hairline)
-                account(a["name"].string, detail: accountDetail(a)) {
-                    let provider = a["provider"].string
-                    if a["connected"] == .bool(true) {
-                        Button("立即同步") { Task { await post("/api/health/sync/\(provider)") } }.buttonStyle(.jurvis(.secondary, .small))
-                        Button("断开") { Task { await remove(provider) } }.buttonStyle(.jurvis(.ghost, .small))
-                    } else if a["configured"] == .bool(true) {
-                        Button("连接") { Task { await connect(provider) } }.buttonStyle(.jurvis(.primary, .small))
-                    }
-                }
+        VStack(spacing: 0) {
+            ForEach(Array(page["accounts"].array.enumerated()), id: \.offset) { n, c in
+                if n > 0 { Divider().overlay(Color.hairline) }
+                HealthConnectorRow(connector: c) { await load() }.padding(.horizontal, 14)
             }
         }
         .surface()
-    }
-
-    var appleHint: String {
-        #if os(iOS)
-        return "点右上角「同步 Apple 健康」，允许读取后会在每次打开 Jurvis 时同步"
-        #else
-        return "在 iPhone 上打开 Jurvis，同步一次 Apple 健康"
-        #endif
-    }
-
-    func accountDetail(_ a: JSONValue) -> String {
-        if a["connected"] == .bool(true) { return a["error"].string.isEmpty ? (a["synced_at"].number.map { "已连接 · 同步于 " + ago($0) } ?? "已连接 · 正在同步") : a["error"].string }
-        if a["configured"] == .bool(true) { return "未连接" }
-        return "先在 Mac 的 .env 里填 \(a["provider"].string.uppercased()) 的 OAuth 应用，回调地址：\(a["redirect_uri"].string)"
-    }
-
-    func account<Buttons: View>(_ name: String, detail: String, @ViewBuilder buttons: () -> Buttons) -> some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(name).font(.jHeading)
-                Text(detail).font(.jSmall).foregroundStyle(Color.inkSoft).fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 8)
-            buttons()
-        }
-        .padding(.horizontal, 14).padding(.vertical, 10).frame(minHeight: 52)
     }
 
     func summary(_ s: JSONValue) -> some View {
@@ -192,20 +156,8 @@ struct HealthView: View {
         return minutes < 2 ? "刚刚" : minutes < 60 ? "\(minutes) 分钟前" : minutes < 1440 ? "\(minutes / 60) 小时前" : "\(minutes / 1440) 天前"
     }
 
-    func connect(_ provider: String) async {
-        do {
-            let reply: JSONValue = try await store.requireAPI().request("/api/health/connect/\(provider)", method: "POST")
-            if let url = URL(string: reply["url"].string) { openURL(url) }
-        } catch { store.report(error) }
-    }
 
-    func post(_ path: String) async {
-        do { let _: JSONValue = try await store.requireAPI().request(path, method: "POST"); await load() } catch { store.report(error) }
-    }
 
-    func remove(_ provider: String) async {
-        do { let _: JSONValue = try await store.requireAPI().request("/api/health/connect/\(provider)", method: "DELETE"); await load() } catch { store.report(error) }
-    }
 }
 
 /// Where the user is in their cycle, the days around today, and buttons to say it started or ended.
@@ -442,6 +394,162 @@ enum HealthKitError: LocalizedError {
     var errorDescription: String? { "这台设备不能读取 Apple 健康数据" }
 }
 #endif
+
+/// 健康与运动: Apple Health and Apple Fitness (read on the iPhone), WHOOP and Google Health (an OAuth app of the user's own, entered here).
+struct HealthConnectors: View {
+    @EnvironmentObject var store: AppStore
+    @State private var list: [JSONValue] = []
+
+    var body: some View {
+        RowGroup(title: "健康与运动", footnote: "睡眠、运动、心率和经期只存在 Mac 上；问 Jurvis 时模型只看到汇总数字。") {
+            ForEach(Array(list.enumerated()), id: \.offset) { _, c in
+                HealthConnectorRow(connector: c) { await load() }
+            }
+            if list.isEmpty { InfoRow(title: "正在读取…") { EmptyView() } }
+        }
+        .task { await load() }
+    }
+
+    func load() async {
+        if let next: JSONValue = try? await store.requireAPI().request("/api/health/connectors") { list = next["connectors"].array }
+    }
+}
+
+/// One health connector: what it brings, where it stands, and the buttons that connect, sync or set it up.
+struct HealthConnectorRow: View {
+    @EnvironmentObject var store: AppStore
+    @Environment(\.openURL) private var openURL
+    var connector: JSONValue
+    var changed: () async -> Void
+    @State private var settingUp = false
+    @State private var busy = false
+
+    var provider: String { connector["provider"].string }
+    var device: Bool { connector["kind"].string == "device" }
+    var connected: Bool { connector["connected"] == .bool(true) }
+    var configured: Bool { connector["configured"] == .bool(true) }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: icon).font(.system(size: 17)).foregroundStyle(connected ? Color.signal : Color.inkSoft).frame(width: 24).padding(.top, 2)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(connector["name"].string).font(.jHeading)
+                Text(connector["detail"].string).font(.jSmall).foregroundStyle(Color.inkSoft).fixedSize(horizontal: false, vertical: true)
+                Text(status).font(.jSmall).foregroundStyle(connector["error"].string.isEmpty ? Color.inkFaint : Color.danger).fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            ViewThatFits { HStack(spacing: 6) { buttons }; VStack(alignment: .trailing, spacing: 6) { buttons } }
+        }
+        .padding(.vertical, 10)
+        .sheet(isPresented: $settingUp) { HealthClientSheet(connector: connector) { await changed() } }
+    }
+
+    var icon: String { ["apple": "heart.fill", "fitness": "figure.run", "whoop": "waveform.path.ecg", "google": "g.circle"][provider] ?? "heart" }
+
+    var status: String {
+        let ago = HealthConnectorRow.ago(connector["synced_at"].number)
+        if device {
+            if connected { return "已同步 · \(ago)" + (provider == "fitness" ? " · 最近 30 天 \(Int(connector["workouts_30_days"].number ?? 0)) 次运动" : "") }
+            #if os(iOS)
+            return "点「连接」，允许 Jurvis 读取健康数据"
+            #else
+            return "在 iPhone 上打开 Jurvis，在这里点「连接」"
+            #endif
+        }
+        if connected { return connector["error"].string.isEmpty ? (connector["synced_at"].number == nil ? "已连接 · 正在同步" : "已连接 · 同步于 \(ago)") : connector["error"].string }
+        if configured { return connector["on_this_mac"] == .bool(true) ? "未连接 · 请在 Mac 上点「连接」" : "未连接" }
+        return "需要先填一个你自己的开发者应用（只需一次）"
+    }
+
+    @ViewBuilder var buttons: some View {
+        if device {
+            #if os(iOS) && canImport(HealthKit)
+            Button(busy ? "正在同步" : connected ? "同步" : "连接") { Task { await syncApple() } }.buttonStyle(.jurvis(connected ? .secondary : .primary, .small)).disabled(busy)
+            #endif
+        } else if connected {
+            Button("同步") { Task { await call("/api/health/sync/\(provider)", "POST") } }.buttonStyle(.jurvis(.secondary, .small)).disabled(busy)
+            Button("断开") { Task { await call("/api/health/connect/\(provider)", "DELETE") } }.buttonStyle(.jurvis(.ghost, .small))
+        } else {
+            Button("设置") { settingUp = true }.buttonStyle(.jurvis(configured ? .ghost : .secondary, .small))
+            if configured { Button("连接") { Task { await connect() } }.buttonStyle(.jurvis(.primary, .small)) }
+        }
+    }
+
+    static func ago(_ seconds: Double?) -> String {
+        guard let seconds else { return "" }
+        let minutes = Int((Date().timeIntervalSince1970 - seconds) / 60)
+        return minutes < 2 ? "刚刚" : minutes < 60 ? "\(minutes) 分钟前" : minutes < 1440 ? "\(minutes / 60) 小时前" : "\(minutes / 1440) 天前"
+    }
+
+    #if os(iOS) && canImport(HealthKit)
+    func syncApple() async {
+        busy = true
+        defer { busy = false }
+        do { _ = try await HealthKitSync.shared.sync(store: store, force: true); await changed() } catch { store.report(error) }
+    }
+    #endif
+
+    func connect() async {
+        do {
+            let reply: JSONValue = try await store.requireAPI().request("/api/health/connect/\(provider)", method: "POST")
+            if let url = URL(string: reply["url"].string) { openURL(url) }
+        } catch { store.report(error) }
+    }
+
+    func call(_ path: String, _ method: String) async {
+        busy = true
+        defer { busy = false }
+        do { let _: JSONValue = try await store.requireAPI().request(path, method: method); await changed() } catch { store.report(error) }
+    }
+}
+
+/// The user's own WHOOP or Google OAuth app: where to make it, the callback address to give it, and its ID and secret.
+struct HealthClientSheet: View {
+    @EnvironmentObject var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
+    var connector: JSONValue
+    var saved: () async -> Void
+    @State private var clientID = ""
+    @State private var secret = ""
+    @State private var busy = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(connector["name"].string).font(.jTitle)
+            Text(connector["setup"].string).font(.jSmall).foregroundStyle(Color.inkSoft).fixedSize(horizontal: false, vertical: true)
+            Button("打开开发者后台") { if let url = URL(string: connector["console"].string) { openURL(url) } }.buttonStyle(.jurvis(.ghost, .small))
+            VStack(alignment: .leading, spacing: 4) {
+                Text("回调地址").font(.jSmall).foregroundStyle(Color.inkFaint)
+                Text(connector["redirect_uri"].string).font(.jMono).textSelection(.enabled)
+            }
+            if connector["client_from"].string == "env" {
+                Text("现在用的是 .env 里的应用；在这里保存的只在 .env 没填时生效。").font(.jSmall).foregroundStyle(Color.inkSoft)
+            }
+            TextField("Client ID", text: $clientID).textFieldStyle(.roundedBorder).autocorrectionDisabled()
+            SecureField(connector["configured"] == .bool(true) ? "Client Secret（留空则保留已保存的）" : "Client Secret", text: $secret).textFieldStyle(.roundedBorder)
+            Text("只保存在 Mac 上，不会再发回任何设备。").font(.jSmall).foregroundStyle(Color.inkFaint)
+            HStack {
+                Spacer()
+                Button("取消") { dismiss() }.buttonStyle(.jurvis(.ghost))
+                Button(busy ? "正在保存" : "保存") { Task { await save() } }.buttonStyle(.jurvis(.primary)).disabled(busy || clientID.isEmpty)
+            }
+        }
+        .padding(24).frame(minWidth: 420)
+        .onAppear { clientID = connector["client_id"].string }
+    }
+
+    func save() async {
+        busy = true
+        defer { busy = false }
+        do {
+            let _: JSONValue = try await store.requireAPI().request("/api/health/client/\(connector["provider"].string)", method: "PUT",
+                body: ["client_id": clientID.trimmingCharacters(in: .whitespaces), "client_secret": secret])
+            await saved()
+            dismiss()
+        } catch { store.report(error) }
+    }
+}
 
 /// 邮件: mailboxes Jurvis may read (IMAP, read-only). Passwords stay on the Mac; by default only the local model reads them.
 struct MailSettings: View {

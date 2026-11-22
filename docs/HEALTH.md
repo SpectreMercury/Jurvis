@@ -9,12 +9,25 @@ Jurvis 可以读取睡眠、运动、心率、心率变异性（HRV）、恢复�
 - 「身体压力」是估算值。它把最近三天的心率变异性、静息心率和睡眠，与你自己 30 天的平均值做比较，不是医学测量。
 - 经期预测只根据你自己的记录计算，不能用于避孕。
 
-## Apple 健康
+## 在哪里连接
+
+「设置 → 健康与运动」和「健康」页面顶部都有同样的四个连接器：
+
+| 连接器 | 怎么连接 |
+| --- | --- |
+| Apple 健康 | 在 iPhone 上点「连接」，允许读取 |
+| Apple 健身 | 跟 Apple 健康一起同步，不用单独连接 |
+| WHOOP | 先填一次你自己的开发者应用，再点「连接」 |
+| Google Health | 同上；Fitbit 和 Pixel Watch 的数据从这里来 |
+
+## Apple 健康和 Apple 健身
 
 Apple 健康没有网页接口，所以由 iPhone 上的 Jurvis 读取：
 
-1. 在 iPhone 上打开 Jurvis，进入「目标 → 健康」，点「同步 Apple 健康」，允许读取。
+1. 在 iPhone 上打开 Jurvis，进入「设置 → 健康与运动」，在 Apple 健康那一行点「连接」，允许读取。
 2. 第一次会同步最近 30 天的数据，以及最近 180 天的经期记录。之后有新的睡眠、HRV、静息心率或心情记录时，iOS 会在后台唤醒 Jurvis，马上把最近几天的数据发给 Mac（最多每 5 分钟一次）；每次打开 App 时也会同步。
+
+Apple 健身里的体能训练、活动能量和锻炼分钟都存在 Apple 健康里，所以会一起同步。
 
 会读取的数据：步数、活动能量、锻炼分钟、步行跑步距离、睡眠（含深睡、REM、清醒）、静息心率、HRV、血氧、呼吸率、体重、正念分钟、体能训练、经期流量，以及「心理状态」记录。工程里的 `JurvisMobile.entitlements` 已经打开 HealthKit；用自己的团队签名时，Xcode 会自动给 App ID 加上 HealthKit 能力。
 
@@ -22,9 +35,9 @@ Apple 健康没有网页接口，所以由 iPhone 上的 Jurvis 读取：
 
 1. 在 <https://developer-dashboard.whoop.com> 创建一个应用。
    - 权限勾选 `read:recovery`、`read:cycles`、`read:sleep`、`read:workout`、`read:body_measurement` 和 `offline`。
-   - 回调地址（Redirect URL）填 `https://localhost:18777/oauth/whoop`。如果设置了 `JURVIS_OAUTH_BASE` 或 `JURVIS_PUBLIC_URL`，就填那个地址加 `/oauth/whoop`。健康页面会显示准确的地址。
-2. 在 `.env` 里填 `JURVIS_WHOOP_CLIENT_ID` 和 `JURVIS_WHOOP_CLIENT_SECRET`，然后重启引擎。
-3. 在「健康」页点「连接」，在浏览器里登录 WHOOP 并授权。
+   - 回调地址（Redirect URL）填 `https://localhost:18777/oauth/whoop`。如果设置了 `JURVIS_OAUTH_BASE` 或 `JURVIS_PUBLIC_URL`，就填那个地址加 `/oauth/whoop`。「设置」窗口里会显示准确的地址，可以直接复制。
+2. 在「设置 → 健康与运动」的 WHOOP 那一行点「设置」，填 Client ID 和 Client Secret。它们只存在 Mac 上的 `data/security/health.json`，不用重启。也可以写在 `.env` 里（`JURVIS_WHOOP_CLIENT_ID`、`JURVIS_WHOOP_CLIENT_SECRET`），`.env` 优先。
+3. 在 Mac 上点「连接」，在浏览器里登录 WHOOP 并授权。回调地址是 `localhost` 时，必须在 Mac 上点，因为浏览器要回到这台 Mac。
    - 本机地址用的是自签名证书，浏览器第一次会提示不安全，选择继续即可。
    - 授权后会同步最近 30 天，之后每 15 分钟同步一次。
 
@@ -35,8 +48,8 @@ Apple 健康没有网页接口，所以由 iPhone 上的 Jurvis 读取：
 Google Health API 取代了旧的 Fitbit Web API 和 Google Fit，覆盖 Fitbit 和 Pixel Watch 的数据。
 
 1. 在 Google Cloud 里启用 Google Health API。在「API 和服务 → 凭据」里创建一个「Web 应用」类型的 OAuth 客户端，重定向 URI 填 `https://localhost:18777/oauth/google`（或者你的 `JURVIS_OAUTH_BASE` 加 `/oauth/google`）。
-2. 在 `.env` 里填 `JURVIS_GOOGLE_CLIENT_ID` 和 `JURVIS_GOOGLE_CLIENT_SECRET`，然后重启引擎。
-3. 在「健康」页点「连接」。
+2. 在「设置 → 健康与运动」的 Google Health 那一行点「设置」，填客户端 ID 和客户端密钥（或者写在 `.env` 的 `JURVIS_GOOGLE_CLIENT_ID`、`JURVIS_GOOGLE_CLIENT_SECRET`）。
+3. 在 Mac 上点「连接」。
 
 会读取的数据：步数、睡眠、每日静息心率、每日 HRV、运动记录。Google Health API 的经期数据只能写入、不能读取，所以经期请在 Apple 健康里记录，或者直接告诉 Jurvis。
 
