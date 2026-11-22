@@ -6,6 +6,9 @@ import * as ui from './ui.js';
 import * as connect from './connect.js';
 import * as voiceKit from './voice.js';
 import { connectorRows } from './health.js';
+import { appSetup } from './oauth.js';
+import { brandMark } from './connect.js';
+import { icon } from './icons.js';
 
 const SKILL_TEMPLATE = `---
 name: 我的技能
@@ -38,7 +41,7 @@ export function mount(container) {
     section('语音', els.voice, '语音识别和朗读都在这台 Mac 上完成，录音不会发到别处。'),
     section('记忆', els.memory),
     section('健康与运动', els.health, '睡眠、运动、心率和经期只存在这台 Mac 上；模型只看到汇总数字。'),
-    section('邮件', els.mail, '只读：Jurvis 只看、不发、不标已读。密码只存在这台 Mac 上。默认只有本机模型能读邮件。'),
+    section('邮件', els.mail, '只读：Jurvis 只看，不发信，也不标已读。Gmail 和 Outlook 用账号登录授权；默认只有本机模型能读。'),
     section('主动关心', els.care, '睡眠、压力、恢复或心情一变差，Jurvis 就会用本机模型看看最近的邮件和对话，马上主动问候你，并发通知。同一件事不重复说，安静时段先攒着，到点再发。'),
     section('技能', els.skills, '技能是一份写给 Jurvis 的做法说明（SKILL.md），它会在合适的时候照着做。'),
     section('MCP 服务', els.mcp, '通过 MCP 给 Jurvis 接入外部工具。'),
@@ -371,36 +374,57 @@ function renderMail() {
   const el = els.mail;
   if (failed(el, 'mail') || !data.mail) return;
   const apply = (result) => { data.mail.accounts = result.accounts; renderMail(); };
+  const accounts = data.mail.accounts || [];
   fill(el,
-    ...data.mail.accounts.map((a) => h('article', { class: 'card' },
-      h('div', { class: 'device-head' }, h('strong', null, a.address), h('span', { class: 'badge ok' }, '已连接')),
-      h('div', { class: 'muted small break' }, `${a.host} · ${a.cloud ? '本机和云端模型都能读' : '只有本机模型能读'}`),
-      h('div', { class: 'row end' },
-        action(a.cloud ? '只给本机模型' : '也允许云端模型', async () => apply(await put('/api/mail/' + encodeURIComponent(a.id), { kind: a.kind, address: a.address, host: a.host, cloud: !a.cloud })), { class: 'btn small' }),
-        action('移除', async () => { if (!await ui.ask(`移除邮箱 ${a.address}？`)) return; apply(await del('/api/mail/' + encodeURIComponent(a.id))); }, { class: 'btn small' })))),
-    data.mail.accounts.length ? null : h('p', { class: 'muted' }, '还没有连接邮箱。'),
-    h('div', { class: 'row' }, h('button', { class: 'btn small', type: 'button', onclick: () => addMail(apply) }, '添加邮箱')));
+    accounts.length ? h('div', { class: 'health-accounts' }, accounts.map((a) => h('div', { class: 'health-account' },
+      brandMark(a.name, '', a.kind),
+      h('div', { class: 'made-text grow' },
+        h('strong', null, a.address),
+        h('span', { class: (a.error ? 'error-text' : 'muted') + ' small' }, a.error || `${a.name} · ${a.auth === 'oauth' ? '已登录授权' : '专用密码'} · 只读`)),
+      h('div', { class: 'row' },
+        action(a.cloud ? '本机和云端模型' : '仅本机模型', async () => apply(await patch('/api/mail/' + encodeURIComponent(a.id), { cloud: !a.cloud })),
+          { class: 'btn small', title: a.cloud ? '点一下改成只给本机模型读' : '点一下也允许云端模型读' }),
+        action(icon('trash', 15), async () => { if (!await ui.ask(`移除邮箱 ${a.address}？`)) return; apply(await del('/api/mail/' + encodeURIComponent(a.id))); },
+          { class: 'icon-btn small', 'aria-label': `移除 ${a.address}`, title: '移除' }))))) : null,
+    h('div', { class: 'mail-grid' }, (data.mail.presets || []).map((p) => h('button', { class: 'mail-tile', type: 'button', onclick: () => connectMail(p) },
+      brandMark(p.name, 'large', p.kind),
+      h('span', { class: 'mail-name' }, p.name),
+      h('span', { class: 'mail-how' }, p.auth === 'oauth' ? (p.kind === 'gmail' ? '用 Google 登录' : '用 Microsoft 登录') : p.secret)))));
 }
 
-function addMail(apply) {
-  const presets = data.mail.presets || [];
-  const kind = ui.select({ value: 'gmail', 'aria-label': '邮箱类型' }, presets.map((p) => ({ value: p.kind, label: { gmail: 'Gmail', icloud: 'iCloud', outlook: 'Outlook', qq: 'QQ 邮箱', 163: '163 邮箱', 126: '126 邮箱', imap: '其他（IMAP）' }[p.kind] || p.kind })));
-  const hint = h('p', { class: 'muted small' });
+export function refreshMail() { return loadPart('mail', '/api/mail', (r) => r, renderMail); }
+
+async function connectMail(p) {
+  if (p.auth !== 'oauth') { addMail(p); return; }
+  if (!p.app.configured) { appSetup(p.app, refreshMail, p.kind === 'gmail' ? 'Google 开发者应用（Gmail 和 Google Health 共用）' : 'Microsoft 开发者应用'); return; }
+  try {
+    const { url } = await post('/api/mail/connect/' + p.kind, {});
+    window.open(url, '_blank', 'noopener');
+    notify(`在新打开的页面里登录 ${p.name}，完成后这里会自动出现。` + (p.app.on_this_mac ? '（回调地址是 localhost，需要在 Mac 上操作）' : ''), 'info');
+  } catch (err) { notify(err.message); }
+}
+
+function addMail(p) {
   const address = h('input', { class: 'input', type: 'email', placeholder: 'you@example.com', autocomplete: 'off', autocapitalize: 'off' });
-  const password = h('input', { class: 'input', type: 'password', placeholder: '应用专用密码或授权码', autocomplete: 'off' });
+  const secret = h('input', { class: 'input', type: 'password', placeholder: p.secret, autocomplete: 'off' });
   const host = h('input', { class: 'input', placeholder: 'imap.example.com', autocapitalize: 'off', autocomplete: 'off' });
-  const hostRow = h('label', { class: 'field' }, h('span', null, 'IMAP 服务器'), host);
-  const sync = () => { const p = presets.find((x) => x.kind === kind.value) || {}; hint.textContent = p.hint || ''; hostRow.hidden = kind.value !== 'imap'; };
-  kind.addEventListener('change', sync);
-  sync();
   const save = h('button', { class: 'btn primary', type: 'submit' }, '连接');
-  const form = h('form', { class: 'stack' }, h('label', { class: 'field' }, h('span', null, '邮箱'), kind), hint,
-    h('label', { class: 'field' }, h('span', null, '地址'), address), h('label', { class: 'field' }, h('span', null, '密码'), password), hostRow, h('div', { class: 'row end' }, save));
-  const close = sheet('添加邮箱', form);
+  const form = h('form', { class: 'stack' },
+    h('div', { class: 'mail-sheet-head' }, brandMark(p.name, 'large', p.kind), h('p', { class: 'muted small' }, p.hint)),
+    p.link ? h('a', { href: p.link, target: '_blank', rel: 'noopener', class: 'small' }, `打开 ${p.name} 的设置页 ↗`) : null,
+    h('label', { class: 'field' }, h('span', null, '邮箱地址'), address),
+    h('label', { class: 'field' }, h('span', null, p.secret), secret),
+    p.kind === 'imap' ? h('label', { class: 'field' }, h('span', null, 'IMAP 服务器'), host) : null,
+    h('p', { class: 'muted small' }, `${p.secret}只保存在这台 Mac 上，只用来读取收件箱；不会发信，也不会把邮件标为已读。`),
+    h('div', { class: 'row end' }, save));
+  const close = sheet(`连接 ${p.name}`, form);
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     const id = (address.value.split('@')[0] || 'mail').toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 24) || 'mail';
-    const ok = await run(save, async () => apply(await put('/api/mail/' + encodeURIComponent(id), { kind: kind.value, address: address.value.trim(), password: password.value, host: host.value.trim() })));
+    const ok = await run(save, async () => {
+      const result = await put('/api/mail/' + encodeURIComponent(id), { kind: p.kind, address: address.value.trim(), password: secret.value, host: host.value.trim() });
+      data.mail.accounts = result.accounts; renderMail();
+    });
     if (ok) close();
   });
 }

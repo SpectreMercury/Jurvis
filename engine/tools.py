@@ -23,6 +23,7 @@ from .agenda import Agenda
 from .ledger import CATEGORIES, TOTAL, Ledger
 from .health import Health
 from .mail import Mail
+from .oauth import OAuthApps
 from .coding import Coding, CodeEdit, CodeTask
 from .home import ACTIONS as HOME_ACTIONS, TYPES as HOME_TYPES, ConnectorError
 from .mcp import McpError
@@ -494,7 +495,8 @@ class ToolRegistry:
         self.agenda = Agenda(store)
         self.ledger = Ledger(store)
         self.health = Health(store)
-        self.mail = Mail(settings)
+        self.oauth = OAuthApps(settings)  # the user's own Google, WHOOP and Microsoft apps, shared by health and mail
+        self.mail = Mail(settings, self.oauth)
         self.coding = Coding(settings, store)
         self.llm = self.memory = self.skills = self.home = self.mcp = None  # attached by the worker; tools that need them are offered only then
         self.shell = self.browser = self.media = None

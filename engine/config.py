@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     whoop_client_secret: str = ""
     google_client_id: str = ""
     google_client_secret: str = ""
+    microsoft_client_id: str = ""                # Outlook mail (engine/mail.py)
+    microsoft_client_secret: str = ""
     oauth_base: str = ""                      # where the browser comes back after connecting; empty uses public_url, then https://localhost:<port>
 
     def prepare(self):

@@ -465,15 +465,39 @@ def create_app(settings=None, *, run_worker=True):
                                                         str(body.get("password") or ""),str(body.get("host") or ""),bool(body.get("cloud")))}
         except OSError as exc:raise HTTPException(502,f"连不上邮件服务器：{exc}")
 
+    @app.patch("/api/mail/{ident}")
+    async def mail_share(ident:str,body:dict):
+        try:return {"accounts":worker.tools.mail.share(ident,bool(body.get("cloud")))}
+        except ValueError as exc:raise HTTPException(404,str(exc))
+
+    @app.post("/api/mail/connect/{kind}")
+    async def mail_connect(kind:str,body:dict|None=None):
+        """Gmail and Outlook: the address to sign in at. The browser comes back to /oauth/google or /oauth/microsoft."""
+        try:return worker.tools.mail.start(kind,bool((body or {}).get("cloud")))
+        except ValueError as exc:raise HTTPException(400,str(exc))
+
+    @app.put("/api/oauth/{provider}")
+    async def oauth_app(provider:str,body:dict):
+        """The user's own Google, WHOOP or Microsoft app, entered in 设置. The secret is never sent back."""
+        try:worker.tools.oauth.set(provider,str(body.get("client_id") or ""),str(body.get("client_secret") or ""))
+        except ValueError as exc:raise HTTPException(400,str(exc))
+        return worker.tools.oauth.describe(provider)
+
     @app.delete("/api/mail/{ident}")
     async def mail_remove(ident:str):
         worker.tools.mail.remove(ident);return {"accounts":worker.tools.mail.public()}
 
     @app.get("/oauth/{provider}")
     async def oauth_return(provider:str,code:str="",state:str="",error:str=""):
-        """Where the browser lands after the user connects WHOOP or Google Health. Needs no device token: the single-use state is the proof."""
+        """Where the browser lands after the user signs in to WHOOP, Google (Health or Gmail) or Microsoft (Outlook).
+        Needs no device token: the single-use state is the proof, and it also says what the sign-in was for."""
         if error or not code:return HTMLResponse(page_note("没有连接",f"授权没有完成（{error or '缺少 code'}）。可以回到 Jurvis 再试一次。"),status_code=400)
-        try:await worker.health_sync.finish(provider,code,state)
+        try:
+            if worker.tools.oauth.purpose(state)=="mail":
+                address=await worker.tools.mail.finish(provider,code,state)
+                store.event("mail",address)
+                return HTMLResponse(page_note("邮箱已连接",f"{address} 已经连好了（只读）。可以关掉这个页面，回到 Jurvis。"))
+            await worker.health_sync.finish(provider,code,state)
         except Exception as exc:return HTMLResponse(page_note("没有连接",str(exc)[:300]),status_code=400)
         return HTMLResponse(page_note("已连接","已经连好了，正在同步最近 30 天的数据。可以关掉这个页面，回到 Jurvis 的「健康」。"))
 

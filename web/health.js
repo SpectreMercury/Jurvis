@@ -1,6 +1,7 @@
 // 健康: sleep, activity, heart and recovery from Apple Health (the iPhone app), WHOOP and Google Health, and the menstrual cycle.
 // This page reads them straight from the Mac. Models see only period summaries, and the cycle only the local model.
-import { store, h, fill, get, post, put, del, run, action, notify, sheet } from './core.js';
+import { store, h, fill, get, post, del, action, notify } from './core.js';
+import { appSetup } from './oauth.js';
 import * as ui from './ui.js';
 import { brandMark } from './connect.js';
 
@@ -60,7 +61,7 @@ export function connectorRows(list, changed) {
         action('断开', async () => { if (!await ui.ask(`断开 ${c.name}？已同步的数据会保留。`)) return; await del('/api/health/connect/' + c.provider); changed(); }, { class: 'btn small' })];
     } else {
       sub = c.configured ? (c.on_this_mac ? '未连接 · 请在这台 Mac 上点「连接」' : '未连接') : '需要先填一个你自己的开发者应用（只需一次）';
-      buttons = [h('button', { class: 'btn small', type: 'button', onclick: () => setup(c, changed) }, '设置')];
+      buttons = [h('button', { class: 'btn small', type: 'button', onclick: () => appSetup(c, changed, c.name) }, '设置')];
       if (c.configured) buttons.push(action('连接', async () => { const r = await post('/api/health/connect/' + c.provider); window.open(r.url, '_blank', 'noopener'); }, { class: 'btn primary small' }));
     }
     return h('div', { class: 'health-account' }, brandMark(c.name, '', c.provider),
@@ -69,27 +70,6 @@ export function connectorRows(list, changed) {
   });
 }
 
-function setup(c, changed) {
-  const id = h('input', { class: 'input', autocomplete: 'off', autocapitalize: 'off', spellcheck: false, value: c.client_id || '', placeholder: 'Client ID' });
-  const secret = h('input', { class: 'input', type: 'password', autocomplete: 'off', placeholder: c.configured ? '留空则保留已保存的密钥' : 'Client Secret' });
-  const save = h('button', { class: 'btn primary', type: 'submit' }, '保存');
-  const copy = h('button', { class: 'btn small', type: 'button', onclick: () => navigator.clipboard.writeText(c.redirect_uri).then(() => notify('已复制回调地址', 'info'), () => {}) }, '复制');
-  const form = h('form', { class: 'stack' },
-    h('p', { class: 'muted small' }, c.setup),
-    h('a', { href: c.console, target: '_blank', rel: 'noopener', class: 'small' }, '打开 ' + c.name + ' 开发者后台 ↗'),
-    h('label', { class: 'field' }, h('span', null, '回调地址'), h('div', { class: 'row' }, h('code', { class: 'break grow' }, c.redirect_uri), copy)),
-    c.client_from === 'env' ? h('p', { class: 'muted small' }, '现在用的是 .env 里的应用；在这里保存的只在 .env 没填时生效。') : null,
-    h('label', { class: 'field' }, h('span', null, 'Client ID'), id),
-    h('label', { class: 'field' }, h('span', null, 'Client Secret'), secret),
-    h('p', { class: 'muted small' }, '只保存在这台 Mac 上（data/security/health.json），不会再发回任何设备。'),
-    h('div', { class: 'row end' }, save));
-  const close = sheet(c.name, form);
-  form.addEventListener('submit', async (event) => {
-    event.preventDefault();
-    const ok = await run(save, async () => { await put('/api/health/client/' + c.provider, { client_id: id.value, client_secret: secret.value }); });
-    if (ok) { close(); changed(); notify(`已保存，可以点「连接」了`, 'info'); }
-  });
-}
 
 function summary(s) {
   if (!s.days_with_data) {

@@ -658,7 +658,9 @@ button.info-card:focus-visible { outline: 2px solid var(--ink); outline-offset: 
 .sheet.xl .sheet-head { padding: 16px 16px 16px 32px; }
 .sheet.xl .sheet-body { padding: 24px 32px 32px; }
 .brand-mark { width: 40px; height: 40px; border-radius: 10px; background: var(--fill); display: inline-flex; align-items: center; justify-content: center; flex: none; font-size: 14px; line-height: 20px; font-weight: 500; letter-spacing: -0.28px; color: var(--ink-soft); overflow: hidden; }
-.brand-mark.logo { color: var(--ink); }
+.brand-mark.logo { color: #111; background: #fff; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.08); }
+.brand-mark.brand-letters { color: #fff; font-weight: 600; white-space: nowrap; font-family: inherit; }
+.brand-mark.brand-letters.wide { font-size: 12px; letter-spacing: -0.4px; }
 .brand-mark.large { width: 48px; height: 48px; border-radius: 12px; font-size: 16px; line-height: 24px; }
 .connect { display: flex; flex-direction: column; gap: 24px; }
 .connect-lead { color: var(--ink-soft); max-width: 640px; }
@@ -858,3 +860,11 @@ button.info-card:focus-visible { outline: 2px solid var(--ink); outline-offset: 
 .health-account .made-text { display: flex; flex-direction: column; gap: 1px; flex: 1; }
 .health-account > .row { flex-wrap: wrap; justify-content: flex-end; flex-shrink: 0; }
 @media (max-width: 560px) { .health-account { flex-wrap: wrap; } .health-account > .row { width: 100%; } }
+.mail-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 8px; margin-top: 4px; }
+.mail-tile { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface, transparent); color: var(--ink); text-align: left; cursor: pointer; font: inherit; }
+.mail-tile:hover { border-color: var(--ink-faint); }
+.mail-tile .brand-mark { margin-bottom: 8px; }
+.mail-name { font-size: 14px; line-height: 20px; font-weight: 500; }
+.mail-how { font-size: 12px; line-height: 16px; color: var(--ink-faint); }
+.mail-sheet-head { display: flex; gap: 12px; align-items: flex-start; }
+.mail-sheet-head p { margin: 0; }

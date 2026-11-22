@@ -41,7 +41,10 @@ final class API: NSObject, URLSessionDelegate, @unchecked Sendable {
     /// Replaces the known addresses with the ones the Mac reports. Returns the connection to save, or nil if nothing changed.
     func learn(_ urls: [String]) -> Connection? {
         let known = [connection.url] + (connection.others ?? [])
-        let valid = urls.filter { URL(string: $0)?.scheme == "https" }
+        var valid = urls.filter { URL(string: $0)?.scheme == "https" }
+        // The address in use answers right now; the Mac may not list it (127.0.0.1 for a simulator, an address typed by hand),
+        // so it is kept, last, instead of being forgotten until the next pairing.
+        if !valid.isEmpty, !valid.contains(base) { valid.append(base) }
         guard let first = valid.first, valid != known else { return nil }
         connection.url = first; connection.others = Array(valid.dropFirst())
         return connection

@@ -76,11 +76,29 @@ Google Health API 取代了旧的 Fitbit Web API 和 Google Fit，覆盖 Fitbit 
 
 ## 邮件
 
-在「设置 → 邮件」里添加邮箱。Jurvis 通过 IMAP 读取，Gmail、iCloud、Outlook、QQ、163、126 都有预设；其他邮箱填 IMAP 服务器地址。
+在「设置 → 邮件」里点一个邮箱。
+
+| 邮箱 | 怎么连接 |
+| --- | --- |
+| Gmail | 用 Google 账号登录授权（只读权限 `gmail.readonly`），不用输入密码 |
+| Outlook、Hotmail、Microsoft 365 | 用 Microsoft 账号登录授权（只读权限 `Mail.Read`） |
+| iCloud 邮件 | App 专用密码 |
+| QQ 邮箱、网易 163 / 126 | 授权码 |
+| 其他 IMAP 邮箱 | 服务器地址加专用密码 |
+
+为什么有的要专用密码：Apple、腾讯和网易都没有给第三方 App 用的登录授权，只能在它们的网站上生成一个专用密码或授权码。它只能用来收邮件，不是你的账户密码，随时可以在它们的网站上作废。窗口里有生成步骤和链接。
+
+登录授权需要你自己的开发者应用（和 WHOOP、Google Health 一样，只需填一次）：
+
+- **Gmail**：和 Google Health 共用同一个 Google 应用。在 Google Cloud 里启用 Gmail API，在「OAuth 同意屏幕」里加上 `gmail.readonly` 权限，并把自己加为测试用户。重定向 URI 是 `https://localhost:18777/oauth/google`。
+- **Outlook**：在 Microsoft Entra 管理中心「应用注册」里新建一个应用，账户类型选「任何组织目录中的帐户和个人 Microsoft 帐户」，重定向 URI（Web）填 `https://localhost:18777/oauth/microsoft`，API 权限加 Microsoft Graph 的 `Mail.Read` 和 `offline_access`，再新建一个客户端密码。也可以写在 `.env`：`JURVIS_MICROSOFT_CLIENT_ID`、`JURVIS_MICROSOFT_CLIENT_SECRET`。
+- 开发者应用存在 `data/security/oauth_apps.json`，登录后的令牌和专用密码存在 `data/security/mail.json`，都只有你自己能读，接口不会返回它们。
+- 回调地址是 `localhost` 时，要在 Mac 上点登录。
+
+其他：
 
 - 只读：只看邮件，不发送，不移动，也不标记已读。
-- 密码要用应用专用密码或授权码，存在 `data/security/mail.json`（只有你自己能读），接口不会返回密码。
-- 默认只有本机模型能读邮件。每个邮箱都可以单独设置「也允许云端模型」。
+- 默认只有本机模型能读邮件。每个邮箱都可以单独改成「本机和云端模型都能读」。
 - 工具：`mail_recent` 列出最近的邮件（发件人、主题、时间、开头几行），`mail_read` 读取一封全文。
 
 ## 主动关心
