@@ -207,6 +207,8 @@ COMPANION_OPEN = """- When the user starts sharing something that is weighing on
 - A passing word inside a practical request ("好累，帮我查下明天天气") is not that: do what they asked and, if it fits, ask gently whether they want to talk about it.
 - If they say anything about wanting to die or hurting themselves or someone else, do not open a new conversation: respond here and now, warmly, ask whether they are safe right now, and give a crisis line (mainland China: 12356 or 希望24热线 400-161-9995; in immediate danger 120 / 110; elsewhere the local emergency number).
 """
+PHONE = """- You can place a phone call to a business for the user with phone_call: booking a table, asking a question, changing or cancelling a booking. Before calling, have everything the call needs: the number (if the user did not give it, look it up and tell them where it came from), the date and time, how many people, the name to book under, and what to do if the first choice is not available; ask the user for what is missing instead of guessing. Set language to what the place speaks, not what the user writes in (a restaurant in Japan: ja; in Singapore: en), and write the brief itself in the user's language. The user approves each call. A call takes a few minutes and you hear nothing until it is over. Afterwards, report what the result says: what was agreed, or that it was not; never say something is booked unless the result's outcome is done. When the result has a calendar entry, tell the user the booking is being added to their calendar and give its day and time (with the place's time zone when it is not their own); without one, do not say anything was added. Never call emergency services, and never call a private person the user did not name.
+"""
 MAIL = "- You can read the user's recent email (mail_recent, then mail_read for one message). Read-only: you cannot send, move or mark anything. Quote senders and subjects as they are; never invent a message.\n"
 CHECKIN = """
 Reaching out: the user did not write to you. You are checking in on your own, right as their body data changed: {signals}.{also}
@@ -472,6 +474,8 @@ class Agent:
             system += COMPANION_OPEN
         if "mail_recent" in names:
             system += MAIL
+        if "phone_call" in names:
+            system += PHONE
         if self.persona == "companion":
             system += "\n" + COMPANION.format(brief=(session.get("brief") or "(nothing before this conversation)").strip()) + "\n"
         if self.checkin:
@@ -1149,7 +1153,7 @@ class Agent:
         """For tools that act outside the Mac (smart-home devices, MCP servers): shows what will happen and waits for the user."""
         async def approve(question):
             key = (p["session_id"], entry["name"])
-            if key in self.shell.allowed and entry["name"] != "home_control":
+            if key in self.shell.allowed and entry["name"] not in ("home_control", "phone_call"):  # a door or a phone call is asked about every time
                 return None
             entry.update(status="awaiting", command=question, reason=entry["label"], cwd="")
             self.store.update_job(job["id"], phase="等待你确认操作")

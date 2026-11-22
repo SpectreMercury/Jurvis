@@ -28,9 +28,9 @@ export function brandMark(title, size = '', kind = '') {
   const logo = brandLogo(kind, size === 'large' ? 26 : 22);
   const color = brandColor(kind);
   // A brand's mark in its own colour on a light tile, like an app icon; brands without a mark get their letters on their colour.
-  if (logo) return h('span', { class: 'brand-mark logo' + (size ? ' ' + size : ''), style: color ? `color:${color}` : null, 'aria-hidden': 'true' }, logo);
+  if (logo) return h('span', { class: 'brand-mark logo' + (size ? ' ' + size : ''), style: color ? `--brand:${color}` : null, 'aria-hidden': 'true' }, logo);
   const letters = brandLetters(kind);
-  if (letters) return h('span', { class: 'brand-mark brand-letters' + (letters.length > 2 ? ' wide' : '') + (size ? ' ' + size : ''), style: `background:${color}`, 'aria-hidden': 'true' }, letters);
+  if (letters) return h('span', { class: 'brand-mark brand-letters' + (letters.length > 2 ? ' wide' : '') + (size ? ' ' + size : ''), style: `--brand:${color}`, 'aria-hidden': 'true' }, letters);
   const words = String(title || '?').replace(/[^\p{L}\p{N} ]/gu, ' ').trim().split(/\s+/);
   const latin = /^[A-Za-z]/.test(words[0] || '');
   const text = latin ? (words.length > 1 ? words[0][0] + words[1][0] : words[0].slice(0, 2)) : (words[0] || '?').slice(0, 1);

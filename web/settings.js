@@ -21,7 +21,7 @@ description: 一句话说明什么时候应该使用这个技能
 2. 第二步……
 `;
 
-const data = { health: null, skills: null, mcp: null, home: null, devices: null, mail: null, care: null };
+const data = { health: null, skills: null, mcp: null, home: null, devices: null, mail: null, care: null, phone: null };
 const fail = {};
 const els = {};
 let root = null;
@@ -33,7 +33,7 @@ function section(title, body, hint) {
 export function mount(container) {
   root = container;
   connect.onChange((next) => { if (next) { data.home = next; renderHome(); } });
-  for (const name of ['models', 'voice', 'memory', 'health', 'mail', 'care', 'skills', 'mcp', 'home', 'devices']) els[name] = h('div', { class: 'stack' }, h('p', { class: 'muted' }, '正在读取…'));
+  for (const name of ['models', 'voice', 'memory', 'health', 'mail', 'care', 'phone', 'skills', 'mcp', 'home', 'devices']) els[name] = h('div', { class: 'stack' }, h('p', { class: 'muted' }, '正在读取…'));
   els.about = h('p', { class: 'muted small' });
   container.append(h('div', { class: 'page' },
     h('header', { class: 'page-head' }, h('h1', null, '设置')),
@@ -43,6 +43,7 @@ export function mount(container) {
     section('健康与运动', els.health, '睡眠、运动、心率和经期只存在这台 Mac 上；模型只看到汇总数字。'),
     section('邮件', els.mail, '只读：Jurvis 只看，不发信，也不标已读。Gmail 和 Outlook 用账号登录授权；默认只有本机模型能读。'),
     section('主动关心', els.care, '睡眠、压力、恢复或心情一变差，Jurvis 就会用本机模型看看最近的邮件和对话，马上主动问候你，并发通知。同一件事不重复说，安静时段先攒着，到点再发。'),
+    section('电话', els.phone, 'Jurvis 可以替你给餐厅等商家打电话订位、询问。用的是你自己的电话服务商账户：对方看到的是你的号码，话费记在你的账上。每一通都会先问你。'),
     section('技能', els.skills, '技能是一份写给 Jurvis 的做法说明（SKILL.md），它会在合适的时候照着做。'),
     section('MCP 服务', els.mcp, '通过 MCP 给 Jurvis 接入外部工具。'),
     section('智能家居', els.home),
@@ -70,6 +71,7 @@ export function activate() {
   loadPart('health', '/api/health/connectors', (r) => r.connectors, renderHealth);
   loadPart('mail', '/api/mail', (r) => r, renderMail);
   loadPart('care', '/api/checkin', (r) => r, renderCare);
+  loadPart('phone', '/api/phone', (r) => r, renderPhone);
   loadPart('mcp', '/api/mcp', (r) => r.servers || [], renderMcp);
   loadPart('home', '/api/home', (r) => r, renderHome);
   loadPart('devices', '/api/devices', (r) => r, renderDevices);
@@ -427,6 +429,91 @@ function addMail(p) {
     });
     if (ok) close();
   });
+}
+
+// ---------------------------------------------------------------- 电话
+const CALL_STATUS = { dialing: '正在拨号', ringing: '对方响铃中', talking: '通话中' };
+
+export function refreshPhone() { return loadPart('phone', '/api/phone', (r) => r, renderPhone); }
+
+function renderPhone() {
+  const el = els.phone;
+  if (failed(el, 'phone') || !data.phone) return;
+  const { binding, catalog = [], calls = [], public_url: reach, problem, speech = {} } = data.phone;
+  const spec = binding ? catalog.find((c) => c.kind === binding.kind) : null;
+  const blockers = [
+    !reach ? (problem || '还没有公网地址，电话服务商连不到这台 Mac。') : null,
+    speech.stt && speech.tts ? null : '打电话要用本机的语音识别和语音合成模型，请先在上面的“语音”里装好。',
+  ].filter(Boolean);
+  fill(el,
+    binding ? h('div', { class: 'health-accounts' }, h('div', { class: 'health-account' },
+      brandMark(binding.title, '', binding.kind),
+      h('div', { class: 'made-text grow' },
+        h('strong', null, binding.caller),
+        h('span', { class: 'muted small' }, `${binding.title} · 主叫号码` + (binding.country ? ` · 默认区号 ${binding.country}` : ''))),
+      h('div', { class: 'row' },
+        h('button', { class: 'btn small', type: 'button', onclick: () => bindPhone(spec, binding) }, '修改'),
+        action(icon('trash', 15), async () => {
+          if (!await ui.ask(`解绑 ${binding.title}？之后 Jurvis 就不能打电话了，通话记录会保留。`)) return;
+          data.phone.binding = (await del('/api/phone')).binding; renderPhone();
+        }, { class: 'icon-btn small', 'aria-label': `解绑 ${binding.title}`, title: '解绑' }))))
+      : h('div', { class: 'mail-grid phone-grid' }, catalog.map((c) => h('button', { class: 'mail-tile', type: 'button', onclick: () => bindPhone(c) },
+        brandMark(c.title, 'large', c.kind), h('span', { class: 'mail-name' }, c.title), h('span', { class: 'mail-how' }, c.description)))),
+    binding ? blockers.map((text) => h('p', { class: 'error-text small' }, text)) : null,
+    binding && !blockers.length ? h('p', { class: 'muted small' }, '已经可以用了。在对话里说“帮我给某某餐厅打电话订周六晚上 7 点 4 位”试试。') : null,
+    calls.length ? h('div', { class: 'health-accounts' }, calls.slice(0, 8).map((c) => h('button', { class: 'health-account call-row', type: 'button', onclick: () => showCall(c.id) },
+      h('div', { class: 'made-text grow' },
+        h('strong', null, c.place || c.number),
+        h('span', { class: 'muted small' }, c.status === 'ended' ? (c.summary || c.ended || '') : c.purpose)),
+      h('span', { class: 'call-state' + (c.status !== 'ended' ? ' live' : c.outcome === 'done' ? ' done' : '') },
+        c.status === 'ended' ? (c.outcome_label || '已结束') : CALL_STATUS[c.status] || c.status),
+      h('span', { class: 'muted small' }, shortTime(c.created_at))))) : null);
+}
+
+function bindPhone(spec, binding = null) {
+  if (!spec) return;
+  const inputs = {};
+  const country = h('input', { class: 'input', placeholder: '+86', inputMode: 'tel', autocomplete: 'off', value: binding ? binding.country : '' });
+  const save = h('button', { class: 'btn primary', type: 'submit' }, binding ? '保存' : '绑定');
+  const form = h('form', { class: 'stack' },
+    h('div', { class: 'mail-sheet-head' }, brandMark(spec.title, 'large', spec.kind), h('p', { class: 'muted small' }, spec.setup)),
+    h('a', { href: spec.console, target: '_blank', rel: 'noopener', class: 'small' }, `打开 ${spec.title} 后台 ↗`),
+    spec.fields.map((f) => {
+      const kept = binding && f.secret;
+      inputs[f.name] = h('input', { class: 'input', type: f.secret ? 'password' : 'text', autocomplete: 'off', autocapitalize: 'off', spellcheck: false,
+        placeholder: kept ? '已保存，留空则不改' : f.placeholder || '', value: binding && !f.secret ? binding.settings[f.name] || '' : '' });
+      return h('label', { class: 'field' }, h('span', null, f.label + (f.optional ? '（可选）' : '')), inputs[f.name]);
+    }),
+    h('label', { class: 'field' }, h('span', null, '默认国家区号（可选）'), country),
+    h('p', { class: 'muted small' }, '没写区号的号码会按这个区号拨打。凭据只保存在这台 Mac 上，绑定时会向服务商核对一次。'),
+    h('div', { class: 'row end' }, save));
+  const close = sheet(`${binding ? '修改' : '绑定'} ${spec.title}`, form);
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const settings = Object.fromEntries(Object.entries(inputs).map(([name, input]) => [name, input.value.trim()]));
+    const ok = await run(save, async () => {
+      data.phone.binding = (await put('/api/phone', { kind: spec.kind, settings, country: country.value.trim() })).binding;
+      renderPhone();
+    });
+    if (ok) close();
+  });
+}
+
+async function showCall(id) {
+  let c;
+  try { c = await get('/api/phone/calls/' + encodeURIComponent(id)); } catch (err) { notify(err.message); return; }
+  const live = c.status !== 'ended';
+  let close = () => {};
+  const body = h('div', { class: 'stack' },
+    h('p', { class: 'muted small' }, `${c.number} · ${new Date(c.created_at * 1000).toLocaleString('zh-CN')}` + (live ? ` · ${CALL_STATUS[c.status] || ''}` : c.ended ? ` · ${c.ended}` : '')),
+    h('p', { class: 'small' }, h('strong', null, '要办的事：'), c.purpose),
+    c.summary ? h('p', null, h('strong', null, (c.outcome_label || '结果') + '：'), c.summary) : null,
+    c.booking ? h('p', { class: 'muted small' }, `日程：${c.booking.start.replace('T', ' ')}${c.booking.timezone ? `（${c.booking.timezone}）` : ''} · `
+      + (c.booking.status === 'added' ? '已加入日历' : '等 Mac 或 iPhone 上的 Jurvis 打开后加入日历')) : null,
+    c.transcript.length ? h('div', { class: 'call-lines' }, c.transcript.map((t) => h('p', { class: 'call-line ' + t.who },
+      h('span', { class: 'call-who' }, t.who === 'them' ? '对方' : 'Jurvis'), t.text))) : h('p', { class: 'muted small' }, live ? '还没有人说话。' : '没有通话内容。'),
+    live ? h('div', { class: 'row end' }, action('挂断', async () => { await post(`/api/phone/calls/${encodeURIComponent(id)}/hangup`); close(); refreshPhone(); }, { class: 'btn danger' })) : null);
+  close = sheet(c.place || c.number, body);
 }
 
 // ---------------------------------------------------------------- 主动关心

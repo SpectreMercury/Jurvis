@@ -35,6 +35,8 @@
   --sunken: var(--fill);
   --accent: var(--ink);
   --radius: var(--r);
+  --brand-wash: 11%;        /* brand tile: how much brand colour tints the surface */
+  --brand-ink: 92%;         /* brand tile: how much of the mark is brand colour (rest is ink) */
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -54,6 +56,8 @@
     --green-soft: #0f2e18;
     --danger: #ff6166;
     --on-ink: #0a0a0a;
+    --brand-wash: 20%;
+    --brand-ink: 58%;
     --shadow-small: 0 1px 2px rgba(0, 0, 0, .16);
     --shadow: 0 2px 2px rgba(0, 0, 0, .32), 0 8px 8px -8px rgba(0, 0, 0, .16);
     --shadow-menu: 0 1px 1px rgba(0, 0, 0, .02), 0 4px 8px -4px rgba(0, 0, 0, .04), 0 16px 24px -8px rgba(0, 0, 0, .06);
@@ -658,8 +662,9 @@ button.info-card:focus-visible { outline: 2px solid var(--ink); outline-offset: 
 .sheet.xl .sheet-head { padding: 16px 16px 16px 32px; }
 .sheet.xl .sheet-body { padding: 24px 32px 32px; }
 .brand-mark { width: 40px; height: 40px; border-radius: 10px; background: var(--fill); display: inline-flex; align-items: center; justify-content: center; flex: none; font-size: 14px; line-height: 20px; font-weight: 500; letter-spacing: -0.28px; color: var(--ink-soft); overflow: hidden; }
-.brand-mark.logo { color: #111; background: #fff; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.08); }
-.brand-mark.brand-letters { color: #fff; font-weight: 600; white-space: nowrap; font-family: inherit; }
+/* A brand's mark in its own colour on a faint wash of that colour, so the tile follows light and dark like the rest of the page. */
+.brand-mark.logo, .brand-mark.brand-letters { --brand: var(--ink); color: color-mix(in srgb, var(--brand) var(--brand-ink), var(--ink)); background: color-mix(in srgb, var(--brand) var(--brand-wash), var(--surface)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand) 14%, transparent); }
+.brand-mark.brand-letters { font-weight: 600; white-space: nowrap; font-family: inherit; }
 .brand-mark.brand-letters.wide { font-size: 12px; letter-spacing: -0.4px; }
 .brand-mark.large { width: 48px; height: 48px; border-radius: 12px; font-size: 16px; line-height: 24px; }
 .connect { display: flex; flex-direction: column; gap: 24px; }
@@ -868,3 +873,13 @@ button.info-card:focus-visible { outline: 2px solid var(--ink); outline-offset: 
 .mail-how { font-size: 12px; line-height: 16px; color: var(--ink-faint); }
 .mail-sheet-head { display: flex; gap: 12px; align-items: flex-start; }
 .mail-sheet-head p { margin: 0; }
+.phone-grid { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+.phone-grid .mail-how { align-self: stretch; white-space: normal; }
+.call-row { width: 100%; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.call-row .muted { display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
+.call-state { flex-shrink: 0; font-size: 12px; line-height: 16px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--ink-faint); }
+.call-state.done { color: var(--ink); }
+.call-state.live { color: var(--danger); border-color: currentColor; }
+.call-lines { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; max-height: 46vh; overflow-y: auto; }
+.call-line { margin: 0; font-size: 14px; line-height: 21px; overflow-wrap: anywhere; }
+.call-who { display: inline-block; min-width: 3.4em; margin-right: 8px; font-size: 12px; color: var(--ink-faint); }

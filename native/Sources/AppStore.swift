@@ -134,6 +134,7 @@ import ImageIO
             // Publishing re-renders every screen; skip it when nothing changed so typing and IME input are never disturbed.
             if state != snapshot { snapshot = state }
             if let outreach = state.outreach, !outreach.isEmpty { await Notifier.shared.deliver(outreach, store: self) }
+            if let bookings = state.calendar, !bookings.isEmpty { Task { await CalendarSync.shared.add(bookings, store: self) } }
             if !connected { connected = true }
             if connectionStatus != "Mac 已连接" { connectionStatus = "Mac 已连接" }
             await refreshMessages()

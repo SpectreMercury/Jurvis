@@ -12,6 +12,6 @@ Jurvis 的代码和本地数据独立于第三方模型、节点和工作流。�
 - MLX / MLX-LM / MLX-VLM、ComfyUI、ComfyUI-GGUF、ComfyUI-AppleSilicon-FP8 和 PlagueKind 节点：运行版本见 `config/runtime-sources.json` 与两份依赖锁。运行时 Git checkout 内保留上游许可证文件。
 - 语音：[SenseVoiceSmall](https://huggingface.co/mlx-community/SenseVoiceSmall)（FunAudioLLM，按其模型许可使用）用于识别，[Qwen3-TTS](https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit)（Apache 2.0）用于合成，均为 mlx-community 的 MLX 转换版，由 mlx-audio 加载。权重不随源码分发，按[本地模型](MODELS.md#语音模型)下载。
 - [Lucide 图标](https://lucide.dev) 1.75.0：ISC 许可证。网页端用到的 56 个图标由 `scripts/web_icons.py` 从 `lucide-static` 包里取出形状，内嵌在 `web/icons.js`，运行时不依赖图标包。
-- [Simple Icons](https://simpleicons.org) 16.38.0：图形为 CC0。网页端“连接品牌”里 Home Assistant、SmartThings、openHAB、Philips Hue、IKEA、LG、LIFX、Shelly 这 8 个标志由 `scripts/web_brands.py` 取出，内嵌在 `web/brands.js`。这些标志是各自所有者的商标，这里只用来标明连接器对接的是哪个平台，不代表与这些品牌有合作或获得其认可；各品牌的使用规范见 Simple Icons 数据里的 guidelines 链接。Simple Icons 未收录的品牌显示首字母。
+- [Simple Icons](https://simpleicons.org) 16.38.0：图形为 CC0。网页端“连接品牌”里 Home Assistant、SmartThings、openHAB、Philips Hue、IKEA、LG、LIFX、Shelly 这 8 个标志由 `scripts/web_brands.py` 取出，内嵌在 `web/brands.js`。这些标志是各自所有者的商标，这里只用来标明连接器对接的是哪个平台，不代表与这些品牌有合作或获得其认可；各品牌的使用规范见 Simple Icons 数据里的 guidelines 链接。Simple Icons 未收录的 Twilio 和 Telnyx，标志取自它们各自的官网（来源写在 `scripts/web_brands.py` 的 `OWN` 里），同样只用来标明电话服务商；其余未收录的品牌显示首字母。
 
 本项目只接入上面列出的组件。

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Literal
 import psutil
 import httpx
-from fastapi import FastAPI, HTTPException, Request, UploadFile, File
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, WebSocket
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -19,6 +19,7 @@ from .runtime import Runtime
 from .schemas import ChatCreate,StreamCreate,CommandDecision,SessionCreate,SessionUpdate,ImageRequest,VideoRequest,ProjectCreate,ProjectProduce,ProjectUpdate,MemoryCreate,PairRequest,SettingsUpdate,SpeakRequest,ProviderUpdate,SkillSave,McpServerSave,ConnectorSave,HomeControl
 from .llm import LOCAL,split
 from .speech import Speech,SpeechError,MAX_AUDIO_BYTES,IDLE_SECONDS
+from .phone import Phone
 from .security import Security,funnel_url,lan_addresses,reach_addresses
 from .store import Store,dumps,new_id
 from .worker import Worker
@@ -44,6 +45,7 @@ def create_app(settings=None, *, run_worker=True):
     runtime=Runtime(settings)
     worker=Worker(settings,store,runtime)
     speech=Speech(settings)
+    phone=worker.tools.phone=Phone(settings,store,worker.llm,speech,worker.prefs)
     tidy={}
     def tidy_later():
         # give the speech models' memory back once they have sat unused for a while
@@ -58,13 +60,13 @@ def create_app(settings=None, *, run_worker=True):
         speech.close()
 
     app=FastAPI(title="Jurvis Engine",version=__version__,lifespan=lifespan,docs_url=None,redoc_url=None,openapi_url=None)
-    app.state.store,app.state.security,app.state.worker=store,security,worker
+    app.state.store,app.state.security,app.state.worker,app.state.phone=store,security,worker,phone
 
     @app.middleware("http")
     async def authenticate(request,call_next):
         path=request.url.path
         if path=="/":return RedirectResponse("/app/")
-        if path not in ("/health","/pair") and not path.startswith(("/app","/oauth/")):
+        if path not in ("/health","/pair") and not path.startswith(("/app","/oauth/","/phone/")):
             header=request.headers.get("authorization","")
             identity=security.authorize(header[7:] if header.startswith("Bearer ") else "")
             if not identity:return JSONResponse({"detail":"请先与 Mac 配对"},status_code=401)
@@ -105,6 +107,8 @@ def create_app(settings=None, *, run_worker=True):
                 "outreach":store.all("""SELECT m.id,m.session_id,m.content,m.created_at,s.title FROM messages m JOIN sessions s ON s.id=m.session_id
                                         WHERE json_extract(m.metadata,'$.checkin') AND m.status='complete' AND m.content!='' AND m.created_at>=?
                                         ORDER BY m.created_at DESC LIMIT 5""",(time.time()-86400,)),
+                # Bookings made on the phone that no device has put in a calendar yet: the first app to claim one adds it.
+                "calendar":phone.calendar(),
                 "chat_model":worker.llm.chat_model(),
                 "runtime":{"active":runtime.active,"memory_used_gib":round(psutil.virtual_memory().used/2**30,1),"memory_total_gib":round(psutil.virtual_memory().total/2**30,1)},
                 "last_event":(store.one("SELECT MAX(id) AS id FROM events")["id"] or 0)}
@@ -486,6 +490,59 @@ def create_app(settings=None, *, run_worker=True):
     @app.delete("/api/mail/{ident}")
     async def mail_remove(ident:str):
         worker.tools.mail.remove(ident);return {"accounts":worker.tools.mail.public()}
+
+    # ---- phone calls ----
+    @app.get("/api/phone")
+    async def phone_state():
+        return {"catalog":phone.catalog(),"binding":phone.public(),"calls":phone.calls(),**await phone.reach(),
+                "speech":{k:speech.status()[k] for k in ("stt","tts")}}
+
+    @app.put("/api/phone")
+    async def phone_bind(body:dict):
+        binding=await phone.bind(str(body.get("kind") or ""),body.get("settings") if isinstance(body.get("settings"),dict) else {},str(body.get("country") or ""))
+        return {"binding":binding}
+
+    @app.delete("/api/phone")
+    async def phone_unbind():
+        phone.unbind();return {"binding":None}
+
+    @app.get("/api/phone/calls/{ident}")
+    async def phone_call(ident:str):
+        record=phone.record(ident)
+        if not record:raise HTTPException(404,"没有这通电话的记录")
+        return record
+
+    @app.post("/api/phone/calls/{ident}/hangup")
+    async def phone_hangup(ident:str):
+        if not phone.stop(ident):raise HTTPException(409,"这通电话已经结束了")
+        return {"ok":True}
+
+    @app.post("/api/calendar/{ident}/claim")
+    async def calendar_claim(ident:str,request:Request):
+        entry=phone.claim(ident,request.state.identity["id"])
+        if not entry:raise HTTPException(409,"已经有设备在添加这条日程了")
+        return entry
+
+    @app.post("/api/calendar/{ident}/done")
+    async def calendar_done(ident:str,body:dict,request:Request):
+        phone.added(ident,request.state.identity["id"],bool(body.get("ok")));return {"ok":True}
+
+    @app.post("/phone/status/{token}")
+    async def phone_status(token:str,request:Request):
+        """Where the telephone provider reports how a call is going. Needs no device token: the address was made for one call,
+        and the report is checked against the provider's signature."""
+        if not phone.report(token,request.headers,await request.body()):raise HTTPException(403,"refused")
+        return Response(status_code=204)
+
+    @app.websocket("/phone/stream/{token}")
+    async def phone_stream(socket:WebSocket,token:str):
+        """The audio of one call, opened by the telephone provider when the call is answered."""
+        if token not in phone.live:
+            await socket.close(code=1008);return
+        await socket.accept()
+        await phone.stream(token,socket)
+        try:await socket.close()
+        except RuntimeError:pass
 
     @app.get("/oauth/{provider}")
     async def oauth_return(provider:str,code:str="",state:str="",error:str=""):

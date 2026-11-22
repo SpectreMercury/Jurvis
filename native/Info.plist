@@ -38,6 +38,8 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>NSCalendarsWriteOnlyAccessUsageDescription</key>
+	<string>Jurvis 替你打电话订好位后，把这次预订加进日历。它只添加，不读取你的日历。</string>
 	<key>NSCameraUsageDescription</key>
 	<string>扫描 Mac 上的配对二维码。</string>
 	<key>NSHealthShareUsageDescription</key>
