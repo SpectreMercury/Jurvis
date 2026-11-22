@@ -31,6 +31,7 @@
 | **Media** | Text-to-image and image editing (Qwen Image), first/last-frame video, full short-drama pipeline with H.264/AAC export. |
 | **Voice** | Dictation, read-aloud and hands-free voice conversation. Recognition and synthesis run on the Mac with local models; clients only record and play. |
 | **Smart home** | 16 connectors, including Home Assistant, Philips Hue, SmartThings and Tuya. |
+| **Phone calls** | Calls a restaurant or other business for you (book, ask, change) through your own Twilio or Telnyx account, and reports back with the transcript. |
 | **Clients** | Mac, iPhone and iPad (one SwiftUI codebase) and an installable web app, all paired to the same engine. |
 | **Tasks** | Persistent SQLite queue with cancel, retry and idempotent submission. Local GPU jobs run one at a time, cloud conversations in parallel. |
 
@@ -81,7 +82,7 @@ flowchart LR
 
 - **Direct connection.** Devices talk to the Mac over TLS with certificate pinning and one-time pairing invitations. There is no cloud relay.
 - **Local by default.** The local model sends nothing off the machine. A cloud model receives the conversation, attachments, retrieved memories and tool results.
-- **Confirmation first.** Shell commands, code changes, browser clicks and typing, non-read-only MCP tools, and locks, doors and cameras all ask before acting.
+- **Confirmation first.** Shell commands, code changes, browser clicks and typing, non-read-only MCP tools, locks, doors and cameras, and every phone call all ask before acting.
 - **No sandbox.** Commands and project scripts run as your user on the Mac. The assistant never commits, pushes or publishes on its own.
 
 ## Testing
@@ -110,6 +111,7 @@ The real-model suites show some run-to-run variance. Details are in [Testing](do
 | [Web app (PWA)](docs/PWA.md) | Open, pair, install to the home screen |
 | [Native apps](docs/APPS.md) | Build the Mac app, install on iPhone / iPad, TestFlight |
 | [Smart-home connectors](docs/CONNECTORS.md) | Supported brands and the token each one needs |
+| [Phone calls](docs/PHONE.md) | Bind a telephone provider, how a call runs, fixed rules and limits |
 | [Creative extensions](docs/EXTENSIONS.md) | Optional video components, exact versions and checksums |
 | [Data and operations](docs/OPERATIONS.md) | Data layout, ports, backup, safety boundaries |
 | [Testing](docs/TESTING.md) | Unit tests, coverage and acceptance suites |

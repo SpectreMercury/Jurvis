@@ -119,7 +119,7 @@ def test_the_page_and_the_iphone_import(app):
 def test_connecting_an_account_needs_the_users_own_oauth_app(tmp_path):
     settings = Settings(data=tmp_path / "d", whoop_client_id="cid", whoop_client_secret="sec", oauth_base="https://mac.example.ts.net")
     sync = HealthSync(settings, Health(Store(tmp_path / "h.db")), None)
-    with pytest.raises(ValueError, match="健康与运动"):
+    with pytest.raises(ValueError, match="开发者应用"):
         sync.connect("google")
     url = sync.connect("whoop")["url"]
     assert url.startswith("https://api.prod.whoop.com/oauth/oauth2/auth?") and "redirect_uri=https%3A%2F%2Fmac.example.ts.net%2Foauth%2Fwhoop" in url and "offline" in url

@@ -225,6 +225,8 @@ function handleEvent(event) {
   if (event.entity === 'goals' || event.entity === 'schedules') { goals.refresh(); return; }
   if (event.entity === 'ledger') { ledger.refresh(); return; }
   if (event.entity === 'health') { health.refresh(); return; }
+  if (event.entity === 'mail') { if (store.tab === 'settings') settings.refreshMail(); return; }
+  if (event.entity === 'calls' || event.entity === 'phone') { if (store.tab === 'settings') settings.refreshPhone(); return; }
   if (event.entity === 'settings' && store.tab === 'settings') settings.onSettingsEvent();
   refreshState();
 }

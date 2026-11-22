@@ -65,7 +65,7 @@ class Worker:
         self.catalog=MediaCatalog(settings)
         self.coding=Coding(settings,store)
         self.agent=Agent(settings,store,runtime,self.tools,self.media,self.shell,self.llm,self.memory,self.skills)
-        self.health_sync=HealthSync(settings,self.tools.health,store)
+        self.health_sync=HealthSync(settings,self.tools.health,store,self.tools.oauth)
         self.checkin=Checkin(settings,store,self.tools.health)
         self.stream=Stream(store)
         self.asks=Asks(store)

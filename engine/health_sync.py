@@ -6,35 +6,21 @@ health address that needs no device token; a single-use state ties it to the con
 """
 import json
 import logging
-import secrets
 import time
 from datetime import date, datetime, timedelta, timezone
-from urllib.parse import urlencode, urlparse
 
 import httpx
+
+from .oauth import OAuthApps
 
 log = logging.getLogger("jurvis.health")
 
 PROVIDERS = {
-    "whoop": {
-        "name": "WHOOP",
-        "auth": "https://api.prod.whoop.com/oauth/oauth2/auth",
-        "token": "https://api.prod.whoop.com/oauth/oauth2/token",
-        "scope": "offline read:recovery read:cycles read:sleep read:workout read:body_measurement",
-        "console": "https://developer-dashboard.whoop.com",
-        "detail": "恢复、睡眠、日负荷、心率变异性和运动",
-        "setup": "在 WHOOP 开发者后台新建一个 App：Redirect URL 填下面的回调地址，权限勾选 read:recovery、read:cycles、read:sleep、read:workout、read:body_measurement 和 offline。然后把 Client ID 和 Client Secret 填在这里。",
-    },
-    "google": {
-        "name": "Google Health",
-        "auth": "https://accounts.google.com/o/oauth2/v2/auth",
-        "token": "https://oauth2.googleapis.com/token",
-        "scope": " ".join("https://www.googleapis.com/auth/googlehealth." + s for s in
-                          ("activity_and_fitness.readonly", "health_metrics_and_measurements.readonly", "sleep.readonly")),
-        "console": "https://console.cloud.google.com/apis/credentials",
-        "detail": "Fitbit、Pixel Watch 和 Google 健康里的睡眠、步数、心率和运动",
-        "setup": "在 Google Cloud 控制台启用 Google Health API，新建一个 OAuth 客户端（类型选 Web 应用），「已获授权的重定向 URI」填下面的回调地址。然后把客户端 ID 和客户端密钥填在这里。",
-    },
+    "whoop": {"name": "WHOOP", "scope": "offline read:recovery read:cycles read:sleep read:workout read:body_measurement",
+              "detail": "恢复、睡眠、日负荷、心率变异性和运动"},
+    "google": {"name": "Google Health", "scope": " ".join("https://www.googleapis.com/auth/googlehealth." + s for s in
+               ("activity_and_fitness.readonly", "health_metrics_and_measurements.readonly", "sleep.readonly")),
+               "detail": "Fitbit、Pixel Watch 和 Google 健康里的睡眠、步数、心率和运动"},
 }
 WHOOP_API = "https://api.prod.whoop.com/developer/v2"
 GOOGLE_API = "https://health.googleapis.com/v4/users/me/dataTypes"
@@ -62,10 +48,10 @@ def epoch(stamp):
 
 
 class HealthSync:
-    def __init__(self, settings, health, store):
+    def __init__(self, settings, health, store, apps=None):
         self.settings, self.health, self.store = settings, health, store
         self.path = settings.data / "security" / "health.json"
-        self.pending = {}  # state -> (provider, created)
+        self.apps = apps or OAuthApps(settings)
 
     # ---- tokens ----
     def load(self):
@@ -82,34 +68,17 @@ class HealthSync:
         tmp.replace(self.path)
 
     def client(self, provider):
-        """The OAuth app to connect with: from .env when set there, otherwise the one the user entered in the app."""
-        cid = getattr(self.settings, f"{provider}_client_id", "")
-        secret = getattr(self.settings, f"{provider}_client_secret", "")
-        if cid and secret:
-            return cid, secret
-        saved = self.load().get("clients", {}).get(provider, {})
-        return saved.get("id", ""), saved.get("secret", "")
+        return self.apps.get(provider)
 
     def set_client(self, provider, cid, secret):
-        """The user's own OAuth app, entered in 设置. A blank secret keeps the saved one; both blank removes it."""
+        """The user's own OAuth app, entered in 设置 (shared: the Google one also serves Gmail)."""
         if provider not in PROVIDERS:
             raise ValueError("unknown provider")
-        data = self.load()
-        clients = data.setdefault("clients", {})
-        cid, secret = (cid or "").strip(), (secret or "").strip()
-        if not cid and not secret:
-            clients.pop(provider, None)
-        else:
-            secret = secret or clients.get(provider, {}).get("secret", "")
-            if not cid or not secret:
-                raise ValueError("请同时填写 Client ID 和 Client Secret")
-            clients[provider] = {"id": cid, "secret": secret}
-        self.save(data)
+        self.apps.set(provider, cid, secret)
         return self.status()
 
     def redirect(self, provider):
-        base = (self.settings.oauth_base or getattr(self.settings, "public_url", "") or f"https://localhost:{self.settings.port}").rstrip("/")
-        return f"{base}/oauth/{provider}"
+        return self.apps.redirect(provider)
 
     def status(self):
         """Every health connector: Apple Health and Apple Fitness (read on the iPhone), then WHOOP and Google Health (OAuth)."""
@@ -124,44 +93,23 @@ class HealthSync:
              "synced_at": apple and apple["synced_at"], "error": None, "workouts_30_days": workouts,
              "detail": "体能训练、活动能量、锻炼分钟和步行跑步距离，随 Apple 健康一起同步"},
         ]
-        env = {key for key in PROVIDERS if getattr(self.settings, f"{key}_client_id", "") and getattr(self.settings, f"{key}_client_secret", "")}
         for key, p in PROVIDERS.items():
-            cid, secret = self.client(key)
             t = tokens.get(key, {})
-            out.append({"provider": key, "name": p["name"], "kind": "oauth", "configured": bool(cid and secret), "connected": bool(t.get("refresh_token") or t.get("access_token")),
-                        "synced_at": t.get("synced_at"), "error": t.get("error"), "redirect_uri": self.redirect(key), "console": p["console"],
-                        "detail": p["detail"], "setup": p["setup"], "client_id": cid, "client_from": "env" if key in env else "app" if cid else None,
-                        "on_this_mac": urlparse(self.redirect(key)).hostname in ("localhost", "127.0.0.1")})
+            out.append({**self.apps.describe(key), "provider": key, "name": p["name"], "kind": "oauth", "connected": bool(t.get("refresh_token") or t.get("access_token")),
+                        "synced_at": t.get("synced_at"), "error": t.get("error"), "detail": p["detail"]})
         return out
 
     def connect(self, provider):
         if provider not in PROVIDERS:
             raise ValueError("unknown provider")
-        cid, secret = self.client(provider)
-        if not (cid and secret):
-            raise ValueError(f"先在「设置 → 健康与运动」里填 {PROVIDERS[provider]['name']} 的 Client ID 和 Client Secret，回调地址填 {self.redirect(provider)}")
-        state = secrets.token_urlsafe(24)
-        now = time.time()
-        self.pending = {s: v for s, v in self.pending.items() if now - v[1] < 900}
-        self.pending[state] = (provider, now)
-        query = {"response_type": "code", "client_id": cid, "redirect_uri": self.redirect(provider), "scope": PROVIDERS[provider]["scope"], "state": state}
-        if provider == "google":
-            query.update(access_type="offline", prompt="consent", include_granted_scopes="true")
-        return {"url": PROVIDERS[provider]["auth"] + "?" + urlencode(query)}
+        extra = {"access_type": "offline", "prompt": "consent", "include_granted_scopes": "true"} if provider == "google" else {}
+        return {"url": self.apps.start(provider, "health", PROVIDERS[provider]["scope"], **extra)}
 
     async def finish(self, provider, code, state):
         """The browser came back with a code: trade it for tokens and pull the first month."""
-        held = self.pending.pop(state, None)
-        if not held or held[0] != provider or time.time() - held[1] > 900:
-            raise ValueError("这个连接链接已失效，请回到 Jurvis 重新点连接")
-        cid, secret = self.client(provider)
-        async with httpx.AsyncClient(timeout=30) as http:
-            r = await http.post(PROVIDERS[provider]["token"], data={"grant_type": "authorization_code", "code": code, "redirect_uri": self.redirect(provider),
-                                                                    "client_id": cid, "client_secret": secret})
-        if r.status_code >= 400:
-            raise ValueError(f"{PROVIDERS[provider]['name']} 拒绝了授权：{r.text[:200]}")
+        self.apps.claim(provider, state)
         tokens = self.load()
-        tokens[provider] = {**self.stamp(r.json()), "connected_at": time.time()}
+        tokens[provider] = {**await self.apps.exchange(provider, code), "connected_at": time.time()}
         self.save(tokens)
         await self.sync(provider)
 
@@ -185,7 +133,8 @@ class HealthSync:
         data = {"grant_type": "refresh_token", "refresh_token": t["refresh_token"], "client_id": cid, "client_secret": secret}
         if provider == "whoop":
             data["scope"] = "offline"
-        r = await http.post(PROVIDERS[provider]["token"], data=data)
+        from .oauth import PROVIDERS as APPS
+        r = await http.post(APPS[provider]["token"], data=data)
         if r.status_code >= 400:
             t["error"] = "授权已失效，请重新连接"
             tokens[provider] = t

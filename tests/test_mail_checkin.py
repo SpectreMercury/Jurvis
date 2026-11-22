@@ -68,7 +68,7 @@ def app(tmp_path):
 def connect_mail(mail, letters, seen=(), cloud=False):
     log = []
     mail.connect = lambda account: FakeBox(letters, seen, log)
-    mail.save("work", "gmail", "me@example.com", "app-password", cloud=cloud)
+    mail.save("work", "qq", "me@example.com", "app-password", cloud=cloud)
     return log
 
 
@@ -76,8 +76,8 @@ def test_mail_is_read_only_and_never_shows_the_password(tmp_path):
     mail = Mail(Settings(data=tmp_path))
     log = connect_mail(mail, [letter("7", "老板 <boss@co.com>", "方案还要再改", "周五前给我新版本，这版不行。"),
                               letter("8", "Newsletter <n@x.com>", "本周精选", "Hello", hours_ago=30, html=True)], seen={"8"})
-    assert mail.public() == [{"id": "work", "kind": "gmail", "address": "me@example.com", "host": "imap.gmail.com", "cloud": False,
-                              "checked_at": mail.public()[0]["checked_at"], "error": None}]
+    assert mail.public() == [{"id": "work", "kind": "qq", "name": "QQ 邮箱", "address": "me@example.com", "host": "imap.qq.com", "auth": "password",
+                              "cloud": False, "checked_at": mail.public()[0]["checked_at"], "error": None}]
     assert "app-password" not in json.dumps(mail.public()) and (tmp_path / "security/mail.json").stat().st_mode & 0o077 == 0
     got = mail.recent(days=3)
     assert [m["subject"] for m in got["messages"]] == ["方案还要再改", "本周精选"]
@@ -232,7 +232,7 @@ async def test_a_cloud_model_reads_mail_only_from_accounts_opened_to_it(app):
     from tests.test_agent import run
     await run(app, ScriptedModel([]), "我最近有什么邮件")
     assert not {"mail_recent", "mail_read"} & {t["function"]["name"] for t in sent[0]}
-    worker.tools.mail.save("work", "gmail", "me@example.com", "", cloud=True)  # the user opens it to cloud models; the password is kept
+    worker.tools.mail.share("work", True)  # the user opens it to cloud models
     await run(app, ScriptedModel([]), "那现在呢")
     assert {"mail_recent", "mail_read"} <= {t["function"]["name"] for t in sent[1]} and "recent_conversations" not in {t["function"]["name"] for t in sent[1]}
 
@@ -249,4 +249,89 @@ def test_settings_endpoints(app):
     store.add_message("c", "assistant", "普通回复", "complete")
     assert [o["content"] for o in client.get("/api/state", headers=token).json()["outreach"]] == ["这两天睡得有点少？"]  # the apps notify these
     mail = client.get("/api/mail", headers=token).json()
-    assert mail["accounts"] == [] and {"gmail", "qq", "163", "icloud"} <= {p["kind"] for p in mail["presets"]}
+    assert mail["accounts"] == [] and {"gmail", "outlook", "qq", "163", "icloud"} <= {p["kind"] for p in mail["presets"]}
+    gmail = next(p for p in mail["presets"] if p["kind"] == "gmail")
+    assert gmail["auth"] == "oauth" and gmail["app"]["app"] == "google" and not gmail["app"]["configured"]
+    assert client.post("/api/mail/connect/gmail", headers=token).status_code == 400  # no Google app yet: said plainly
+
+
+# ---------------------------------------------------------------- signing in: Gmail and Outlook
+import base64 as _b64
+
+import httpx
+
+
+def mock(handler, log):
+    def wrapped(request):
+        log.append(request)
+        return handler(request)
+    return lambda: httpx.Client(transport=httpx.MockTransport(wrapped))
+
+
+def amock(handler):
+    return lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+@pytest.mark.asyncio
+async def test_gmail_is_connected_by_signing_in_and_read_through_its_api(app):
+    client = TestClient(app, headers={"Authorization": "Bearer " + app.state.security.local_token})
+    mail, apps = app.state.worker.tools.mail, app.state.worker.tools.oauth
+    assert client.put("/api/oauth/google", json={"client_id": "cid.apps.googleusercontent.com", "client_secret": "sec"}).json()["configured"]
+    # the same Google app serves Google Health too
+    assert next(c for c in client.get("/api/health/connectors").json()["connectors"] if c["provider"] == "google")["configured"]
+    url = client.post("/api/mail/connect/gmail", json={}).json()["url"]
+    assert url.startswith("https://accounts.google.com/") and "gmail.readonly" in url and "access_type=offline" in url
+    state = dict(p.split("=", 1) for p in url.split("?", 1)[1].split("&"))["state"]
+
+    async def exchange(provider, code):
+        assert (provider, code) == ("google", "the-code")
+        return {"access_token": "access-tok-xyz", "refresh_token": "refresh-tok-xyz", "expires_at": time.time() + 3600}
+    apps.exchange = exchange
+    mail.ahttp = amock(lambda r: httpx.Response(200, json={"emailAddress": "me@gmail.com"}))
+    page = client.get(f"/oauth/google?code=the-code&state={state}")
+    assert page.status_code == 200 and "me@gmail.com" in page.text
+    assert client.get(f"/oauth/google?code=the-code&state={state}").status_code == 400  # a state works once
+    [account] = client.get("/api/mail").json()["accounts"]
+    assert account["kind"] == "gmail" and account["auth"] == "oauth" and account["address"] == "me@gmail.com"
+    assert "tok-xyz" not in client.get("/api/mail").text
+
+    _, raw = letter("x", "老板 <boss@co.com>", "方案还要再改", "周五前给我新版本。")
+    encoded = _b64.urlsafe_b64encode(raw).decode().rstrip("=")
+    log = []
+
+    def gmail(request):
+        assert request.headers["authorization"] == "Bearer access-tok-xyz"
+        if request.url.path.endswith("/messages"):
+            return httpx.Response(200, json={"messages": [{"id": "m1"}]})
+        return httpx.Response(200, json={"id": "m1", "labelIds": ["INBOX", "UNREAD"], "raw": encoded})
+    mail.http = mock(gmail, log)
+    got = mail.recent(days=3, query="方案")
+    assert got["messages"][0]["subject"] == "方案还要再改" and got["messages"][0]["unread"] and got["messages"][0]["id"] == "me:m1"
+    assert "newer_than:3d" in log[0].url.params["q"] and "方案" in log[0].url.params["q"]
+    assert "周五前" in mail.read("me:m1")["text"]
+    assert all(r.method == "GET" for r in log)  # read-only: nothing is modified
+    with pytest.raises(ValueError, match="不需要密码"):
+        mail.save("x", "gmail", "me@gmail.com", "password")
+
+
+def test_an_expired_outlook_token_is_refreshed_and_kept(app):
+    mail, apps = app.state.worker.tools.mail, app.state.worker.tools.oauth
+    apps.set("microsoft", "ms-id", "ms-secret")
+    mail.write({"me": {"kind": "outlook", "address": "me@outlook.com", "host": "", "cloud": False,
+                       "oauth": {"provider": "microsoft", "access_token": "old", "refresh_token": "rt", "expires_at": 0}}})
+    log = []
+
+    def graph(request):
+        if request.url.host == "login.microsoftonline.com":
+            assert b"grant_type=refresh_token" in request.content and b"client_secret=ms-secret" in request.content
+            return httpx.Response(200, json={"access_token": "new", "expires_in": 3600})
+        assert request.headers["authorization"] == "Bearer new"
+        now = datetime.now().astimezone().isoformat()
+        return httpx.Response(200, json={"value": [{"id": "AAk=", "subject": "季度复盘", "from": {"emailAddress": {"name": "Lee", "address": "lee@x.com"}},
+                                                    "receivedDateTime": now, "isRead": False, "bodyPreview": "周一开会"}]})
+    mail.http = mock(graph, log)
+    got = mail.recent(days=2)
+    assert got["messages"][0]["subject"] == "季度复盘" and got["messages"][0]["from"] == "Lee"
+    saved = mail.load()["me"]["oauth"]
+    assert saved["access_token"] == "new" and saved["refresh_token"] == "rt"  # the refresh token is kept
+    assert "receivedDateTime ge" in log[1].url.params["$filter"]

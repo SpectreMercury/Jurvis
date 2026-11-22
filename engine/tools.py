@@ -23,6 +23,7 @@ from .agenda import Agenda
 from .ledger import CATEGORIES, TOTAL, Ledger
 from .health import Health
 from .mail import Mail
+from .oauth import OAuthApps
 from .coding import Coding, CodeEdit, CodeTask
 from .home import ACTIONS as HOME_ACTIONS, TYPES as HOME_TYPES, ConnectorError
 from .mcp import McpError
@@ -401,6 +402,16 @@ class HomeControlArgs(BaseModel):
     value: str | float | None = Field(default=None, description="For set_brightness / set_position: 0-100. set_color: #rrggbb. set_color_temperature: kelvin. set_temperature: °C. set_mode: the mode name")
 
 
+class PhoneCallArgs(BaseModel):
+    number: str = Field(max_length=40, description="The phone number to call, with its country code when you know it, e.g. +86 21 6123 4567")
+    place: str = Field(max_length=80, description="Who is being called, e.g. the restaurant's name")
+    purpose: str = Field(max_length=1500, description="A complete brief for the call: what to ask or book, the date and time, how many people, any requests, "
+                         "and which alternatives are acceptable if the first choice is not possible. The caller knows nothing else of this conversation")
+    name: str = Field(max_length=40, description="The name the call is made for and a booking goes under, as the user would give it, e.g. 李先生")
+    callback: str = Field(default="", max_length=40, description="A number the place may call the user back on. Only when the user gave one for this")
+    language: Literal["", "zh", "en", "ja", "ko"] = Field(default="", description="The language to speak on the call. Empty: the language of the brief")
+
+
 class DelegateArgs(BaseModel):
     task: str = Field(max_length=6000, description="A complete, self-contained brief: the goal, what you already know, and exactly what to report back. The helper sees nothing else of this conversation")
     title: str = Field(max_length=60, description="A few words naming the subtask, in the user's language")
@@ -494,10 +505,12 @@ class ToolRegistry:
         self.agenda = Agenda(store)
         self.ledger = Ledger(store)
         self.health = Health(store)
-        self.mail = Mail(settings)
+        self.oauth = OAuthApps(settings)  # the user's own Google, WHOOP and Microsoft apps, shared by health and mail
+        self.mail = Mail(settings, self.oauth)
         self.coding = Coding(settings, store)
         self.llm = self.memory = self.skills = self.home = self.mcp = None  # attached by the worker; tools that need them are offered only then
         self.shell = self.browser = self.media = None
+        self.phone = None   # attached by the app once speech is up (engine/phone.py)
         self.page = {"url": "", "elements": {}}   # the page the browser last reported, so an approval card can name what will be clicked
         self.tools = {t.name: t for t in self.build()}
         self.dynamic = set()
@@ -544,6 +557,8 @@ class ToolRegistry:
             names.add("load_skill")
         if self.home and self.home.config():
             names |= {"home_devices", "home_control"}
+        if self.phone and self.phone.bound():
+            names.add("phone_call")
         return names
 
     def build(self):
@@ -631,6 +646,10 @@ class ToolRegistry:
             T("home_control", "控制家居设备", "Perform one action on one smart-home device. For several devices, call it once per device. Locks, doors and cameras ask the user first.",
               HomeControlArgs, lambda a: self.home.control(a.device_id, a.action, a.value), "external", confirm=self.confirm_home,
               summary=lambda r: f"{r['device']} · {r['action']}" + (f" {r['value']}" if "value" in r else "")),
+            T("phone_call", "打电话", "Place a phone call to a business for the user (book a table, ask about opening hours, change or cancel a booking) and "
+              "hold the conversation. The user approves each call first. It returns when the call is over, with the outcome, a summary and the transcript.",
+              PhoneCallArgs, lambda a: self.phone.call(a.number, a.purpose, a.name, place=a.place, callback=a.callback, language=a.language), "external",
+              confirm=self.confirm_phone, summary=lambda r: f"{r['place']} · {r['outcome_label']}"),
             T("delegate", "委派子任务", "Hand a self-contained research or reading subtask to a helper that works on it separately and reports back. "
               "Use it for side investigations that would otherwise fill this conversation with detail. The helper can read and search but cannot change anything.",
               DelegateArgs, None, "agent"),
@@ -701,7 +720,7 @@ class ToolRegistry:
               FinishGoalArgs, None, "goal"),
         ]
 
-    OPTIONAL = {"web_fetch", "web_search", "load_skill", "home_devices", "home_control", "delegate", "command_output", "stop_command", "find_tools"} | BROWSER_TOOLS
+    OPTIONAL = {"web_fetch", "web_search", "load_skill", "home_devices", "home_control", "phone_call", "delegate", "command_output", "stop_command", "find_tools"} | BROWSER_TOOLS
 
     def default_names(self, model=None):
         return {n for n in self.tools if n not in ("finish_goal", "update_plan", "ask_user", "start_task", "open_session", "recent_conversations") and n not in self.OPTIONAL and n not in self.dynamic} | self.available(model)
@@ -813,6 +832,11 @@ class ToolRegistry:
         if not self.home.needs_confirmation(device, a.action):
             return None
         return f"{device['name']}（{device['room'] or device['type']}）→ {a.action}" + (f" {a.value}" if a.value is not None else "")
+
+    async def confirm_phone(self, a):
+        """Every call is shown to the user first: who is called, on which number, and what will be said for them."""
+        number = self.phone.number(a.number)  # refuses a number that cannot be called before the user is asked
+        return f"打电话给 {a.place}（{number}）\n以「{a.name}」的名义：{a.purpose[:500]}"
 
     async def web_search(self, query):
         model = self.llm.search_model() if self.llm else None

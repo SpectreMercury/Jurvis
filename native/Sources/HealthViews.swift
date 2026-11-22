@@ -58,7 +58,7 @@ struct HealthView: View {
         VStack(spacing: 0) {
             ForEach(Array(page["accounts"].array.enumerated()), id: \.offset) { n, c in
                 if n > 0 { Divider().overlay(Color.hairline) }
-                HealthConnectorRow(connector: c) { await load() }.padding(.horizontal, 14)
+                HealthConnectorRow(connector: c) { await load() }
             }
         }
         .surface()
@@ -431,7 +431,7 @@ struct HealthConnectorRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            Image(systemName: icon).font(.system(size: 17)).foregroundStyle(connected ? Color.signal : Color.inkSoft).frame(width: 24).padding(.top, 2)
+            ServiceMark(kind: provider, size: 36)
             VStack(alignment: .leading, spacing: 2) {
                 Text(connector["name"].string).font(.jHeading)
                 Text(connector["detail"].string).font(.jSmall).foregroundStyle(Color.inkSoft).fixedSize(horizontal: false, vertical: true)
@@ -440,11 +440,9 @@ struct HealthConnectorRow: View {
             Spacer(minLength: 8)
             ViewThatFits { HStack(spacing: 6) { buttons }; VStack(alignment: .trailing, spacing: 6) { buttons } }
         }
-        .padding(.vertical, 10)
-        .sheet(isPresented: $settingUp) { HealthClientSheet(connector: connector) { await changed() } }
+        .padding(.horizontal, 16).padding(.vertical, 11)
+        .sheet(isPresented: $settingUp) { OAuthAppSheet(app: connector, title: connector["name"].string) { await changed() } }
     }
-
-    var icon: String { ["apple": "heart.fill", "fitness": "figure.run", "whoop": "waveform.path.ecg", "google": "g.circle"][provider] ?? "heart" }
 
     var status: String {
         let ago = HealthConnectorRow.ago(connector["synced_at"].number)
@@ -503,47 +501,55 @@ struct HealthConnectorRow: View {
     }
 }
 
-/// The user's own WHOOP or Google OAuth app: where to make it, the callback address to give it, and its ID and secret.
-struct HealthClientSheet: View {
+/// The user's own Google, WHOOP or Microsoft app: where to make it, the callback address to give it, and its ID and secret.
+/// One sheet for every connector that signs in; Google Health and Gmail share the Google app.
+struct OAuthAppSheet: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
-    var connector: JSONValue
+    var app: JSONValue
+    var title: String
     var saved: () async -> Void
     @State private var clientID = ""
     @State private var secret = ""
     @State private var busy = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text(connector["name"].string).font(.jTitle)
-            Text(connector["setup"].string).font(.jSmall).foregroundStyle(Color.inkSoft).fixedSize(horizontal: false, vertical: true)
-            Button("打开开发者后台") { if let url = URL(string: connector["console"].string) { openURL(url) } }.buttonStyle(.jurvis(.ghost, .small))
-            VStack(alignment: .leading, spacing: 4) {
-                Text("回调地址").font(.jSmall).foregroundStyle(Color.inkFaint)
-                Text(connector["redirect_uri"].string).font(.jMono).textSelection(.enabled)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 12) {
+                    ServiceMark(kind: app["app"].string, size: 40)
+                    Text(title).font(.jTitle)
+                }
+                Text(app["setup"].string).font(.jSmall).foregroundStyle(Color.inkSoft).fixedSize(horizontal: false, vertical: true)
+                Button("打开 \(app["app_name"].string) 开发者后台") { if let url = URL(string: app["console"].string) { openURL(url) } }.buttonStyle(.jurvis(.ghost, .small))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("回调地址").font(.jSmall).foregroundStyle(Color.inkFaint)
+                    Text(app["redirect_uri"].string).font(.jMono).textSelection(.enabled)
+                }
+                if app["client_from"].string == "env" {
+                    Text("现在用的是 .env 里的应用；在这里保存的只在 .env 没填时生效。").font(.jSmall).foregroundStyle(Color.inkSoft)
+                }
+                TextField("Client ID", text: $clientID).textFieldStyle(.roundedBorder).autocorrectionDisabled()
+                SecureField(app["configured"] == .bool(true) ? "Client Secret（留空则保留已保存的）" : "Client Secret", text: $secret).textFieldStyle(.roundedBorder)
+                Text("只保存在 Mac 上，不会再发回任何设备。").font(.jSmall).foregroundStyle(Color.inkFaint)
+                HStack {
+                    Spacer()
+                    Button("取消") { dismiss() }.buttonStyle(.jurvis(.ghost))
+                    Button(busy ? "正在保存" : "保存") { Task { await save() } }.buttonStyle(.jurvis(.primary)).disabled(busy || clientID.isEmpty)
+                }
             }
-            if connector["client_from"].string == "env" {
-                Text("现在用的是 .env 里的应用；在这里保存的只在 .env 没填时生效。").font(.jSmall).foregroundStyle(Color.inkSoft)
-            }
-            TextField("Client ID", text: $clientID).textFieldStyle(.roundedBorder).autocorrectionDisabled()
-            SecureField(connector["configured"] == .bool(true) ? "Client Secret（留空则保留已保存的）" : "Client Secret", text: $secret).textFieldStyle(.roundedBorder)
-            Text("只保存在 Mac 上，不会再发回任何设备。").font(.jSmall).foregroundStyle(Color.inkFaint)
-            HStack {
-                Spacer()
-                Button("取消") { dismiss() }.buttonStyle(.jurvis(.ghost))
-                Button(busy ? "正在保存" : "保存") { Task { await save() } }.buttonStyle(.jurvis(.primary)).disabled(busy || clientID.isEmpty)
-            }
+            .padding(24)
         }
-        .padding(24).frame(minWidth: 420)
-        .onAppear { clientID = connector["client_id"].string }
+        .frame(minWidth: 420)
+        .onAppear { clientID = app["client_id"].string }
     }
 
     func save() async {
         busy = true
         defer { busy = false }
         do {
-            let _: JSONValue = try await store.requireAPI().request("/api/health/client/\(connector["provider"].string)", method: "PUT",
+            let _: JSONValue = try await store.requireAPI().request("/api/oauth/\(app["app"].string)", method: "PUT",
                 body: ["client_id": clientID.trimmingCharacters(in: .whitespaces), "client_secret": secret])
             await saved()
             dismiss()
@@ -551,34 +557,136 @@ struct HealthClientSheet: View {
     }
 }
 
-/// 邮件: mailboxes Jurvis may read (IMAP, read-only). Passwords stay on the Mac; by default only the local model reads them.
-struct MailSettings: View {
-    @EnvironmentObject var store: AppStore
-    @State private var page: JSONValue?
-    @State private var adding = false
+/// A brand's mark on a light tile, like an app icon, in the brand's colour; brands without a mark get their letters on their colour.
+/// A brand's mark in its own colour on a faint wash of that colour, matching the web tile: the wash and the mark both follow
+/// light and dark, so a tile never sits as a white block in a dark window. Marks without a colour use ink.
+struct ServiceMark: View {
+    var kind: String
+    var size: CGFloat = 36
+    @Environment(\.colorScheme) private var scheme
 
     var body: some View {
-        RowGroup(title: "邮件", footnote: "只读：Jurvis 只看、不发、不标已读。密码只存在 Mac 上，默认只有本机模型能读邮件。") {
-            ForEach(Array((page?["accounts"].array ?? []).enumerated()), id: \.offset) { _, a in
-                InfoRow(title: a["address"].string, detail: a["host"].string + " · " + (a["cloud"] == .bool(true) ? "本机和云端模型都能读" : "只有本机模型能读")) {
-                    Button(a["cloud"] == .bool(true) ? "只给本机" : "也给云端") { Task { await share(a) } }.buttonStyle(.jurvis(.ghost, .small))
-                    Button("移除") { Task { await remove(a["id"].string) } }.buttonStyle(.jurvis(.ghost, .small))
-                }
+        let shape = RoundedRectangle(cornerRadius: size * 0.26, style: .continuous)
+        let dark = scheme == .dark
+        let ink: UInt32 = dark ? 0xEDEDED : 0x171717
+        let brand = Brands.colors[kind] ?? ink
+        let wash = Self.color(Self.mix(brand, dark ? 0x0A0A0A : 0xFFFFFF, dark ? 0.20 : 0.11))
+        let mark = Self.color(Self.mix(brand, ink, dark ? 0.58 : 0.92))
+        Group {
+            if Brands.marks.contains(kind) {
+                shape.fill(wash)
+                    .overlay(Image("Brand-\(kind)").renderingMode(.template).resizable().scaledToFit()
+                        .foregroundStyle(mark).padding(size * 0.22))
+            } else {
+                shape.fill(wash)
+                    .overlay(Text(Brands.letters[kind] ?? String(kind.prefix(1)).uppercased())
+                        .font(.system(size: size * ((Brands.letters[kind]?.count ?? 1) > 2 ? 0.3 : 0.38), weight: .semibold))
+                        .foregroundStyle(mark).lineLimit(1).minimumScaleFactor(0.6).padding(.horizontal, 3))
             }
-            InfoRow(title: (page?["accounts"].array ?? []).isEmpty ? "还没有连接邮箱" : "再添加一个") {
-                Button("添加邮箱") { adding = true }.buttonStyle(.jurvis(.secondary, .small))
+        }
+        .overlay(shape.strokeBorder(Self.color(brand).opacity(0.14)))
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
+    }
+
+    /// `amount` of `a` laid over `b`, channel by channel, like CSS color-mix in sRGB.
+    static func mix(_ a: UInt32, _ b: UInt32, _ amount: Double) -> UInt32 {
+        func channel(_ shift: UInt32) -> UInt32 {
+            let x = Double((a >> shift) & 0xFF), y = Double((b >> shift) & 0xFF)
+            return UInt32((x * amount + y * (1 - amount)).rounded()) << shift
+        }
+        return channel(16) | channel(8) | channel(0)
+    }
+
+    static func color(_ hex: UInt32) -> Color {
+        Color(red: Double((hex >> 16) & 0xFF) / 255, green: Double((hex >> 8) & 0xFF) / 255, blue: Double(hex & 0xFF) / 255)
+    }
+}
+
+/// 邮件: mailboxes Jurvis may read, read-only. Gmail and Outlook are connected by signing in; iCloud, QQ and 163 offer no sign-in
+/// for other apps, so they take an app-specific password or authorization code the user generates on the provider's site.
+struct MailSettings: View {
+    @EnvironmentObject var store: AppStore
+    @Environment(\.openURL) private var openURL
+    @State private var page: JSONValue?
+    @State private var adding: JSONValue?
+    @State private var settingUp: JSONValue?
+
+    var accounts: [JSONValue] { page?["accounts"].array ?? [] }
+    var presets: [JSONValue] { page?["presets"].array ?? [] }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            RowGroup(title: "邮件", footnote: "只读：Jurvis 只看，不发信，也不标已读。Gmail 和 Outlook 用账号登录授权；默认只有本机模型能读。") {
+                ForEach(Array(accounts.enumerated()), id: \.offset) { _, a in
+                    HStack(spacing: 12) {
+                        ServiceMark(kind: a["kind"].string, size: 36)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(a["address"].string).font(.jBody).lineLimit(1).truncationMode(.middle)
+                            Text(a["error"].string.isEmpty ? "\(a["name"].string) · \(a["auth"].string == "oauth" ? "已登录授权" : "专用密码") · 只读" : a["error"].string)
+                                .font(.jSmall).foregroundStyle(a["error"].string.isEmpty ? Color.inkFaint : Color.danger)
+                        }
+                        Spacer(minLength: 8)
+                        Menu {
+                            Button { Task { await share(a, cloud: false) } } label: { Label("仅本机模型能读", systemImage: a["cloud"] == .bool(true) ? "" : "checkmark") }
+                            Button { Task { await share(a, cloud: true) } } label: { Label("本机和云端模型都能读", systemImage: a["cloud"] == .bool(true) ? "checkmark" : "") }
+                            Divider()
+                            Button("移除", role: .destructive) { Task { await remove(a["id"].string) } }
+                        } label: {
+                            Text(a["cloud"] == .bool(true) ? "本机和云端" : "仅本机").font(.jSmall).foregroundStyle(Color.inkSoft)
+                                .padding(.horizontal, 10).padding(.vertical, 6).background(Capsule().strokeBorder(Color.hairline))
+                        }
+                        .menuStyle(.button).buttonStyle(.plain).fixedSize()
+                    }
+                    .padding(.horizontal, 16).padding(.vertical, 11)
+                }
+                if accounts.isEmpty { InfoRow(title: page == nil ? "正在读取…" : "还没有连接邮箱", detail: page == nil ? nil : "在下面选一个邮箱连接") { EmptyView() } }
+            }
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 8)], spacing: 8) {
+                ForEach(Array(presets.enumerated()), id: \.offset) { _, p in
+                    Button { Task { await connect(p) } } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ServiceMark(kind: p["kind"].string, size: 40).padding(.bottom, 8)
+                            Text(p["name"].string).font(.jCallout).foregroundStyle(Color.ink).lineLimit(1).minimumScaleFactor(0.8)
+                            Text(p["auth"].string == "oauth" ? (p["kind"].string == "gmail" ? "用 Google 登录" : "用 Microsoft 登录") : p["secret"].string)
+                                .font(.jSmall).foregroundStyle(Color.inkFaint).lineLimit(1).minimumScaleFactor(0.8)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(12)
+                        .surface()
+                    }
+                    .buttonStyle(.plain)
+                }
             }
         }
         .task { await load() }
-        .sheet(isPresented: $adding) { AddMailSheet(presets: page?["presets"].array ?? []) { await load() } }
+        .sheet(item: Binding(get: { adding.map(Sheet.init) }, set: { adding = $0?.value })) { item in AddMailSheet(preset: item.value) { await load() } }
+        .sheet(item: Binding(get: { settingUp.map(Sheet.init) }, set: { settingUp = $0?.value })) { item in
+            OAuthAppSheet(app: item.value["app"], title: item.value["kind"].string == "gmail" ? "Google 开发者应用" : "Microsoft 开发者应用") { await load() }
+        }
     }
+
+    struct Sheet: Identifiable { var value: JSONValue; var id: String { value["kind"].string } }
 
     func load() async { if let next: JSONValue = try? await store.requireAPI().request("/api/mail") { page = next } }
 
-    func share(_ a: JSONValue) async {
+    func connect(_ p: JSONValue) async {
+        guard p["auth"].string == "oauth" else { adding = p; return }
+        guard p["app"]["configured"] == .bool(true) else { settingUp = p; return }
         do {
-            let _: JSONValue = try await store.requireAPI().request("/api/mail/\(a["id"].string)", method: "PUT",
-                body: ["kind": a["kind"].string, "address": a["address"].string, "host": a["host"].string, "cloud": a["cloud"] != .bool(true)])
+            let reply: JSONValue = try await store.requireAPI().request("/api/mail/connect/\(p["kind"].string)", method: "POST", body: [String: String]())
+            if let url = URL(string: reply["url"].string) { openURL(url) }
+            for _ in 0..<60 where !Task.isCancelled {  // the account appears once the browser comes back to the Mac
+                try? await Task.sleep(for: .seconds(3))
+                let before = accounts.count
+                await load()
+                if accounts.count > before { break }
+            }
+        } catch { store.report(error) }
+    }
+
+    func share(_ a: JSONValue, cloud: Bool) async {
+        do {
+            let _: JSONValue = try await store.requireAPI().request("/api/mail/\(a["id"].string)", method: "PATCH", body: ["cloud": cloud])
             await load()
         } catch { store.report(error) }
     }
@@ -588,33 +696,47 @@ struct MailSettings: View {
     }
 }
 
+/// iCloud, QQ, 163 and other IMAP mail: how to make the app-specific password or authorization code, then the address and that code.
 struct AddMailSheet: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) private var dismiss
-    var presets: [JSONValue]
+    @Environment(\.openURL) private var openURL
+    var preset: JSONValue
     var saved: () async -> Void
-    @State private var kind = "gmail"
     @State private var address = ""
-    @State private var password = ""
+    @State private var secret = ""
     @State private var host = ""
     @State private var busy = false
-    static let names = ["gmail": "Gmail", "icloud": "iCloud", "outlook": "Outlook", "qq": "QQ 邮箱", "163": "163 邮箱", "126": "126 邮箱", "imap": "其他（IMAP）"]
+
+    var kind: String { preset["kind"].string }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("添加邮箱").font(.jTitle)
-            Picker("邮箱", selection: $kind) { ForEach(presets.map { $0["kind"].string }, id: \.self) { Text(Self.names[$0] ?? $0).tag($0) } }
-            Text(presets.first { $0["kind"].string == kind }?["hint"].string ?? "").font(.jSmall).foregroundStyle(Color.inkSoft)
-            TextField("地址", text: $address).textFieldStyle(.roundedBorder).autocorrectionDisabled()
-            SecureField("应用专用密码或授权码", text: $password).textFieldStyle(.roundedBorder)
-            if kind == "imap" { TextField("IMAP 服务器，例如 imap.example.com", text: $host).textFieldStyle(.roundedBorder).autocorrectionDisabled() }
-            HStack {
-                Spacer()
-                Button("取消") { dismiss() }.buttonStyle(.jurvis(.ghost))
-                Button(busy ? "正在连接" : "连接") { Task { await save() } }.buttonStyle(.jurvis(.primary)).disabled(busy || address.isEmpty || password.isEmpty)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 12) {
+                    ServiceMark(kind: kind, size: 40)
+                    Text("连接 \(preset["name"].string)").font(.jTitle)
+                }
+                Text(preset["hint"].string).font(.jSmall).foregroundStyle(Color.inkSoft).fixedSize(horizontal: false, vertical: true)
+                if let link = URL(string: preset["link"].string), !preset["link"].string.isEmpty {
+                    Button("打开 \(preset["name"].string) 的设置页") { openURL(link) }.buttonStyle(.jurvis(.ghost, .small))
+                }
+                TextField("邮箱地址", text: $address).textFieldStyle(.roundedBorder).autocorrectionDisabled()
+                    #if os(iOS)
+                    .textInputAutocapitalization(.never).keyboardType(.emailAddress)
+                    #endif
+                SecureField(preset["secret"].string, text: $secret).textFieldStyle(.roundedBorder)
+                if kind == "imap" { TextField("IMAP 服务器，例如 imap.example.com", text: $host).textFieldStyle(.roundedBorder).autocorrectionDisabled() }
+                Text("\(preset["secret"].string)只保存在 Mac 上，只用来读取收件箱；不会发信，也不会把邮件标为已读。").font(.jSmall).foregroundStyle(Color.inkFaint)
+                HStack {
+                    Spacer()
+                    Button("取消") { dismiss() }.buttonStyle(.jurvis(.ghost))
+                    Button(busy ? "正在连接" : "连接") { Task { await save() } }.buttonStyle(.jurvis(.primary)).disabled(busy || address.isEmpty || secret.isEmpty)
+                }
             }
+            .padding(24)
         }
-        .padding(24).frame(minWidth: 380)
+        .frame(minWidth: 400)
     }
 
     func save() async {
@@ -623,7 +745,7 @@ struct AddMailSheet: View {
         let id = String(address.split(separator: "@").first ?? "mail").lowercased().filter { $0.isLetter && $0.isASCII || $0.isNumber || $0 == "-" || $0 == "_" }.prefix(24)
         do {
             let _: JSONValue = try await store.requireAPI().request("/api/mail/\(id.isEmpty ? "mail" : String(id))", method: "PUT",
-                body: ["kind": kind, "address": address.trimmingCharacters(in: .whitespaces), "password": password, "host": host])
+                body: ["kind": kind, "address": address.trimmingCharacters(in: .whitespaces), "password": secret, "host": host])
             await saved()
             dismiss()
         } catch { store.report(error) }
@@ -708,5 +830,260 @@ struct Outreach: Codable, Equatable, Hashable { var id: String; var session_id: 
         let session = response.notification.request.content.userInfo["session_id"] as? String ?? ""
         guard !session.isEmpty else { return }
         await Notifier.shared.open(session)
+    }
+}
+
+/// 电话: the telephone provider account Jurvis places calls through (the user's own: their number, their bill), and the calls it made.
+struct PhoneSettings: View {
+    @EnvironmentObject var store: AppStore
+    @State private var page: JSONValue?
+    @State private var binding: BindTarget?
+    @State private var showing: ShownCall?
+
+    struct BindTarget: Identifiable { var spec: JSONValue; var current: JSONValue?; var id: String { spec["kind"].string } }
+    struct ShownCall: Identifiable { var id: String }
+    static let live = ["dialing": "正在拨号", "ringing": "对方响铃中", "talking": "通话中"]
+
+    var bound: JSONValue? { page.flatMap { $0["binding"].isNull ? nil : $0["binding"] } }
+    var catalog: [JSONValue] { page?["catalog"].array ?? [] }
+    var calls: [JSONValue] { Array((page?["calls"].array ?? []).prefix(8)) }
+    var blockers: [String] {
+        guard let page, bound != nil else { return [] }
+        var out: [String] = []
+        if page["public_url"].string.isEmpty { out.append(page["problem"].string.isEmpty ? "还没有公网地址，电话服务商连不到这台 Mac。" : page["problem"].string) }
+        if page["speech"]["stt"] != .bool(true) || page["speech"]["tts"] != .bool(true) { out.append("打电话要用本机的语音识别和语音合成模型，请先在“语音”里装好。") }
+        return out
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            RowGroup(title: "电话", footnote: "Jurvis 可以替你给餐厅等商家打电话订位、询问。用的是你自己的电话服务商账户：对方看到的是你的号码，话费记在你的账上。每一通都会先问你。") {
+                if let bound {
+                    HStack(spacing: 12) {
+                        ServiceMark(kind: bound["kind"].string, size: 36)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(bound["caller"].string).font(.jBody).lineLimit(1)
+                            Text("\(bound["title"].string) · 主叫号码" + (bound["country"].string.isEmpty ? "" : " · 默认区号 \(bound["country"].string)"))
+                                .font(.jSmall).foregroundStyle(Color.inkFaint)
+                        }
+                        Spacer(minLength: 8)
+                        Menu {
+                            Button("修改") { if let spec = catalog.first(where: { $0["kind"] == bound["kind"] }) { binding = BindTarget(spec: spec, current: bound) } }
+                            Button("解绑", role: .destructive) { Task { await unbind() } }
+                        } label: {
+                            Text("管理").font(.jSmall).foregroundStyle(Color.inkSoft)
+                                .padding(.horizontal, 10).padding(.vertical, 6).background(Capsule().strokeBorder(Color.hairline))
+                        }
+                        .menuStyle(.button).buttonStyle(.plain).fixedSize()
+                    }
+                    .padding(.horizontal, 16).padding(.vertical, 11)
+                    ForEach(blockers, id: \.self) { text in
+                        Text(text).font(.jSmall).foregroundStyle(Color.danger).fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 16).padding(.vertical, 9)
+                    }
+                    if blockers.isEmpty {
+                        InfoRow(title: "已经可以用了", detail: "在对话里说“帮我给某某餐厅打电话订周六晚上 7 点 4 位”试试") { EmptyView() }
+                    }
+                } else {
+                    InfoRow(title: page == nil ? "正在读取…" : "还没有绑定电话服务商", detail: page == nil ? nil : "在下面选一个绑定") { EmptyView() }
+                }
+            }
+            if page != nil, bound == nil {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 8)], spacing: 8) {
+                    ForEach(Array(catalog.enumerated()), id: \.offset) { _, c in
+                        Button { binding = BindTarget(spec: c, current: nil) } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                ServiceMark(kind: c["kind"].string, size: 40).padding(.bottom, 8)
+                                Text(c["title"].string).font(.jCallout).foregroundStyle(Color.ink).lineLimit(1)
+                                Text(c["description"].string).font(.jSmall).foregroundStyle(Color.inkFaint).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(12)
+                            .surface()
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            if !calls.isEmpty {
+                RowGroup(title: "最近的通话") {
+                    ForEach(Array(calls.enumerated()), id: \.offset) { _, c in
+                        Button { showing = ShownCall(id: c["id"].string) } label: {
+                            HStack(spacing: 12) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(c["place"].string.isEmpty ? c["number"].string : c["place"].string).font(.jBody).foregroundStyle(Color.ink).lineLimit(1)
+                                    Text(c["status"].string == "ended" ? (c["summary"].string.isEmpty ? c["ended"].string : c["summary"].string) : c["purpose"].string)
+                                        .font(.jSmall).foregroundStyle(Color.inkFaint).lineLimit(1)
+                                }
+                                Spacer(minLength: 8)
+                                Text(c["status"].string == "ended" ? (c["outcome_label"].string.isEmpty ? "已结束" : c["outcome_label"].string) : (Self.live[c["status"].string] ?? ""))
+                                    .font(.jSmall).foregroundStyle(c["status"].string == "ended" ? Color.inkSoft : Color.danger)
+                                    .padding(.horizontal, 10).padding(.vertical, 4).background(Capsule().strokeBorder(Color.hairline))
+                            }
+                            .padding(.horizontal, 16).padding(.vertical, 11).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+        .task { await load() }
+        .onChange(of: store.snapshot?.last_event) { _, _ in Task { await load() } }
+        .sheet(item: $binding) { target in BindPhoneSheet(spec: target.spec, current: target.current) { await load() } }
+        .sheet(item: $showing) { call in PhoneCallSheet(id: call.id) { await load() } }
+    }
+
+    func load() async { if let next: JSONValue = try? await store.requireAPI().request("/api/phone") { page = next } }
+
+    func unbind() async {
+        do { let _: JSONValue = try await store.requireAPI().request("/api/phone", method: "DELETE"); await load() } catch { store.report(error) }
+    }
+}
+
+/// The provider's own instructions, then the few values it needs. Credentials are checked with the provider before they are saved.
+struct BindPhoneSheet: View {
+    @EnvironmentObject var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
+    var spec: JSONValue
+    var current: JSONValue?
+    var saved: () async -> Void
+    @State private var values: [String: String] = [:]
+    @State private var country = ""
+    @State private var busy = false
+
+    var fields: [JSONValue] { spec["fields"].array }
+    var ready: Bool {
+        fields.allSatisfy { f in
+            f["optional"] == .bool(true) || !(values[f["name"].string] ?? "").isEmpty || (current != nil && f["secret"] == .bool(true))
+        }
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 12) {
+                    ServiceMark(kind: spec["kind"].string, size: 40)
+                    Text("\(current == nil ? "绑定" : "修改") \(spec["title"].string)").font(.jTitle)
+                }
+                Text(spec["setup"].string).font(.jSmall).foregroundStyle(Color.inkSoft).fixedSize(horizontal: false, vertical: true)
+                if let link = URL(string: spec["console"].string) {
+                    Button("打开 \(spec["title"].string) 后台") { openURL(link) }.buttonStyle(.jurvis(.ghost, .small))
+                }
+                ForEach(Array(fields.enumerated()), id: \.offset) { _, f in
+                    let name = f["name"].string
+                    let label = f["label"].string + (f["optional"] == .bool(true) ? "（可选）" : "")
+                    let text = Binding(get: { values[name] ?? "" }, set: { values[name] = $0 })
+                    if f["secret"] == .bool(true) {
+                        SecureField(current == nil ? label : label + "（已保存，留空则不改）", text: text).textFieldStyle(.roundedBorder)
+                    } else {
+                        TextField(label, text: text).textFieldStyle(.roundedBorder).autocorrectionDisabled()
+                            #if os(iOS)
+                            .textInputAutocapitalization(.never)
+                            #endif
+                    }
+                }
+                TextField("默认国家区号（可选），例如 +86", text: $country).textFieldStyle(.roundedBorder).autocorrectionDisabled()
+                    #if os(iOS)
+                    .keyboardType(.phonePad)
+                    #endif
+                Text("没写区号的号码会按这个区号拨打。凭据只保存在 Mac 上，绑定时会向服务商核对一次。").font(.jSmall).foregroundStyle(Color.inkFaint)
+                HStack {
+                    Spacer()
+                    Button("取消") { dismiss() }.buttonStyle(.jurvis(.ghost))
+                    Button(busy ? "正在核对" : (current == nil ? "绑定" : "保存")) { Task { await save() } }.buttonStyle(.jurvis(.primary)).disabled(busy || !ready)
+                }
+            }
+            .padding(24)
+        }
+        .frame(minWidth: 420)
+        .onAppear {
+            guard let current else { return }
+            country = current["country"].string
+            for f in fields where f["secret"] != .bool(true) { values[f["name"].string] = current["settings"][f["name"].string].string }
+        }
+    }
+
+    func save() async {
+        busy = true
+        defer { busy = false }
+        do {
+            let settings = values.mapValues { $0.trimmingCharacters(in: .whitespaces) }
+            let _: JSONValue = try await store.requireAPI().request("/api/phone", method: "PUT",
+                body: ["kind": spec["kind"].string, "settings": settings, "country": country.trimmingCharacters(in: .whitespaces)])
+            await saved()
+            dismiss()
+        } catch { store.report(error) }
+    }
+}
+
+/// One call: what it was for, what came of it, and what was said. A call still going on can be ended here.
+struct PhoneCallSheet: View {
+    @EnvironmentObject var store: AppStore
+    @Environment(\.dismiss) private var dismiss
+    var id: String
+    var changed: () async -> Void
+    @State private var call: JSONValue?
+
+    var live: Bool { call.map { $0["status"].string != "ended" } ?? false }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                if let call {
+                    Text(call["place"].string.isEmpty ? call["number"].string : call["place"].string).font(.jTitle)
+                    Text([call["number"].string, call["created_at"].number?.dayAndTime ?? "",
+                          live ? (PhoneSettings.live[call["status"].string] ?? "") : call["ended"].string].filter { !$0.isEmpty }.joined(separator: " · "))
+                        .font(.jSmall).foregroundStyle(Color.inkFaint)
+                    Text("要办的事：" + call["purpose"].string).font(.jSmall).foregroundStyle(Color.inkSoft).fixedSize(horizontal: false, vertical: true)
+                    if !call["summary"].string.isEmpty {
+                        Text((call["outcome_label"].string.isEmpty ? "结果" : call["outcome_label"].string) + "：" + call["summary"].string)
+                            .font(.jBody).fixedSize(horizontal: false, vertical: true)
+                    }
+                    if !call["booking"].isNull {
+                        let booking = call["booking"]
+                        Label(booking["start"].string.replacingOccurrences(of: "T", with: " ") + (booking["timezone"].string.isEmpty ? "" : "（\(booking["timezone"].string)）")
+                              + (booking["status"].string == "added" ? " · 已加入日历" : " · 等待加入日历"), systemImage: "calendar")
+                            .font(.jSmall).foregroundStyle(Color.inkSoft)
+                    }
+                    let lines = call["transcript"].array
+                    if lines.isEmpty {
+                        Text(live ? "还没有人说话。" : "没有通话内容。").font(.jSmall).foregroundStyle(Color.inkFaint)
+                    } else {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                    Text(line["who"].string == "them" ? "对方" : "Jurvis").font(.jSmall).foregroundStyle(Color.inkFaint).frame(width: 44, alignment: .leading)
+                                    Text(line["text"].string).font(.jCallout).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                                }
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(12).surface()
+                    }
+                } else {
+                    Text("正在读取…").font(.jSmall).foregroundStyle(Color.inkFaint)
+                }
+                HStack {
+                    Spacer()
+                    if live { Button("挂断") { Task { await hangup() } }.buttonStyle(.jurvis(.ghost)).foregroundStyle(Color.danger) }
+                    Button("关闭") { dismiss() }.buttonStyle(.jurvis(.primary))
+                }
+            }
+            .padding(24)
+        }
+        .frame(minWidth: 420, minHeight: 320)
+        .task {
+            while !Task.isCancelled {   // a live call's transcript grows as it is spoken
+                if let next: JSONValue = try? await store.requireAPI().request("/api/phone/calls/\(id)") { call = next }
+                if !live { break }
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
+    }
+
+    func hangup() async {
+        do {
+            let _: JSONValue = try await store.requireAPI().request("/api/phone/calls/\(id)/hangup", method: "POST", body: [String: String]())
+            await changed()
+        } catch { store.report(error) }
     }
 }

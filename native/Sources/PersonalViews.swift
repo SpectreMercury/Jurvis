@@ -237,6 +237,7 @@ struct SettingsView: View {
                 HealthConnectors()
                 MailSettings()
                 CareSettings()
+                PhoneSettings()
                 models
                 extensions
                 devices

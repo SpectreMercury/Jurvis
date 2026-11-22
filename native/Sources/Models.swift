@@ -158,6 +158,8 @@ struct Snapshot: Codable, Equatable {
     var version: String; var sessions: [Session]; var jobs: [Job]; var assets: [Asset]; var projects: [Project]; var memories: [Memory]
     var runtime: RuntimeInfo; var last_event: Int
     var outreach: [Outreach]?
+    /// Bookings made on the phone that are waiting to be put in a calendar.
+    var calendar: [CalendarEntry]?
     var questions: [WaitingQuestion]?
     /// Where the user's notes are kept as Markdown on the Mac.
     var vault: String?

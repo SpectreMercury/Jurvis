@@ -3,7 +3,7 @@
 import { h, fill, get, put, del, run, action, notify, sheet, ApiError } from './core.js';
 import { icon } from './icons.js';
 import * as ui from './ui.js';
-import { brandLogo } from './brands.js';
+import { brandLogo, brandColor, brandLetters } from './brands.js';
 
 let state = null;            // last /api/home: {catalog, connectors}
 const watchers = new Set();
@@ -26,7 +26,11 @@ export function reset() { state = null; }
 /** A brand's mark: its logo when we have one, otherwise a monogram of the brand name. */
 export function brandMark(title, size = '', kind = '') {
   const logo = brandLogo(kind, size === 'large' ? 26 : 22);
-  if (logo) return h('span', { class: 'brand-mark logo' + (size ? ' ' + size : ''), 'aria-hidden': 'true' }, logo);
+  const color = brandColor(kind);
+  // A brand's mark in its own colour on a light tile, like an app icon; brands without a mark get their letters on their colour.
+  if (logo) return h('span', { class: 'brand-mark logo' + (size ? ' ' + size : ''), style: color ? `--brand:${color}` : null, 'aria-hidden': 'true' }, logo);
+  const letters = brandLetters(kind);
+  if (letters) return h('span', { class: 'brand-mark brand-letters' + (letters.length > 2 ? ' wide' : '') + (size ? ' ' + size : ''), style: `--brand:${color}`, 'aria-hidden': 'true' }, letters);
   const words = String(title || '?').replace(/[^\p{L}\p{N} ]/gu, ' ').trim().split(/\s+/);
   const latin = /^[A-Za-z]/.test(words[0] || '');
   const text = latin ? (words.length > 1 ? words[0][0] + words[1][0] : words[0].slice(0, 2)) : (words[0] || '?').slice(0, 1);
