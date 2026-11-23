@@ -179,7 +179,7 @@ struct WorkspaceFile: Codable, Identifiable { var name: String; var bytes: Int; 
 struct WorkspaceContent: Codable, Identifiable { var name: String; var content: String; var id: String { name } }
 
 enum Section: String, CaseIterable, Identifiable {
-    case assistant = "对话", drama = "短剧", library = "素材", tasks = "任务", home = "家居", goals = "目标", health = "健康", ledger = "账本", memory = "记忆", files = "文件", settings = "设置"
+    case assistant = "对话", drama = "短剧", library = "素材", tasks = "任务", home = "家居", goals = "目标", health = "健康", ledger = "账本", memory = "记忆", journal = "日志", files = "文件", settings = "设置"
     var id: String { rawValue }
     /// The name shown in navigation. The job queue is "后台任务": what runs without the user waiting on it.
     var title: String {
@@ -198,6 +198,7 @@ enum Section: String, CaseIterable, Identifiable {
         case .home: return "house"
         case .memory: return "brain"
         case .goals: return "scope"
+        case .journal: return "book.pages"
         case .ledger: return "list.bullet.rectangle.portrait"
         case .health: return "heart.text.square"
         case .files: return "doc.text"
@@ -211,7 +212,7 @@ enum Section: String, CaseIterable, Identifiable {
         case .library, .drama, .files: return .library
         case .home: return .home
         case .goals, .health, .ledger: return .agenda
-        case .settings, .memory, .tasks: return .settings
+        case .settings, .memory, .journal, .tasks: return .settings
         }
     }
 }
@@ -236,7 +237,7 @@ enum Hub: String, CaseIterable, Identifiable {
         case .library: return [.library, .drama, .files]
         case .home: return [.home]
         case .agenda: return [.goals, .health, .ledger]
-        case .settings: return [.settings, .memory, .tasks]
+        case .settings: return [.settings, .memory, .journal, .tasks]
         }
     }
 }

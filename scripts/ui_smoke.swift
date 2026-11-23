@@ -33,7 +33,7 @@ extension AppStore {
     await store.start()
     guard store.connected, let snapshot = store.snapshot else { print("FAIL engine not reachable: \(store.error ?? "")"); exit(1) }
     await store.reloadSettings()
-    let root = RootView().environmentObject(store).tint(Color.ink)
+    let root = RootView().environmentObject(store).environmentObject(store.companion).tint(Color.ink)
 
     for section in Section.allCases {
         store.section = section

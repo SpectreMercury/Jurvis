@@ -207,3 +207,16 @@ class HomeControl(BaseModel):
     device_id: str = Field(max_length=300)
     action: str = Field(max_length=40)
     value: str | float | None = None
+
+
+class AvatarDraft(BaseModel):
+    description: str = Field(default="", max_length=300)
+    photo: str | None = None
+
+
+class AvatarChoose(BaseModel):
+    asset_id: str = Field(min_length=1, max_length=64)
+
+
+class AvatarName(BaseModel):
+    name: str = Field(min_length=1, max_length=20)

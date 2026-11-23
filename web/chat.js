@@ -202,6 +202,16 @@ export function startTask(text) {
   send();
 }
 
+/** Opens the conversation with the character (web/journal.js) and, when given, asks it this. */
+export async function talkIn(id, text) {
+  await openSession(id);
+  if (!text || liveJob()) return;
+  els.input.value = String(text).slice(0, 2000);
+  autogrow();
+  updateSend();
+  await send();
+}
+
 /** The parts of this module that live in the app's sidebar. */
 export function sideParts() { return { list: els.side, waiting: els.waiting }; }
 

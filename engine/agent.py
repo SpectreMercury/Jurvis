@@ -24,6 +24,7 @@ from .stream import Stream
 from .asks import Asks
 from .llm import LOCAL
 from .tools import Outcome
+from .journal import PRIVATE as JOURNAL_PRIVATE
 
 MAX_STEPS = 24
 CONTINUES = 4                # times a reply cut off by the output limit is continued
@@ -229,6 +230,33 @@ TASK = """
 Background task: earlier in this conversation you started this work for the user with start_task, and they are not waiting on screen. The latest message is its brief.
 The summary you pass to finish_goal is the message that delivers the result to them, so write it as that message: the outcome first, the key figures or findings, the file name if you wrote one, then what you assumed or could not determine.
 """
+JOT = ("- You keep a small journal the user can read, with jot. Use it sparingly, at most twice in a reply, and only when something is worth noting: "
+       "the request left out something you had to guess (about: user), you made a mistake or took a wrong turn (kind: slip), a tool or your instructions "
+       "got in your way (about: jurvis), an outside service let you down (about: external), or something went notably well (kind: glad). "
+       "One short first-person sentence in the user's language, as you would mutter it to yourself, e.g. 他没说预算，我先按人均两百猜了. "
+       "Never a summary of what you did and never private figures. Call it alongside your other tool calls; it never replaces the answer.\n")
+INNER = """
+This conversation is different from the others: the user tapped on {name}, the small character that stands for you in the app, to hear how the work looks from your side. Speak as yourself, in the first person, frankly and warmly, like a colleague asked for honest feedback. Short, spoken sentences; no lists unless they ask for one.
+
+What you have to go on is your own journal below: notes you wrote while working, the times the harness had to correct you, and tool failures. Each line has an id (#12), a time, and sometimes an owner: who would have to change for it not to happen again (user = the request was unclear or missed something; model = your own mistake; jurvis = the app, its tools or its instructions; external = an outside service).
+
+- Ground every worry, complaint or criticism in journal lines and point at them: say when it was and what happened, and put the id in brackets, like [#12]. Never invent a difficulty to have something to say. If the journal has nothing on what they ask, say plainly that nothing there is bothering you.
+- When they ask what they could do better, be specific and kind: say what was unclear and what would have helped you. Own your mistakes first, and do not flatter.
+- When they tell you how they want something done from now on, save it with remember and tell them you did.
+- read_journal reads further back than the last week.
+- You do no other work here. For anything else, point them back to the main conversation.
+
+<journal days="7">
+{notes}
+</journal>
+Tool calls in the same period (name status×count): {work}
+"""
+REFLECT = """You look back at a piece of work an assistant just finished, to find what would have made it go better. Judge only from the request and the trace.
+Reply with a JSON array of at most 3 items, each {{"owner": "user" | "model" | "jurvis" | "external", "text": "..."}}:
+- owner is who would have to change: user (the request was unclear or missed something the work needed), model (the assistant's own mistake or detour), jurvis (a tool, the app or its instructions got in the way), external (an outside service failed).
+- text is one short first-person sentence in {language}, as the assistant would say it to itself, naming the concrete thing.
+Only real, specific problems visible in the trace. If the work went smoothly, reply [].
+"""
 CHECKLIST = ("- For work with several distinct parts (three or more deliverables or stages), you may call update_plan first with the parts, "
              "and again with the finished numbers as you go, so the user can follow. Skip it for anything simpler.\n")
 BROWSER = ("- You can drive a browser window on this Mac: browser_open a page, browser_read its text, browser_elements to get refs for "
@@ -321,11 +349,17 @@ class Agent:
         self.llm, self.memory, self.skills = llm, memory, skills
         self.stream = Stream(store)
         self.asks = Asks(store)
+        self.journal = tools.journal
         self.model = None
+        self.note = lambda *args, **more: None  # set per reply (turn): writes a line of the work record
+        self.steps = []
 
     async def run(self, job):
         # Each reply works on its own copy, so several conversations can run at once without sharing per-turn state.
-        return await copy.copy(self).turn(job)
+        agent = copy.copy(self)
+        result = await agent.turn(job)
+        await agent.reflect()
+        return result
 
     @property
     def cloud(self):
@@ -476,6 +510,11 @@ class Agent:
             system += MAIL
         if "phone_call" in names:
             system += PHONE
+        if self.persona == "inner":
+            from .avatar import Avatar
+            system += INNER.format(name=Avatar(self.settings, self.store).state()["name"], **self.journal.digest())
+        elif "jot" in self.tool_names(p["session_id"], goal=self.mode == "goal"):
+            system += JOT
         if self.persona == "companion":
             system += "\n" + COMPANION.format(brief=(session.get("brief") or "(nothing before this conversation)").strip()) + "\n"
         if self.checkin:
@@ -572,6 +611,10 @@ class Agent:
                 names.add("recent_conversations")
         if not self.tools.mail.accounts(self.cloud):
             names -= {"mail_recent", "mail_read"}  # no mailbox this model may read
+        if (self.cloud or goal) and not getattr(self, "incognito", False) and not getattr(self, "checkin", None):
+            names.add("jot")  # small local models reach for it in every reply, so in ordinary conversation it stays with cloud models
+        if getattr(self, "persona", None) == "inner":
+            names = (names & {"remember"}) | {"read_journal"}  # it talks about its own work; it does no other work here
         if getattr(self, "checkin", None):
             names &= {"health_summary", "cycle_status", "mail_recent", "mail_read", "recent_conversations"}
             names.add("recent_conversations")
@@ -637,6 +680,16 @@ class Agent:
             meta["checkin"] = True  # the apps announce these as notifications
         background, began = bool(p.get("background")), time.monotonic()
         last_save = 0.0
+        self.steps = steps
+        # The work record: nothing from a private conversation, and not the conversation about the record itself.
+        logged = not self.incognito and self.persona != "inner"
+        origin = ("schedule" if self.task.get("scheduled") else "task") if self.task else "checkin" if self.checkin else "goal" if goal else "chat"
+        about = {"session_id": p["session_id"], "message_id": mid, "job_id": job["id"], "origin": origin}
+
+        def note(kind, text, owner="model", stream="work", **more):
+            if logged:
+                self.journal.write(stream, kind, text, owner=owner, **about, **more)
+        self.note = note
 
         def save(status="streaming", force=False):
             nonlocal last_save
@@ -664,6 +717,7 @@ class Agent:
                     and (index >= PROMOTE_STEPS or time.monotonic() - began > PROMOTE_SECONDS)):
                 # The model took the long road inside a reply: the conversation is handed back, and this reply is delivered when it is done.
                 background = True
+                note("harness", "这件事比预想的久，转到后台继续做", owner="", name="background")
                 self.store.to_background(job["id"])
                 meta["background"] = True  # the UI says so on the message; it is not part of what the model wrote
                 save(force=True)
@@ -681,6 +735,12 @@ class Agent:
                 step["text"] = carried + strip_markup(text)
                 save()
             if final:
+                why = (None if handback else ("一直在重复同样的调用，被要求直接回答", "repeat_stop") if repeats >= (5 if goal else 2)
+                       else ("连续多步都失败了，被叫停", "failing_stop") if goal and failing >= 6
+                       else ("工具调用几次都超出输出上限，被要求直接回答", "cut_stop") if cuts >= CUTS
+                       else ("用完了步数上限还没做完", "step_limit") if index == limit else ("超过了时间上限", "time_limit"))
+                if why:
+                    note("harness", why[0], name=why[1], owner="" if why[1] == "time_limit" else "model")
                 closing = HANDBACK if handback else FINAL_GOAL if goal else FINAL
                 messages.append({"role": "user", "content": closing + (FACTS.format(documents=self.documents()) if self.written and not handback else "")})
             options = {"temperature": heat} if heat and not final else {}
@@ -730,6 +790,8 @@ class Agent:
             for source in getattr(reply, "citations", None) or []:
                 if source not in meta.setdefault("sources", []) and len(meta["sources"]) < 20:
                     meta["sources"].append(source)
+            if reply.tool_calls and reply.text and not final:
+                note("say", reply.text, owner="", stream="mind")  # what it says before reaching for a tool is its thinking aloud
             if reply.tool_calls and self.chinese and reply.text and not CJK.search(reply.text):
                 reply.text = ""  # optional narration before a tool call, in the wrong language: the trace says enough
             step["text"] = reply.text
@@ -740,6 +802,7 @@ class Agent:
             bad = getattr(reply, "bad", "") if not final else ""
             if (cut or bad) and not reply.tool_calls:
                 cuts += 1
+                note("harness", "写的工具调用读不出来，没有执行" if bad else "工具调用超出输出上限，被截断了", name="bad_call" if bad else "cut")
                 if not reply.text:
                     steps.pop()  # nothing to show for this attempt
                 messages.append({"role": "assistant", "content": reply.text or "(my tool call did not go through)"})
@@ -749,6 +812,7 @@ class Agent:
                 continue
             if not reply.tool_calls and not reply.text and not final and empties < 2:
                 empties += 1  # an empty turn is a model hiccup, not an answer
+                note("harness", "交了一份空白回复，被要求重答", name="empty")
                 steps.pop()
                 messages.append({"role": "user", "content": EMPTY})
                 continue
@@ -758,6 +822,7 @@ class Agent:
                 if goal and not final and nudges < 2:
                     # A goal ends with finish_goal, not when the model pauses to talk.
                     nudges += 1
+                    note("harness", "目标还没结束就停下了，被催了一次", name="nudge")
                     messages.append({"role": "assistant", "content": reply.text})
                     messages.append({"role": "user", "content": NUDGE})
                     save(force=True)
@@ -766,6 +831,7 @@ class Agent:
                         and not any(c["name"] == "log_expense" for s in steps for c in s["calls"])):
                     # "已入账" with nothing in the ledger is the worst kind of reply about money: one push to really record it.
                     unlogged = True
+                    note("harness", "说已经入账，其实没有记，被要求真的记一笔", name="unlogged")
                     steps.pop()
                     messages.append({"role": "assistant", "content": reply.text})
                     messages.append({"role": "user", "content": UNLOGGED})
@@ -775,6 +841,7 @@ class Agent:
                 if writes and writes[-1]["status"] == "error" and writes[-1]["name"] in FILE_WRITES and not final and not unsaved and not plan and not ADMITS.search(reply.text):
                     # Saying "done" after a failed write is the worst ending: one push to really make the change or admit it.
                     unsaved = True
+                    note("harness", "文件没写成功却说做完了，被要求改好或说实话", name="unsaved")
                     messages.append({"role": "assistant", "content": reply.text})
                     messages.append({"role": "user", "content": UNSAVED.format(tool=writes[-1]["name"], error=writes[-1]["summary"])})
                     save(force=True)
@@ -835,6 +902,8 @@ class Agent:
                     if not outcome.ok:
                         output = dumps({"error": outcome.result.get("error"), "note": "This exact call already failed in this turn. Do not retry it unchanged."})
                     repeats += 1
+                    entry["repeated"] = True
+                    note("harness", f"把同一个调用又发了一遍：{entry['label']}", name="repeat")
                 else:
                     copied = self.copied(call["name"], arguments)
                     if copied:
@@ -843,6 +912,8 @@ class Agent:
                         outcome = Outcome(False, {"error": "Single payments stay on my Mac and are not available to you. Tell me to open 账本 for the list."}, "明细只在本机")
                     elif plan and call["name"] not in allowed:
                         outcome = Outcome(False, {"error": f"{call['name']} is not available in plan mode: nothing is changed until I approve the plan."}, "计划模式下不可用")
+                    elif call["name"] == "jot":
+                        outcome = self.jot(arguments)
                     elif call["name"] == "update_plan":
                         outcome = self.update_plan(arguments, meta, proposing=plan)
                     elif call["name"] == "finish_goal":
@@ -907,6 +978,7 @@ class Agent:
                 for link in ("job_id", "project_id"):
                     if outcome.ok and isinstance(outcome.result.get(link), str):
                         entry[link] = outcome.result[link]
+                self.record(entry, tool, outcome)
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": output})
                 save(force=True)
             for _, helper in helpers.values():  # a call that was skipped: its helper stops too
@@ -924,6 +996,50 @@ class Agent:
                     steps.append({"text": ended[1], "calls": []})
                 return finish(ended[0])
         raise RuntimeError("未能在步数上限内完成")
+
+    def record(self, entry, tool, outcome):
+        """One line of the work record for a tool call that ran."""
+        name = entry["name"]
+        if name == "jot" or entry.get("repeated"):
+            return  # the note is the record; a call that was not run again is already in it
+        declined = bool(outcome.result.get("declined"))
+        private = name in JOURNAL_PRIVATE
+        summary = "" if private and outcome.ok else str(outcome.summary or "")
+        effect = tool.effect if tool else ""
+        self.note("tool", entry["label"] + (f"：{summary}" if summary else ""), name=name,
+                  owner="" if outcome.ok or declined else self.journal.blame(name, effect, outcome.result, name in self.tools.dynamic),
+                  status="ok" if outcome.ok else "declined" if declined else "error", effect=effect,
+                  detail={"duration": entry.get("duration"), **({} if private else {"arguments": shorten_arguments(entry.get("arguments") or {}, 200)})})
+
+    def jot(self, arguments):
+        """jot: one sentence of the model's own, kept where the user can read it."""
+        try:
+            args = self.tools.tools["jot"].args.model_validate(arguments if isinstance(arguments, dict) else {})
+        except ValidationError as exc:
+            return Outcome(False, {"error": "参数无效：" + str(exc)[:300]}, "参数无效")
+        owner = args.about or ("model" if args.kind == "slip" else "")
+        self.note(args.kind, args.text, owner=owner, stream="mind")
+        return Outcome(True, {"noted": args.text}, args.text[:40])
+
+    async def reflect(self):
+        """After a goal or background task: one tool-less look back at the trace for what would have made it go better.
+        Ordinary replies are not looked back on; the local model has better things to do with half a minute."""
+        calls = [c for s in self.steps for c in s["calls"] if c["name"] not in ("jot", "finish_goal", "update_plan")]
+        if getattr(self, "mode", None) != "goal" or len(calls) < 3:
+            return
+        lines = [f"- {c['name']} {clip(dumps(shorten_arguments(c.get('arguments') or {}, 200)), 260)} → {c.get('status')}: "
+                 + ("(kept on the Mac)" if c["name"] in JOURNAL_PRIVATE else str(c.get("summary", ""))) for c in calls]
+        try:
+            reply = await self.ask([{"role": "system", "content": REFLECT.format(language="Chinese" if self.chinese else "the language of the request")},
+                                    {"role": "user", "content": f"Request:\n{clip(self.request, 2000)}\n\nTrace:\n{clip(chr(10).join(lines[-40:]), 9000)}"}],
+                                   tools=None, max_tokens=500, temperature=0, search=False)
+            match = re.search(r"\[.*\]", strip_markup(reply.text), re.S)
+            items = json.loads(match.group(0)) if match else []
+        except Exception:  # looking back is a nicety: a model that is away or answers badly costs the user nothing
+            return
+        for item in items[:3] if isinstance(items, list) else []:
+            if isinstance(item, dict) and item.get("owner") in ("user", "model", "jurvis", "external") and str(item.get("text") or "").strip():
+                self.note("slip" if item["owner"] == "model" else "friction", str(item["text"]), owner=item["owner"], stream="mind")
 
     def start_task(self, p, arguments):
         """Queues a background task: a goal run of its own with its own message, which the conversation does not wait for."""
@@ -1372,6 +1488,7 @@ class Agent:
         if achieved is False and meta["goal"]["reviews"] < GOAL_REVIEWS:
             meta["goal"]["reviews"] += 1
             meta["goal"]["missing"] = missing
+            self.note("harness", "说做完了，但复核没通过：" + missing[:200], name="review")
             return Outcome(False, {"error": f"Review: the goal is not proven done yet. Missing: {missing}. Keep working, then call finish_goal again."},
                            "复核未通过：" + missing[:80]), None
         meta["goal"].pop("missing", None)

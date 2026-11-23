@@ -47,6 +47,9 @@ import ImageIO
     @Published var viewing: MediaViewing?
     private var thumbnails: [String: Image] = [:]
     private var polling: Task<Void,Never>?
+    /// The character that stands for the assistant, and what it is saying to itself (JournalViews.swift).
+    let companion = Companion()
+    private var seenEvent = -1
     #if os(macOS)
     private var engineProcess: Process?
     #endif
@@ -138,6 +141,8 @@ import ImageIO
             if !connected { connected = true }
             if connectionStatus != "Mac 已连接" { connectionStatus = "Mac 已连接" }
             await refreshMessages()
+            // Something happened on the Mac since the last look: it may have said something to itself, or its drawing moved on.
+            if state.last_event != seenEvent || companion.drawing { seenEvent = state.last_event; await companion.sync(api, working: chatStreaming) }
         } catch {
             // The address in use stopped answering, as when the phone leaves the home network: try the Mac's other addresses.
             if api.candidates.count > 1, await api.reconnect(), let state: Snapshot = try? await api.request("/api/state") {
@@ -350,6 +355,7 @@ import ImageIO
     func disconnect() {
         polling?.cancel(); api?.close(); api = nil; Keychain.clear(); connected = false
         snapshot = nil; messages = []; streamFrom = nil; streamPast = false; selectedSession = nil; mediaCache = [:]; connectionStatus = "请与 Mac 配对"
+        companion.reset(); seenEvent = -1
     }
     func job(_ id: String?) -> Job? { guard let id else { return nil }; return snapshot?.jobs.first { $0.id == id } }
     func asset(_ id: String?) -> Asset? { guard let id else { return nil }; return snapshot?.assets.first { $0.id == id } }

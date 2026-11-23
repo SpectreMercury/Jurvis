@@ -8,6 +8,7 @@ import * as goals from './goals.js';
 import * as ledger from './ledger.js';
 import * as health from './health.js';
 import * as settings from './settings.js';
+import * as journal from './journal.js';
 import { icon } from './icons.js';
 
 const TABS = [
@@ -18,6 +19,7 @@ const TABS = [
   { id: 'health', label: '健康', icon: 'heart', module: health },
   { id: 'ledger', label: '账本', icon: 'doc', module: ledger },
   { id: 'memory', label: '记忆', icon: 'bookmark', module: memory },
+  { id: 'journal', label: '日志', icon: 'tasks', module: journal },
   { id: 'settings', label: '设置', icon: 'gear', module: settings },
 ];
 
@@ -132,7 +134,7 @@ function buildShell() {
   status.box = h('div', { class: 'model-status' }, h('span', { class: 'dot', 'aria-hidden': 'true' }), icon('chip'), h('div', { class: 'model-status-text' }, status.name, status.note));
   const sidebar = h('aside', { class: 'sidebar' },
     h('div', { class: 'brand' }, logo(24), h('span', null, 'Jurvis'), status.pill),
-    nav, side.waiting,
+    nav, side.waiting, journal.buddy(),
     h('div', { class: 'side-tasks' }, h('div', { class: 'side-title' }, '对话记录'), side.list),
     h('div', { class: 'side-foot' },
       h('button', { class: 'new-task', type: 'button', onclick: () => chat.newConversation(true) }, icon('plus', 18), '换个话题，交给 Jurvis 一件新的事')),
@@ -190,6 +192,7 @@ function enter() {
   go('chat', false);
   const mine = ++generation;
   loadState().catch(() => {});
+  journal.start();
   feed(mine);
 }
 
@@ -205,6 +208,7 @@ on('goto', (id) => go(id, false));
 on('conv', syncNav);
 on('open-stretch', (id) => { go('chat', false); chat.openStretch(id); });
 on('ask', (text) => { go('chat', false); chat.startTask(text); });
+on('talk', ({ id, text }) => { go('chat', false); chat.talkIn(id, text); });
 on('state', () => {
   if (offline) offline.hidden = true;
   chat.onState();
@@ -224,6 +228,8 @@ function handleEvent(event) {
   }
   if (event.entity === 'goals' || event.entity === 'schedules') { goals.refresh(); return; }
   if (event.entity === 'ledger') { ledger.refresh(); return; }
+  if (event.entity === 'journal') { journal.onNote(); return; }
+  if (event.entity === 'avatar') { journal.onAvatar(); return; }
   if (event.entity === 'health') { health.refresh(); return; }
   if (event.entity === 'mail') { if (store.tab === 'settings') settings.refreshMail(); return; }
   if (event.entity === 'calls' || event.entity === 'phone') { if (store.tab === 'settings') settings.refreshPhone(); return; }

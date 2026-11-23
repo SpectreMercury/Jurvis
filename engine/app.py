@@ -16,7 +16,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from . import __version__,drama
 from .config import Settings
 from .runtime import Runtime
-from .schemas import ChatCreate,StreamCreate,CommandDecision,SessionCreate,SessionUpdate,ImageRequest,VideoRequest,ProjectCreate,ProjectProduce,ProjectUpdate,MemoryCreate,PairRequest,SettingsUpdate,SpeakRequest,ProviderUpdate,SkillSave,McpServerSave,ConnectorSave,HomeControl
+from .schemas import ChatCreate,StreamCreate,CommandDecision,SessionCreate,SessionUpdate,ImageRequest,VideoRequest,ProjectCreate,ProjectProduce,ProjectUpdate,MemoryCreate,PairRequest,SettingsUpdate,SpeakRequest,ProviderUpdate,SkillSave,McpServerSave,ConnectorSave,HomeControl,AvatarDraft,AvatarChoose,AvatarName
 from .llm import LOCAL,split
 from .speech import Speech,SpeechError,MAX_AUDIO_BYTES,IDLE_SECONDS
 from .phone import Phone
@@ -96,7 +96,8 @@ def create_app(settings=None, *, run_worker=True):
             if changes is not None:job['result']['change_count']=len(changes)
         return {"version":__version__,"sessions":store.all("SELECT * FROM sessions ORDER BY updated_at DESC LIMIT 200"),
                 "jobs":jobs,
-                "assets":store.all("SELECT * FROM assets ORDER BY created_at DESC LIMIT 500"),
+                # The character's drawings (engine/avatar.py) are its own and not part of the library.
+                "assets":store.all("SELECT * FROM assets WHERE kind NOT LIKE 'avatar%' ORDER BY created_at DESC LIMIT 500"),
                 "projects":store.all("SELECT * FROM projects ORDER BY updated_at DESC LIMIT 100"),
                 "memories":store.all(MEMORY_COLUMNS+" ORDER BY updated_at DESC LIMIT 500"),
                 # What Jurvis asked and the user has not decided yet: kept in front of them wherever they are in the conversation.
@@ -396,6 +397,54 @@ def create_app(settings=None, *, run_worker=True):
     @app.delete("/api/ledger/transactions/{ident}")
     async def delete_transaction(ident:str):
         worker.tools.ledger.remove(ident);return {"ok":True}
+
+    # ---- the work record, what it said to itself, and the character that says it (engine/journal.py, engine/avatar.py) ----
+    journal,avatar=worker.tools.journal,worker.avatar
+
+    @app.get("/api/journal")
+    async def journal_day(day:str|None=None):
+        try:return journal.day(day)
+        except ValueError:raise HTTPException(400,"日期格式应为 2026-01-31")
+
+    @app.get("/api/journal/mind")
+    async def journal_mind(after:int=0,limit:int=30):
+        return {"notes":journal.mind(max(0,after),max(1,min(limit,100)))}
+
+    @app.get("/api/journal/improvements")
+    async def journal_improvements(days:int=30):
+        return journal.improvements(max(1,min(days,90)))
+
+    @app.post("/api/journal/talk")
+    async def journal_talk():
+        """The one conversation in which the user asks it about its own work. Made the first time they tap the character."""
+        name=avatar.state()["name"]
+        session=store.one("SELECT * FROM sessions WHERE persona='inner' ORDER BY created_at LIMIT 1")
+        if not session:
+            ident,now=new_id(),time.time()
+            store.execute("INSERT INTO sessions(id,title,created_at,updated_at,persona) VALUES(?,?,?,?,'inner')",(ident,"和"+name+"聊聊",now,now))
+            store.add_message(ident,"assistant",f"我是{name}。想知道我最近干活时在想什么、哪里卡住了、你怎么说我会更好懂，直接问我就行。","complete",{"inner":True})
+            store.event("sessions",ident)
+            session=store.one("SELECT * FROM sessions WHERE id=?",(ident,))
+        worker.stream.focus(session["id"])  # what the user says next is said to it
+        return session
+
+    @app.get("/api/avatar")
+    async def avatar_state():return avatar.view()
+
+    @app.post("/api/avatar/draft")
+    async def avatar_draft(body:AvatarDraft):return avatar.draft(body.description,body.photo)
+
+    @app.post("/api/avatar/choose")
+    async def avatar_choose(body:AvatarChoose):return avatar.choose(body.asset_id)
+
+    @app.put("/api/avatar")
+    async def avatar_name(body:AvatarName):
+        avatar.save(name=body.name.strip() or "小维")
+        store.execute("UPDATE sessions SET title=? WHERE persona='inner'",("和"+avatar.state()["name"]+"聊聊",))
+        return avatar.view()
+
+    @app.delete("/api/avatar")
+    async def avatar_reset():return avatar.reset()
 
     @app.get("/api/health")
     async def health_page(days:int=30):

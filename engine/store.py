@@ -99,6 +99,16 @@ class Store:
                     id TEXT PRIMARY KEY,title TEXT NOT NULL,brief TEXT NOT NULL,rule TEXT NOT NULL,next_run REAL NOT NULL,
                     last_run REAL,session_id TEXT,enabled INTEGER NOT NULL DEFAULT 1,created_at REAL NOT NULL);
             """)
+            # What the assistant did ("work", written by the harness) and what it said to itself ("mind") (engine/journal.py).
+            db.executescript("""
+                CREATE TABLE IF NOT EXISTS journal(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,at REAL NOT NULL,stream TEXT NOT NULL,kind TEXT NOT NULL,
+                    owner TEXT NOT NULL DEFAULT '',text TEXT NOT NULL,name TEXT NOT NULL DEFAULT '',status TEXT NOT NULL DEFAULT '',
+                    effect TEXT NOT NULL DEFAULT '',origin TEXT NOT NULL DEFAULT 'chat',session_id TEXT,message_id TEXT,job_id TEXT,
+                    extras TEXT NOT NULL DEFAULT '{}');
+                CREATE INDEX IF NOT EXISTS journal_at ON journal(at);
+                CREATE INDEX IF NOT EXISTS journal_mind ON journal(stream,id);
+            """)
 
     @contextmanager
     def connection(self):
@@ -120,7 +130,7 @@ class Store:
         if row is None:
             return None
         obj = dict(row)
-        for key in ("payload", "result", "document", "metadata", "tags", "rule"):
+        for key in ("payload", "result", "document", "metadata", "tags", "rule", "extras"):
             if isinstance(obj.get(key), str):
                 obj[key] = json.loads(obj[key])
         return obj

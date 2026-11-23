@@ -11,7 +11,7 @@ struct JurvisApp: App {
     #endif
     var body: some Scene {
         WindowGroup {
-            RootView().environmentObject(store).tint(Color.ink)
+            RootView().environmentObject(store).environmentObject(store.companion).tint(Color.ink)
                 .task { await store.start() }
                 .onOpenURL { url in Task { await store.pair(url.absoluteString) } }
                 #if os(iOS) && canImport(HealthKit)
@@ -31,7 +31,8 @@ struct JurvisApp: App {
                 Button("新话题") { Task { await store.newChat() } }.keyboardShortcut("n")
             }
             CommandGroup(after: .sidebar) {
-                ForEach(Array(Section.allCases.enumerated()), id: \.element) { index, section in
+                // ⌘1 to ⌘9: a key equivalent is one character, so the sections past the ninth have none.
+                ForEach(Array(Section.allCases.prefix(9).enumerated()), id: \.element) { index, section in
                     Button(section == .assistant ? "对话" : section.title) { store.section = section }.keyboardShortcut(KeyEquivalent(Swift.Character("\(index + 1)")), modifiers: .command)
                 }
             }
@@ -127,6 +128,7 @@ struct HubView: View {
             case .tasks: TasksView()
             case .home: HomeView()
             case .memory: MemoryView()
+            case .journal: JournalView()
             case .goals: GoalsView()
             case .ledger: LedgerView()
             case .health: HealthView()
@@ -251,6 +253,7 @@ struct Sidebar: View {
                 }
                 .padding(.horizontal, 10).padding(.bottom, 10)
             }
+            CompanionRow().padding(.horizontal, 10).padding(.bottom, 6)
             ConnectionIndicator().padding(.horizontal, 10).padding(.bottom, 4)
         }
         .background(Color.chrome)
@@ -453,7 +456,15 @@ struct PhoneRoot: View {
                                 Button { history = true } label: { Image(systemName: "clock.arrow.circlepath").frame(width: 44, height: 44).contentShape(Rectangle()) }
                                     .accessibilityLabel("对话记录")
                             }
+                            ToolbarItem(placement: .topBarTrailing) {
+                                Button { store.section = .journal } label: { CompanionFigure(size: 30).frame(width: 44, height: 44).contentShape(Rectangle()) }
+                                    .accessibilityLabel("日志")
+                            }
                             ToolbarItem(placement: .topBarTrailing) { runMenu }
+                        }
+                        // What it says to itself comes up under the character in the corner, and goes away by itself.
+                        .overlay(alignment: .topTrailing) {
+                            CompanionBubbles(alignment: .trailing).frame(maxWidth: 240, alignment: .trailing).padding(.trailing, 12).padding(.top, 6).allowsHitTesting(false)
                         }
                 }
                 .sheet(isPresented: $history) { PhoneTasksView(open: { history = false }).environmentObject(store) }

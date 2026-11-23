@@ -22,6 +22,7 @@ from . import cards, web
 from .agenda import Agenda
 from .ledger import CATEGORIES, TOTAL, Ledger
 from .health import Health
+from .journal import Journal
 from .mail import Mail
 from .oauth import OAuthApps
 from .coding import Coding, CodeEdit, CodeTask
@@ -412,6 +413,18 @@ class PhoneCallArgs(BaseModel):
     language: Literal["", "zh", "en", "ja", "ko"] = Field(default="", description="The language to speak on the call. Empty: the language of the brief")
 
 
+class JotArgs(BaseModel):
+    text: str = Field(min_length=1, max_length=160, description="One short first-person sentence in the user's language, as you would mutter it to yourself")
+    kind: Literal["thought", "doubt", "friction", "slip", "glad"] = Field(default="thought", description="thought: a passing remark; doubt: you are unsure this is right; "
+                                                                         "friction: something got in the way; slip: your own mistake; glad: it went well")
+    about: Literal["", "user", "model", "jurvis", "external"] = Field(default="", description="Who would have to change for this not to happen again: user (the request was unclear "
+                                                                     "or missed something), model (you), jurvis (the app, its tools or instructions), external (an outside service). Empty for a plain remark")
+
+
+class ReadJournalArgs(BaseModel):
+    days: int = Field(default=7, ge=1, le=90, description="How many days back to read")
+
+
 class DelegateArgs(BaseModel):
     task: str = Field(max_length=6000, description="A complete, self-contained brief: the goal, what you already know, and exactly what to report back. The helper sees nothing else of this conversation")
     title: str = Field(max_length=60, description="A few words naming the subtask, in the user's language")
@@ -505,6 +518,7 @@ class ToolRegistry:
         self.agenda = Agenda(store)
         self.ledger = Ledger(store)
         self.health = Health(store)
+        self.journal = Journal(store)
         self.oauth = OAuthApps(settings)  # the user's own Google, WHOOP and Microsoft apps, shared by health and mail
         self.mail = Mail(settings, self.oauth)
         self.coding = Coding(settings, store)
@@ -712,6 +726,10 @@ class ToolRegistry:
               "The cadence must be the user's choice: ask first if they have not said how often.", ScheduleArgs, None, "agenda"),
             T("cancel_schedule", "取消定时任务", "Cancel a scheduled task by its id.", ScheduleIdArgs,
               lambda a: self.agenda.cancel(a.schedule_id), "write", summary=lambda r: f"已取消 · {r['cancelled']}"[:60]),
+            T("jot", "记一句心里话", "Note one sentence in your journal, which the user can read: something you had to guess, a mistake of yours, something that got in your way, "
+              "or something that went well. Sparingly: only when it is worth noting, at most twice in a reply, and never instead of answering.", JotArgs, None, "read"),
+            T("read_journal", "翻看工作日志", "Read your own journal further back: the notes you wrote while working, the times you were corrected, and how often each tool was used and failed.",
+              ReadJournalArgs, lambda a: self.journal.digest(a.days, 150), summary=lambda r: "已翻看"),
             T("update_plan", "更新计划", "Keep a checklist of the parts of a larger piece of work; the user sees it. Call it first with steps (one per line), "
               "then with done (the finished step numbers) whenever a part is finished. Not for a request that is one action or one answer.",
               PlanArgs, None, "goal"),
@@ -723,7 +741,7 @@ class ToolRegistry:
     OPTIONAL = {"web_fetch", "web_search", "load_skill", "home_devices", "home_control", "phone_call", "delegate", "command_output", "stop_command", "find_tools"} | BROWSER_TOOLS
 
     def default_names(self, model=None):
-        return {n for n in self.tools if n not in ("finish_goal", "update_plan", "ask_user", "start_task", "open_session", "recent_conversations") and n not in self.OPTIONAL and n not in self.dynamic} | self.available(model)
+        return {n for n in self.tools if n not in ("finish_goal", "update_plan", "ask_user", "start_task", "open_session", "recent_conversations", "jot", "read_journal") and n not in self.OPTIONAL and n not in self.dynamic} | self.available(model)
 
     def schemas(self, names=None):
         names = names or self.default_names()
@@ -1022,7 +1040,7 @@ class ToolRegistry:
         memories = (self.memory.search(query) if self.memory else
                     self.store.all(f"SELECT id,title,content FROM memories WHERE enabled=1 AND ({memory_where}) ORDER BY updated_at DESC LIMIT 20", pairs))
         return {"memories": memories,
-                "assets": self.store.all(f"SELECT id,name,kind,mime,created_at FROM assets WHERE {asset_where} ORDER BY created_at DESC LIMIT 20", pairs)}
+                "assets": self.store.all(f"SELECT id,name,kind,mime,created_at FROM assets WHERE ({asset_where}) AND kind NOT LIKE 'avatar%' ORDER BY created_at DESC LIMIT 20", pairs)}
 
     async def weather(self, a):
         result = await cards.weather(a.place, a.days)

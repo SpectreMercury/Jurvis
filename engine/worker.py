@@ -25,6 +25,7 @@ from .stream import Stream
 from .skills import Skills
 from .home import Home
 from .mcp import Mcp
+from .avatar import Avatar
 
 log=logging.getLogger("jurvis.worker")
 
@@ -59,6 +60,7 @@ class Worker:
         self.mcp=Mcp(settings)
         self.media=Media(settings,store,runtime)
         self.tools=ToolRegistry(settings,store)
+        self.avatar=Avatar(settings,store,self.media)
         self.shell=Shell(settings,store)
         self.browser=Browser(settings,headless=settings.browser_headless)
         self.tools.attach(self.llm,self.memory,self.skills,self.home,self.mcp,self.shell,self.browser,self.media)
@@ -304,6 +306,8 @@ class Worker:
                 for asset in result.get("asset_ids",[]):
                     self.store.execute("UPDATE assets SET kind='card',name=? WHERE id=?",("穿衣插画 · "+p["outfit_art"],asset))
             return result
+        if kind=="avatar":
+            return await self.avatar.run(p,ident)
         if kind=="produce":
             return await self.produce(p,ident)
         if kind=="export":
