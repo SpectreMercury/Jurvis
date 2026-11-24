@@ -12,6 +12,7 @@ from fastapi import FastAPI, HTTPException, Request, UploadFile, File, WebSocket
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.gzip import GZipMiddleware
 from PIL import Image, ImageOps, UnidentifiedImageError
 from . import __version__,drama
 from .config import Settings
@@ -24,6 +25,13 @@ from .security import Security,funnel_url,lan_addresses,reach_addresses
 from .store import Store,dumps,new_id
 from .worker import Worker
 from .coding import CodeConnect,CodeTask,CodeCommand
+
+
+class Compress(GZipMiddleware):
+    async def __call__(self,scope,receive,send):
+        if scope["type"]=="http" and scope["path"].endswith(("/file","/thumbnail")):
+            return await self.app(scope,receive,send)
+        await super().__call__(scope,receive,send)
 
 
 MEMORY_COLUMNS="SELECT id,title,content,enabled,created_at,updated_at,importance,durable,tags,source,session_id,embed_model,page FROM memories"
@@ -61,6 +69,10 @@ def create_app(settings=None, *, run_worker=True):
 
     app=FastAPI(title="Jurvis Engine",version=__version__,lifespan=lifespan,docs_url=None,redoc_url=None,openapi_url=None)
     app.state.store,app.state.security,app.state.worker,app.state.phone=store,security,worker,phone
+
+    # Away from home every byte crosses a slow relay, and the app asks for the whole state every two seconds: JSON
+    # shrinks to a fifth. Media files are already compressed, and a video is fetched in ranges, so those pass untouched.
+    app.add_middleware(Compress,minimum_size=1024)
 
     @app.middleware("http")
     async def authenticate(request,call_next):
@@ -326,6 +338,14 @@ def create_app(settings=None, *, run_worker=True):
         try:asset,path=worker.media.asset(ident)
         except ValueError:raise HTTPException(404,"素材不存在")
         return FileResponse(path,media_type=asset["mime"],filename=path.name,content_disposition_type="inline")
+
+    @app.get("/api/assets/{ident}/thumbnail")
+    async def asset_thumbnail(ident:str,size:int=640):
+        if size not in (320,640,960):raise HTTPException(422,"预览图尺寸只能是 320、640 或 960")
+        try:path=await worker.media.thumbnail(ident,size)
+        except ValueError:raise HTTPException(404,"素材不存在")
+        except (OSError,RuntimeError,UnidentifiedImageError):raise HTTPException(422,"无法生成预览图")
+        return FileResponse(path,media_type="image/webp",content_disposition_type="inline")
 
     @app.post("/api/assets/{ident}/frames")
     async def extract_frames(ident:str):

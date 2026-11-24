@@ -120,6 +120,12 @@ final class API: NSObject, URLSessionDelegate, @unchecked Sendable {
         req.setValue("Bearer " + connection.token, forHTTPHeaderField: "Authorization")
         let (data,response) = try await session.data(for: req); try check(response,data); return data
     }
+    /// A small preview the Mac makes of a picture or of a video's first frame: tens of kilobytes where the file is a megabyte or more.
+    func thumbnailData(_ id: String, size: Int = 640) async throws -> Data {
+        var req = URLRequest(url: URL(string: base + "/api/assets/\(id)/thumbnail?size=\(size)")!)
+        req.setValue("Bearer " + connection.token, forHTTPHeaderField: "Authorization")
+        let (data,response) = try await session.data(for: req); try check(response,data); return data
+    }
     /// A reply that is not JSON, such as audio. Speech can wait for a model to load, so the caller sets the patience.
     func bytes(_ path: String, body: Any, timeout: TimeInterval) async throws -> Data {
         guard let url = URL(string: base + path) else { throw APIError.message("连接地址无效") }

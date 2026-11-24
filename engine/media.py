@@ -23,6 +23,36 @@ class Media:
             raise ValueError("素材文件缺失")
         return row,path
 
+    async def thumbnail(self,ident,size):
+        """A small WebP of a picture, or of a video's first frame, kept on disk once made.
+
+        Lists of pictures ask for this instead of the file itself: over a slow link (a phone away from home)
+        the full files, a megabyte or more each, took seconds apiece."""
+        row,path=self.asset(ident)
+        folder=self.settings.data/"cache"/"thumbnails"
+        output=folder/f"{ident}-{size}.webp"
+        if output.exists():return output
+        folder.mkdir(parents=True,exist_ok=True)
+        source=path
+        if row["mime"].startswith("video/"):
+            source=folder/f"{ident}-frame.png"
+            await run_process(["ffmpeg","-hide_banner","-loglevel","error","-y","-i",str(path),"-frames:v","1",str(source)])
+        elif not row["mime"].startswith("image/"):
+            raise ValueError("这个素材没有预览图")
+        def shrink():
+            with Image.open(source) as image:
+                image=ImageOps.exif_transpose(image)
+                image=image.convert("RGBA" if image.mode in ("RGBA","LA","P") else "RGB")
+                image.thumbnail((size,size),Image.Resampling.LANCZOS)
+                # Written beside the final name first, so a request arriving meanwhile never reads half a file.
+                partial=folder/f"{new_id()}.part"
+                image.save(partial,format="WEBP",quality=80)
+                partial.replace(output)
+        try:await asyncio.to_thread(shrink)
+        finally:
+            if source!=path:source.unlink(missing_ok=True)
+        return output
+
     def record(self,path,name,mime,kind,job_id=None,metadata=None):
         ident=new_id()
         self.store.execute("INSERT INTO assets(id,name,path,mime,size,kind,created_at,job_id,metadata) VALUES(?,?,?,?,?,?,?,?,?)",

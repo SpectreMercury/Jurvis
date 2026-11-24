@@ -113,6 +113,24 @@ def test_upload_rejects_non_images_and_sanitizes_metadata(client):
     with Image.open(io.BytesIO(out.content)) as image:assert image.size==(80,60)
 
 
+def test_thumbnail_is_a_small_webp_and_state_is_compressed(client):
+    buf=io.BytesIO();Image.effect_noise((2000,1000),60).save(buf,format='PNG')
+    asset=client.post('/api/assets',files={'file':('big.png',buf.getvalue(),'image/png')}).json()
+    out=client.get('/api/assets/'+asset['id']+'/thumbnail?size=320');assert out.status_code==200
+    assert out.headers['content-type']=='image/webp' and 'content-encoding' not in out.headers
+    assert len(out.content)<len(buf.getvalue())/4
+    with Image.open(io.BytesIO(out.content)) as image:assert image.format=='WEBP' and image.size==(320,160)
+    assert client.get('/api/assets/'+asset['id']+'/thumbnail?size=320').content==out.content
+    assert client.get('/api/assets/'+asset['id']+'/thumbnail?size=77').status_code==422
+    assert client.get('/api/assets/missing/thumbnail').status_code==404
+    # the file itself is never recompressed; JSON is
+    assert 'content-encoding' not in client.get('/api/assets/'+asset['id']+'/file').headers
+    small=io.BytesIO();Image.new('RGB',(8,8)).save(small,format='PNG')
+    for n in range(8):client.post('/api/assets',files={'file':(f'{n}.png',small.getvalue(),'image/png')})
+    state=client.get('/api/state',headers={'Accept-Encoding':'gzip'})
+    assert state.headers.get('content-encoding')=='gzip' and state.json()['assets']
+
+
 def test_workspace_is_scoped_and_keeps_replaced_versions(app):
     tools=app.state.worker.tools
     for bad in ('../secret','/etc/passwd','.env','nested/file'):

@@ -289,6 +289,14 @@ import ImageIO
     /// Decoded preview for an image, or the first frame of a video; cached per asset.
     func thumbnail(_ asset: Asset) async -> Image? {
         if let cached = thumbnails[asset.id] { return cached }
+        // The Mac shrinks it, so a list of pictures does not download every file whole; that took seconds apiece away from home.
+        if let data = try? await api?.thumbnailData(asset.id), let source = CGImageSourceCreateWithData(data as CFData, nil),
+           let small = CGImageSourceCreateImageAtIndex(source, 0, nil) {
+            let image = Image(decorative: small, scale: 1)
+            thumbnails[asset.id] = image
+            return image
+        }
+        // An engine from before it made previews: fetch the file and shrink it here.
         guard let url = try? await mediaURL(asset) else { return nil }
         var cg: CGImage?
         if asset.isVideo {
