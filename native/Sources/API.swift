@@ -29,14 +29,25 @@ final class API: NSObject, URLSessionDelegate, @unchecked Sendable {
     }
     /// Finds an address that answers and switches to it. At home that is the local network; outside, Tailscale.
     func reconnect() async -> Bool {
-        for candidate in candidates {
-            guard let url = URL(string: candidate + "/health") else { continue }
-            var req = URLRequest(url: url); req.timeoutInterval = 3
-            if let (_, response) = try? await session.data(for: req), (response as? HTTPURLResponse)?.statusCode == 200 {
-                base = candidate; return true
+        // All addresses are asked at once: away from home the local ones never answer, and waiting them out one by one
+        // left the app "connecting" for a long time. A public address (a Funnel) takes a few seconds to set up a
+        // connection, so each gets ten. An address later in the list holds its answer back a moment, so that at home
+        // the local network still wins over a slower way round.
+        let found = await withTaskGroup(of: String?.self) { group -> String? in
+            for (index, candidate) in candidates.enumerated() {
+                group.addTask { [session] in
+                    guard let url = URL(string: candidate + "/health") else { return nil }
+                    var req = URLRequest(url: url); req.timeoutInterval = 10
+                    guard let (_, response) = try? await session.data(for: req), (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+                    try? await Task.sleep(for: .milliseconds(300 * index))
+                    return Task.isCancelled ? nil : candidate
+                }
             }
+            for await answer in group { if let answer { group.cancelAll(); return answer } }
+            return nil
         }
-        return false
+        guard let found else { return false }
+        base = found; return true
     }
     /// Replaces the known addresses with the ones the Mac reports. Returns the connection to save, or nil if nothing changed.
     func learn(_ urls: [String]) -> Connection? {
