@@ -13,6 +13,9 @@ from .store import new_id
 GAP = 30 * 60            # seconds of quiet after which the next message begins a new stretch
 PAGE = 120               # messages in one page of the stream
 LEAD = 4                 # messages shown before the one a search result opens at
+FOUND = 12               # messages the assistant gets back when it searches the record
+SNIPPET = 200            # characters of each of them
+PASSAGE = 7000           # characters of one passage it reads back; half of it is for the message it asked for
 
 
 class Stream:
@@ -136,3 +139,57 @@ class Stream:
             found.append({"id": row["id"], "session_id": row["session_id"], "role": row["role"], "title": row["title"], "created_at": row["created_at"],
                           "snippet": ("…" if lead else "") + text[lead:spot + len(query) + 60] + ("…" if spot + len(query) + 60 < len(text) else "")})
         return found
+
+    # ---- the record, for the assistant itself: everything said is kept, and it can look it up ----
+    def find(self, query, limit=FOUND):
+        """Messages that contain any of the words, those with the most of them first, then the newest. Private stretches are left out."""
+        terms = list(dict.fromkeys(t for t in query[:200].replace("，", " ").replace(",", " ").split() if t))[:8]
+
+        def look(terms):
+            if not terms:
+                return []
+            likes = ["%" + t.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%" for t in terms]
+            rows = self.store.all("SELECT m.id,m.role,m.content,m.created_at,s.title FROM messages m JOIN sessions s ON s.id=m.session_id "
+                                  "WHERE m.status='complete' AND m.role IN ('user','assistant') AND s.incognito=0 AND ("
+                                  + " OR ".join("m.content LIKE ? ESCAPE '\\'" for _ in likes) + ") ORDER BY m.created_at DESC LIMIT 400", likes)
+            scored = [(sum(1 for t in terms if t.lower() in row["content"].lower()), row) for row in rows]
+            return sorted(scored, key=lambda item: (-item[0], -item[1]["created_at"]))
+        scored = look(terms)
+        if not scored:
+            # "上次说的跑步计划" is one word to a split on spaces: its character pairs can still find the talk about 跑步.
+            chars = [c for c in query[:200] if "㐀" <= c <= "鿿" or "぀" <= c <= "ヿ" or "가" <= c <= "힯"]
+            pairs = list(dict.fromkeys(a + b for a, b in zip(chars, chars[1:])))[:12]
+            scored = [item for item in look(pairs) if item[0] >= min(2, len(pairs))]
+            terms = pairs
+        found = []
+        for _, row in scored[:max(1, min(int(limit), 30))]:
+            text = " ".join(row["content"].split())
+            spot = min((at for t in terms if (at := text.lower().find(t.lower())) >= 0), default=0)
+            lead = max(0, spot - 60)
+            found.append({"message_id": row["id"], "when": time.strftime("%Y-%m-%d %H:%M", time.localtime(row["created_at"])), "conversation": row["title"],
+                          "who": "user" if row["role"] == "user" else "assistant",
+                          "snippet": ("…" if lead else "") + text[lead:lead + SNIPPET] + ("…" if lead + SNIPPET < len(text) else "")})
+        return found
+
+    def around(self, message_id, before=2, after=3):
+        """A message word for word, with what was said just before and after it in the same stretch. None when there is no such
+        message or it is in a private stretch. Long messages are cut to a budget, the one asked for last."""
+        found = self.store.one("SELECT m.id,m.session_id,m.created_at,s.title FROM messages m JOIN sessions s ON s.id=m.session_id "
+                               "WHERE m.id=? AND s.incognito=0", (message_id,))
+        if not found:
+            return None
+        said = "SELECT id,role,content,created_at FROM messages WHERE session_id=? AND status='complete' AND role IN ('user','assistant') AND content!='' "
+        lead = self.store.all(said + "AND created_at<? ORDER BY created_at DESC LIMIT ?", (found["session_id"], found["created_at"], before + 1))
+        rest = self.store.all(said + "AND created_at>=? ORDER BY created_at LIMIT ?", (found["session_id"], found["created_at"], after + 2))
+        earlier, lead = len(lead) > before, lead[:before][::-1]
+        later, rest = len(rest) > after + 1, rest[:after + 1]
+        rows = lead + rest
+        share = (PASSAGE - PASSAGE // 2) // max(1, len(rows) - 1)
+        messages = []
+        for row in rows:
+            room = PASSAGE // 2 if row["id"] == message_id else share
+            text = row["content"].strip()
+            messages.append({"message_id": row["id"], "when": time.strftime("%Y-%m-%d %H:%M", time.localtime(row["created_at"])),
+                             "who": "user" if row["role"] == "user" else "assistant",
+                             "text": text if len(text) <= room else text[:room] + f"…[{len(text) - room} more characters not shown]"})
+        return {"conversation": found["title"], "messages": messages, "earlier": earlier, "later": later}

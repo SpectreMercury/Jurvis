@@ -51,8 +51,21 @@ Reply with JSON only: an array of strings, one fact each, in the language of the
 SUMMARIZE = """Summarize the earlier part of a conversation between a user and their assistant so the assistant can continue it later without the original messages.
 Keep, with the exact names, numbers, dates and wording that later questions may refer to: who the user is and what they want, every decision and agreed figure,
 each thing the assistant produced (lists with their numbered items in one line each, drafts with their title and opening line, files with their names), and what is still open.
+Give each thing produced the file it was saved in or the date it was made, so that its full text can be looked up again later.
 When a "Summary so far" is given, keep everything in it that still matters and add the new messages; never drop an earlier topic just because the conversation moved on.
 Drop small talk. Write in the language of the conversation, at most 600 words, as short labelled lines grouped by topic."""
+
+HANDOFF = """Write the handoff notes that let an assistant carry on a conversation with its user after the earlier messages are gone.
+This is not a summary of what was said: pick what the rest of the conversation will need. The messages themselves are kept and can be looked up by date or by their words.
+Write, as short labelled lines:
+- Now: what the user is working on or wants at this point, and what was about to happen next.
+- Open: questions not yet answered, decisions not yet made, things promised but not done.
+- Standing instructions: how the user said they want things done in this conversation, in their own words.
+- Settled: decisions and agreed figures that what is open depends on, with the exact names, numbers and dates.
+- Produced: each thing the assistant made, one line each: what it is, its file name or the date it was made, and its title or opening words, so it can be looked up.
+- Earlier subjects: one line each for subjects that are finished, with their date, as pointers only.
+When "Notes so far" are given, carry over what still matters and bring it up to date; drop what the new messages have settled or replaced.
+Write in the language of the conversation, at most 400 words. No preamble."""
 
 REWRITE = """Rewrite the user's latest message as a short standalone search query for a memory store about this user (their preferences, people, projects, decisions).
 Use the conversation only to resolve references like "it" or "那个". Reply with the query only, in the user's language."""
@@ -307,13 +320,16 @@ class Memory:
         self.store.execute("UPDATE sessions SET memory_upto=? WHERE id=?", (rows[-1]["created_at"], session["id"]))
         return saved
 
-    async def fold(self, session, rows, ask):
-        """Folds messages that no longer fit the context into the conversation summary. ask is the model call of the conversation."""
+    async def fold(self, session, rows, ask, brief=False):
+        """Folds messages that no longer fit the context into the conversation summary. ask is the model call of the conversation.
+        brief=True writes notes for what is still open instead of a summary of everything (a cloud model only, when the user turned it on)."""
         if not rows:
             return False
         prior = session.get("summary") or ""
-        content = (f"Summary so far:\n{prior}\n\n" if prior else "") + "Messages to fold in:\n" + self.transcript(rows, 24000)
-        reply = await ask([{"role": "system", "content": SUMMARIZE}, {"role": "user", "content": content}], max_tokens=1400, temperature=0.2, search=False)
+        day = lambda row: datetime.fromtimestamp(row["created_at"]).strftime("%Y-%m-%d")
+        dates = day(rows[0]) if day(rows[0]) == day(rows[-1]) else f"{day(rows[0])} to {day(rows[-1])}"
+        content = (f"{'Notes' if brief else 'Summary'} so far:\n{prior}\n\n" if prior else "") + f"Messages to fold in ({dates}):\n" + self.transcript(rows, 24000)
+        reply = await ask([{"role": "system", "content": HANDOFF if brief else SUMMARIZE}, {"role": "user", "content": content}], max_tokens=1400, temperature=0.2, search=False)
         text = reply.text.strip()
         if not text:
             return False

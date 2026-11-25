@@ -30,6 +30,7 @@ from .home import ACTIONS as HOME_ACTIONS, TYPES as HOME_TYPES, ConnectorError
 from .mcp import McpError
 from .schemas import ImageRequest, ProjectCreate, VideoRequest
 from .store import dumps, new_id
+from .stream import Stream
 
 
 def calculate(expression):
@@ -233,6 +234,16 @@ class MailReadArgs(BaseModel):
 
 class ConversationsArgs(BaseModel):
     days: int = Field(default=3, ge=1, le=14, description="How many days back")
+
+
+class SearchConversationsArgs(BaseModel):
+    query: str = Field(min_length=1, max_length=200, description="A few distinctive words that were said, separated by spaces (names, numbers, the thing itself); any of them may match")
+
+
+class ReadConversationArgs(BaseModel):
+    message_id: str = Field(description="A message_id from search_conversations, or from an earlier read_conversation to read on from there")
+    before: int = Field(default=2, ge=0, le=6, description="Messages before it to include")
+    after: int = Field(default=3, ge=0, le=6, description="Messages after it to include")
 
 
 class OpenSessionArgs(BaseModel):
@@ -519,6 +530,7 @@ class ToolRegistry:
         self.ledger = Ledger(store)
         self.health = Health(store)
         self.journal = Journal(store)
+        self.stream = Stream(store)
         self.oauth = OAuthApps(settings)  # the user's own Google, WHOOP and Microsoft apps, shared by health and mail
         self.mail = Mail(settings, self.oauth)
         self.coding = Coding(settings, store)
@@ -713,6 +725,12 @@ class ToolRegistry:
               summary=lambda r: r["subject"][:40]),
             T("recent_conversations", "看最近的对话", "What the user said to you in other conversations over the last few days (their own messages, with the conversation title and time). "
               "Kept on this Mac.", ConversationsArgs, self.recent_conversations, summary=lambda r: f"{len(r['messages'])} 条"),
+            T("search_conversations", "翻对话记录", "Search everything the user and you have ever said to each other, word for word, by keywords. Returns the matching messages "
+              "(newest and best first) with their time, a snippet and a message_id. Use it when the user refers to something said earlier that is not in front of you.",
+              SearchConversationsArgs, lambda a: {"query": a.query, "messages": self.stream.find(a.query)}, summary=lambda r: f"{len(r['messages'])} 条"),
+            T("read_conversation", "读原话", "Read one earlier message in full, with the messages around it, by a message_id from search_conversations. "
+              "Pass the first or last message_id of what you got to read further back or on.", ReadConversationArgs, self.read_conversation,
+              summary=lambda r: f"{r['conversation'][:30]} · {len(r['messages'])} 条"),
             T("open_session", "开新对话", "Open a separate, quiet conversation for what the user is going through (stress, low mood, anxiety, grief, a relationship, loneliness, "
               "burnout, self-doubt) when they start sharing it in a conversation that is about something else. The app switches them to it right away and "
               "your opening message is waiting there. Not when this conversation is already that conversation, and not when they are in danger right now.",
@@ -740,8 +758,10 @@ class ToolRegistry:
 
     OPTIONAL = {"web_fetch", "web_search", "load_skill", "home_devices", "home_control", "phone_call", "delegate", "command_output", "stop_command", "find_tools"} | BROWSER_TOOLS
 
+    PAST = {"search_conversations", "read_conversation"}  # the record of the conversation; offered by the agent where memory is on (Agent.tool_names)
+
     def default_names(self, model=None):
-        return {n for n in self.tools if n not in ("finish_goal", "update_plan", "ask_user", "start_task", "open_session", "recent_conversations", "jot", "read_journal") and n not in self.OPTIONAL and n not in self.dynamic} | self.available(model)
+        return {n for n in self.tools if n not in ("finish_goal", "update_plan", "ask_user", "start_task", "open_session", "recent_conversations", "jot", "read_journal") and n not in self.PAST and n not in self.OPTIONAL and n not in self.dynamic} | self.available(model)
 
     def schemas(self, names=None):
         names = names or self.default_names()
@@ -1102,6 +1122,12 @@ class ToolRegistry:
                               "WHERE m.role='user' AND m.created_at>=? AND s.incognito=0 ORDER BY m.created_at DESC LIMIT 60", (since,))
         return {"days": a.days, "messages": [{"time": datetime.fromtimestamp(r["created_at"]).strftime("%m-%d %H:%M"), "conversation": r["title"],
                                               "said": " ".join(r["content"].split())[:300]} for r in rows]}
+
+    def read_conversation(self, a):
+        passage = self.stream.around(a.message_id.strip(), a.before, a.after)
+        if not passage:
+            raise ValueError("没有这条消息；message_id 要用 search_conversations 返回的")
+        return passage
 
     def remember(self, title, content):
         if self.memory:

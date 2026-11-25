@@ -348,3 +348,37 @@ async def test_a_value_whose_parameter_name_was_dropped_still_reaches_the_tool(a
     app.state.worker.tools.save_file("a.md", "内容")
     _, message = await run(app, model, "读一下 a.md")
     assert message["metadata"]["steps"][0]["calls"][0]["status"] == "ok"
+
+
+# ---- a long turn's record gives way to the model's own notes ----
+
+def talked(app, n=6):
+    """Earlier talk long enough that looking it up fills the context."""
+    store = app.state.store
+    store.execute("INSERT INTO sessions(id,title,created_at,updated_at) VALUES('old','续租',1,1)")
+    store.execute("INSERT INTO sessions(id,title,created_at,updated_at) VALUES('s1','新对话',0,0)")
+    for i in range(n):
+        store.execute("INSERT INTO messages(id,session_id,role,content,status,created_at) VALUES(?,?,?,?,'complete',?)",
+                      (f"o{i}", "old", "user" if i % 2 == 0 else "assistant", f"续租 合同 押金 第{i}条。" + "房东说租金可以再谈。" * 40, 10 + i))
+
+
+@pytest.mark.asyncio
+async def test_a_record_that_no_longer_fits_is_replaced_by_handoff_notes(app, monkeypatch):
+    monkeypatch.setattr("engine.agent.GOAL_CONTEXT", 4000)
+    talked(app)
+    looks = [Completion("", [named(f"s{n}", "search_conversations", query=word)], "tool_calls") for n, word in enumerate(("续租", "合同", "押金"))]
+    model = ScriptedModel(looks + [
+        Completion("Facts: 房东同意租金 6500。\nLeft to do: 写出结论。", [], "stop"),   # the notes
+        Completion("", [call("finish_goal", status="done", summary="租金谈到 6500。", evidence="对话记录")], "tool_calls"),
+        Completion('{"achieved": true, "missing": ""}', [], "stop"),
+    ])
+    _, message = await run(app, model, "查一下续租谈到哪了", mode="goal")
+    assert message["metadata"]["goal"]["status"] == "done"
+    notes, after = model.calls[3], model.calls[4]["messages"]
+    assert notes["tools"] is None and "handoff notes" in notes["messages"][0]["content"]
+    assert "Task:\n查一下续租谈到哪了" in notes["messages"][1]["content"] and "Called search_conversations" in notes["messages"][1]["content"]
+    # The first look is now in the notes; the latest two are still there word for word.
+    assert [m["tool_call_id"] for m in after if m["role"] == "tool"] == ["s1", "s2"]
+    kept = next(m["content"] for m in after if m["role"] == "user" and "<notes>" in m["content"])
+    assert "房东同意租金 6500" in kept and "do not start over" in kept
+    assert sum(1 for m in after if m["role"] == "user" and "查一下续租谈到哪了" in m["content"]) == 1  # the task itself stays

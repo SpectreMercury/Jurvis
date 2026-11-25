@@ -100,8 +100,8 @@ function failed(el, key) {
   return true;
 }
 
-function toggle(label, checked, onChange, hint) {
-  const box = ui.toggle({ checked: !!checked, 'aria-label': label });
+function toggle(label, checked, onChange, hint, disabled) {
+  const box = ui.toggle({ checked: !!checked, 'aria-label': label, ...(disabled ? { disabled: '' } : {}) });
   box.addEventListener('change', async () => {
     const want = box.checked;
     const ok = await run(box, () => onChange(want));
@@ -230,12 +230,26 @@ function renderMemory() {
   const set = (key) => (on) => saveSettings({ memory: { [key]: on } });
   const max = ui.number({ min: '1', max: '50', step: '1', value: String(m.max_retrieved === undefined ? 8 : m.max_retrieved), 'aria-label': '每次最多取回' });
   const threshold = ui.number({ min: '0', max: '1', step: '0.05', value: String(m.threshold === undefined ? 0.3 : m.threshold), 'aria-label': '相关度阈值' });
+  // How context is kept short. The two switches rewrite the record with an extra model call, so the engine only takes them with a cloud model.
+  const c = store.settings.settings.context || {};
+  const local = (store.settings.settings.chat_model || 'local') === 'local';
+  const keep = (key) => (on) => saveSettings({ context: { [key]: on } });
+  const history = ui.select({ value: String(c.cloud_history || 4), 'aria-label': '在线模型带上的历史' },
+    [['4', '4 倍（默认）'], ['3', '3 倍'], ['2', '2 倍'], ['1', '和本机模型一样']].map(([value, label]) => ({ value, label })));
+  history.addEventListener('change', () => run(history, () => saveSettings({ context: { cloud_history: Number(history.value) } })));
+  const cloudOnly = local ? '默认对话模型是在线模型时才能开启' : null;
   fill(el, 
     toggle('启用记忆', m.enabled, set('enabled')),
     toggle('自动提取', m.auto_extract, set('auto_extract'), '从对话里记下值得长期保留的信息'),
     toggle('自动取回', m.auto_retrieve, set('auto_retrieve'), '回答前先找出相关的记忆'),
     h('div', { class: 'control-row' }, h('span', { class: 'control-label grow' }, '每次最多取回（条）'), max),
     h('div', { class: 'control-row' }, h('span', { class: 'control-label grow' }, '相关度阈值（0–1）'), threshold),
+    h('div', { class: 'control-row' }, h('span', { class: 'control-label grow' }, '在线模型带上的历史',
+      h('span', { class: 'muted small block' }, '每次回复带上多少之前的原话，按本机模型的量算。带得少更省更快，更早的内容靠摘要和翻对话记录找回')), history),
+    toggle('每步压缩', c.step_compaction && !local, keep('step_compaction'),
+      cloudOnly || '目标和后台任务里，每做一步就把经过整理成简报再继续。上下文很短，但每步多一次模型调用', local),
+    toggle('摘要写成简报', c.brief_summary && !local, keep('brief_summary'),
+      cloudOnly || '对话太长时，较早的内容不写成完整摘要，只留还没办完的事和去哪找原文', local),
     h('div', { class: 'row end' }, action('保存', async () => {
       const count = Math.round(Number(max.value));
       const level = Number(threshold.value);

@@ -694,3 +694,88 @@ def test_event_feed_and_pwa_are_served(client, app):
     assert client.get("/app/", headers={"Authorization": ""}).status_code in (200, 404)
     app.state.store.event("sessions", "s9")
     assert client.get("/api/state").json()["last_event"] >= 1
+
+
+# ---- keeping context short: the history a cloud model is sent, and two ways only a cloud model may use ----
+
+async def goal(app, model, text, cloud):
+    worker, store = app.state.worker, app.state.store
+    session(app)
+    worker.llm.stream, worker.agent.runtime = (model.stream, worker.agent.runtime) if cloud else (worker.llm.stream, model)
+    store.add_message("s1", "user", text, metadata={"mode": "goal"})
+    mid = store.add_message("s1", "assistant", "", "queued")
+    await worker.agent.run(store.create_job("chat", {"session_id": "s1", "message_id": mid}))
+    return store.one("SELECT * FROM messages WHERE id=?", (mid,))
+
+
+def goal_turns(notes):
+    return ([Completion("", [call("calculate", expression="6500*12")], "tool_calls")]
+            + ([Completion("Facts: 一年租金 78000。\nLeft to do: 报告结果。", [], "stop")] if notes else [])
+            + [Completion("", [call("finish_goal", status="done", summary="一年 78000。", evidence="calculate 的结果")], "tool_calls"),
+               Completion('{"achieved": true, "missing": ""}', [], "stop")])
+
+
+@pytest.mark.asyncio
+async def test_with_step_compaction_a_cloud_goal_starts_each_step_from_the_task_and_its_notes(app):
+    use_cloud(app)
+    app.state.worker.prefs.update({"context": {"step_compaction": True}})
+    model = Scripted(goal_turns(notes=True))
+    message = await goal(app, model, "算一下一年的租金", cloud=True)
+    assert message["metadata"]["goal"]["status"] == "done"
+    notes, after = model.calls[1], model.calls[2]["messages"]
+    assert notes["tools"] is None and "handoff notes" in notes["messages"][0]["content"] and "Called calculate" in notes["messages"][1]["content"]
+    assert not any(m["role"] == "tool" or m.get("tool_calls") for m in after)  # nothing of the step itself is left
+    assert "一年租金 78000" in after[-1]["content"] and "算一下一年的租金" in after[-2]["content"]
+
+
+@pytest.mark.asyncio
+async def test_step_compaction_stays_off_for_the_local_model_and_until_it_is_turned_on(app):
+    app.state.worker.prefs.update({"context": {"step_compaction": True}})  # as if left on after going back to the local model
+    model = Scripted(goal_turns(notes=False))
+    assert (await goal(app, model, "算一下一年的租金", cloud=False))["metadata"]["goal"]["status"] == "done" and len(model.calls) == 3
+    use_cloud(app)
+    app.state.worker.prefs.update({"context": {"step_compaction": False}})
+    model = Scripted(goal_turns(notes=False))
+    assert (await goal(app, model, "再算一下一年的租金", cloud=True))["metadata"]["goal"]["status"] == "done"
+    assert any(m["role"] == "tool" for m in model.calls[1]["messages"])
+
+
+@pytest.mark.asyncio
+async def test_a_cloud_model_is_sent_as_much_history_as_set_and_folds_into_a_brief_when_asked(app):
+    worker, store = app.state.worker, app.state.store
+    use_cloud(app)
+    session(app)
+    total = worker.settings.history_messages + 6
+    for n in range(total):
+        store.execute("INSERT INTO messages(id,session_id,role,content,status,created_at) VALUES(?,?,?,?,'complete',?)",
+                      (f"m{n}", "s1", "user" if n % 2 == 0 else "assistant", f"第{n}条", 100 + n))
+    model = Scripted([Completion("好的。", [], "stop")])
+    await chat(app, model, "继续")
+    assert len(model.calls) == 1 and any(m["content"] == "第0条" for m in model.calls[0]["messages"])  # four times the local budget: all of it fits
+    worker.prefs.update({"context": {"cloud_history": 1, "brief_summary": True}})
+    model = Scripted([Completion("Now: 在数数。", [], "stop"), Completion("好的。", [], "stop")])
+    await chat(app, model, "再继续")
+    fold, reply = model.calls
+    assert "handoff notes" in fold["messages"][0]["content"] and "Messages to fold in (1970-01-01" in fold["messages"][1]["content"]
+    assert "Now: 在数数。" in reply["messages"][0]["content"] and not any(m["content"] == "第0条" for m in reply["messages"])
+    # The local model always gets the full summary, whatever the switch says.
+    worker.prefs.update({"chat_model": "local"})
+    for n in range(total):
+        store.execute("INSERT INTO messages(id,session_id,role,content,status,created_at) VALUES(?,?,?,?,'complete',?)",
+                      (f"n{n}", "s1", "user" if n % 2 == 0 else "assistant", f"又{n}条", time.time() + n))
+    model = Scripted([Completion("摘要。", [], "stop"), Completion("好的。", [], "stop")])
+    await chat(app, model, "还继续", cloud=False)
+    assert model.calls[0]["messages"][0]["content"].startswith("Summarize the earlier part") and "Notes so far" not in model.calls[0]["messages"][1]["content"]
+
+
+def test_the_cloud_only_switches_cannot_be_turned_on_with_the_local_model(client, app):
+    assert client.get("/api/settings").json()["settings"]["context"] == {"cloud_history": 4, "step_compaction": False, "brief_summary": False}
+    for key in ("step_compaction", "brief_summary"):
+        refused = client.patch("/api/settings", json={"context": {key: True}})
+        assert refused.status_code == 400 and "在线模型" in refused.text
+    assert client.patch("/api/settings", json={"context": {"cloud_history": 2}}).json()["settings"]["context"]["cloud_history"] == 2
+    for bad in ({"cloud_history": 9}, {"cloud_history": True}, {"step_compaction": "yes"}, {"other": 1}):
+        assert client.patch("/api/settings", json={"context": bad}).status_code == 400
+    use_cloud(app)
+    view = client.patch("/api/settings", json={"context": {"step_compaction": True, "brief_summary": True}}).json()["settings"]["context"]
+    assert view == {"cloud_history": 2, "step_compaction": True, "brief_summary": True}

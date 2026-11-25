@@ -166,6 +166,7 @@ class SettingsUpdate(BaseModel):
     embed_model: str | None = Field(default=None, max_length=200)
     web_search: bool | None = None
     memory: dict | None = None
+    context: dict | None = None
     home: dict | None = None
     voice: dict | None = None
 

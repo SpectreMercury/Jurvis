@@ -711,6 +711,18 @@ def create_app(settings=None, *, run_worker=True):
         for key in ("chat_model","tool_model","embed_model"):
             if changes.get(key):check_model(changes[key])
         if changes.get("embed_model")==LOCAL:raise ValueError("本机模型不提供向量；留空则使用内置的关键词匹配")
+        if "context" in changes:
+            wanted=changes["context"]
+            unknown=set(wanted)-{"cloud_history","step_compaction","brief_summary"}
+            if unknown:raise ValueError("未知设置："+", ".join(sorted(unknown)))
+            if "cloud_history" in wanted and not (isinstance(wanted["cloud_history"],int) and not isinstance(wanted["cloud_history"],bool) and 1<=wanted["cloud_history"]<=4):
+                raise ValueError("在线模型的历史倍数需为 1 到 4 的整数")
+            for key in ("step_compaction","brief_summary"):
+                if key in wanted and not isinstance(wanted[key],bool):raise ValueError(f"{key} 需为开或关")
+            # Both rewrite the record with an extra model call at every step or fold: only a cloud model is quick and steady enough for that.
+            model=changes.get("chat_model") or worker.prefs.get()["chat_model"]
+            if (wanted.get("step_compaction") or wanted.get("brief_summary")) and worker.llm.is_local(model):
+                raise ValueError("只有默认对话模型是在线模型时才能开启")
         worker.prefs.update(changes)
         store.event("settings","settings")
         return settings_view()

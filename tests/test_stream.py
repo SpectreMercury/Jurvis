@@ -310,3 +310,44 @@ async def test_a_quiet_conversation_opened_by_jurvis_is_where_the_next_message_g
     assert say(client, "从工作说起吧").json()["payload"]["session_id"] == quiet
     said = [m["content"] for m in client.get("/api/stream").json()["messages"] if m["content"]]
     assert said == ["最近压力很大，睡不着", "我们慢慢聊。", "听起来这段时间很不容易。想从哪儿说起？", "从工作说起吧"]
+
+
+# ---- the record: what the context did not bring back, the assistant can look up word for word ----
+
+def test_the_assistant_can_search_the_record_and_read_a_passage_word_for_word(app):
+    tools = app.state.worker.tools
+    long = "第一周每次三公里，" + "慢慢加量。" * 1200
+    past(app, "run", [("帮我订一个八周的跑步计划", long), ("第三周呢", "第三周每次五公里，周日加一次长距离。"), ("谢谢", "不客气。")], ago=40 * 86400)
+    past(app, "trip", [("京都行程怎么排", "清水寺放在最后一天傍晚。")], ago=20 * 86400)
+    past(app, "secret", [("跑步计划里别告诉别人的那件事", "好的，不会记。")], ago=10 * 86400, incognito=1)
+    found = tools.invoke("search_conversations", {"query": "跑步计划 八周"}).result["messages"]
+    assert found[0]["message_id"] == "runu0" and found[0]["who"] == "user" and "八周的跑步计划" in found[0]["snippet"]
+    assert not any(m["message_id"].startswith(("secret", "trip")) for m in found)  # a private stretch is never searched
+    # A question in one piece, as Chinese is written: its character pairs still find the talk.
+    assert tools.invoke("search_conversations", {"query": "上次说的清水寺怎么安排"}).result["messages"][0]["message_id"] == "tripa0"
+    assert tools.invoke("search_conversations", {"query": "潜水"}).result["messages"] == []
+    passage = tools.invoke("read_conversation", {"message_id": "runa1", "before": 1, "after": 1}).result
+    assert [m["message_id"] for m in passage["messages"]] == ["runu1", "runa1", "runu2"]
+    assert passage["messages"][1]["text"] == "第三周每次五公里，周日加一次长距离。" and passage["earlier"] and passage["later"]
+    whole = tools.invoke("read_conversation", {"message_id": "runa0", "before": 0, "after": 0}).result
+    assert whole["messages"][0]["text"].startswith("第一周每次三公里") and "more characters not shown" in whole["messages"][0]["text"]
+    assert len(json.dumps(tools.invoke("read_conversation", {"message_id": "runa0", "before": 6, "after": 6}).result, ensure_ascii=False)) < 8000
+    for missing in ("secretu0", "nope"):
+        assert not tools.invoke("read_conversation", {"message_id": missing}).ok
+
+
+@pytest.mark.asyncio
+async def test_the_record_is_offered_where_memory_is_and_not_in_a_private_stretch(app):
+    past(app, "now", [("你好", "你好。")], ago=60)
+    past(app, "quiet", [("这段别记", "好的。")], ago=60, incognito=1)
+    offered = {}
+    for ident in ("now", "quiet"):
+        model = Scripted([Completion("好的。", [], "stop")])
+        await reply(app, model, "我们之前定的续租租金是多少来着", ident)
+        offered[ident] = ({t["function"]["name"] for t in model.calls[-1]["tools"]}, model.calls[-1]["messages"][0]["content"])
+    assert {"search_conversations", "read_conversation"} <= offered["now"][0] and "search_conversations with a few distinctive words" in offered["now"][1]
+    assert not {"search_conversations", "read_conversation"} & offered["quiet"][0] and "search_conversations" not in offered["quiet"][1]
+    app.state.worker.prefs.update({"memory": {"enabled": False}})  # with memory off it does not go through the past either
+    model = Scripted([Completion("好的。", [], "stop")])
+    await reply(app, model, "我们之前定的续租租金是多少来着", "now")
+    assert "search_conversations" not in {t["function"]["name"] for t in model.calls[-1]["tools"]}
