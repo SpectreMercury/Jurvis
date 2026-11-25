@@ -15,8 +15,8 @@ struct CalendarEntry: Codable, Equatable, Identifiable {
 }
 
 /// Puts bookings in the system calendar. The engine offers each one to every app; the first to claim it adds it, to the
-/// calendar new events go to by default, and the user's calendar account carries it to their other devices. Write-only access:
-/// Jurvis adds events and never reads the calendar.
+/// calendar new events go to by default, and the user's calendar account carries it to their other devices. Adding needs only
+/// write access; reading the calendar is a separate choice the user makes in 设置 (Reach.swift).
 @MainActor final class CalendarSync {
     static let shared = CalendarSync()
     private let events = EKEventStore()

@@ -133,6 +133,7 @@ class MemoryCreate(BaseModel):
     importance: float = Field(default=0.7, ge=0, le=1)
     durable: bool = True
     tags: list[str] = Field(default_factory=list, max_length=8)
+    private: bool | None = None      # kept for the local model; None lets the wording decide
 
 
 class PairRequest(BaseModel):
@@ -141,7 +142,7 @@ class PairRequest(BaseModel):
 
 
 class CommandDecision(BaseModel):
-    decision: Literal["run", "deny", "always"]
+    decision: Literal["run", "deny", "always", "forever"]
 
 
 class StreamCreate(ChatCreate):
@@ -169,6 +170,7 @@ class SettingsUpdate(BaseModel):
     context: dict | None = None
     home: dict | None = None
     voice: dict | None = None
+    power: dict | None = None
 
 
 class SpeakRequest(BaseModel):

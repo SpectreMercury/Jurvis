@@ -34,7 +34,7 @@ def excerpt(text, limit=8000):
 class Shell:
     def __init__(self, settings, store):
         self.settings, self.store = settings, store
-        self.pending = {}  # (message_id, call_id) -> Future[str]: "run" | "deny" | "always"
+        self.pending = {}  # (message_id, call_id) -> Future[str]: "run" | "deny" | "always" | "forever"
         self.allowed = set()  # (session_id, tool name): external tools the user allowed for the rest of a conversation, until the engine restarts
         self.background = {}  # command id -> a command left running (a dev server, a watcher) and what it has printed
         self.started = 0
@@ -50,7 +50,7 @@ class Shell:
         return risky(command) or not (row and row["allow_commands"])
 
     async def wait(self, session_id, message_id, call_id):
-        """Waits for the user's answer; returns "run", "deny" or "timeout"."""
+        """Waits for the user's answer; returns "run", "forever" (run, and this kind of command from now on), "deny" or "timeout"."""
         future = asyncio.get_running_loop().create_future()
         self.pending[(message_id, call_id)] = future
         try:
@@ -66,7 +66,7 @@ class Shell:
         return decision
 
     async def ask(self, message_id, call_id):
-        """Waits for the user's answer to any approval card; returns "run", "always", "deny" or "timeout"."""
+        """Waits for the user's answer to any approval card; returns "run", "always", "forever", "deny" or "timeout"."""
         future = asyncio.get_running_loop().create_future()
         self.pending[(message_id, call_id)] = future
         try:

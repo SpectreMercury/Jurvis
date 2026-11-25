@@ -631,7 +631,9 @@ async function loadMessages(loud) {
 // browser allows it, otherwise a note in the page. Nothing is announced for the conversation already open in front of the user.
 const DELIVERED = 'jurvis.outreach.delivered';
 export function announce() {
-  const list = (store.state && store.state.outreach) || [];
+  // Check-ins come as messages (outreach); what else is worth telling (a result of background work, an action waiting for a yes) as notices.
+  const list = [...((store.state && store.state.outreach) || []),
+    ...((store.state && store.state.notices) || []).map((n) => ({ id: n.id, content: n.body, created_at: n.created_at, heading: n.title }))];
   if (!list.length) return;
   let done = [];
   try { done = JSON.parse(localStorage.getItem(DELIVERED) || '[]'); } catch { done = []; }
@@ -643,12 +645,12 @@ export function announce() {
     const text = o.content.length > 180 ? o.content.slice(0, 180) + '…' : o.content;
     if ('Notification' in window && Notification.permission === 'granted') {
       try {
-        const n = new Notification('Jurvis', { body: text, tag: o.id });
+        const n = new Notification(o.heading || 'Jurvis', { body: text, tag: o.id });
         n.onclick = () => { window.focus(); emit('goto', 'chat'); backToNow(); n.close(); };
         continue;
       } catch { /* some mobile browsers only notify from a service worker: fall back to the page */ }
     }
-    notify('Jurvis：' + text, 'info');
+    notify((o.heading || 'Jurvis') + '：' + text, 'info');
   }
   try { localStorage.setItem(DELIVERED, JSON.stringify(done.slice(-200))); } catch { /* private mode */ }
 }
@@ -941,6 +943,21 @@ function renderAssistant(node, m, last) {
     if (meta.truncated) parts.status.append(h('span', { class: 'muted small' }, '回复达到长度上限，可能不完整。'));
     if (meta.model) parts.status.append(h('span', { class: 'muted small' }, modelLabel(meta.model)));
     const words = steps.map((step) => step.text || '').filter(Boolean).join('\n\n');
+    if (m.status === 'complete' && words) {
+      // The user's verdict on this reply: a reply marked down, with a word on why, goes on Jurvis's improvement list.
+      const given = (meta.feedback || {}).rating || '';
+      const rate = async (rating) => {
+        let note = '';
+        if (rating === 'down' && given !== 'down') {
+          note = await askWhy();
+        }
+        try { await post('/api/messages/' + encodeURIComponent(m.id) + '/feedback', { rating: given === rating ? '' : rating, note }); refreshMessages(); } catch (err) { notify(err.message); }
+      };
+      for (const [rating, glyph, label] of [['up', '👍', '有帮助'], ['down', '👎', '不对']]) {
+        parts.status.append(h('button', { class: 'icon-btn small rate' + (given === rating ? ' on' : ''), type: 'button', 'aria-pressed': String(given === rating), 'aria-label': label, title: label,
+          onclick: () => rate(rating) }, glyph));
+      }
+    }
     if (speech.tts && m.status === 'complete' && words) {
       const reading = voice.speakingKey() === m.id;
       parts.status.append(h('button', { class: 'icon-btn small read', type: 'button', 'aria-pressed': String(reading), 'aria-label': reading ? '停止朗读' : '朗读', title: reading ? '停止朗读' : '朗读',
@@ -984,9 +1001,24 @@ function callBody(call) {
   return body;
 }
 
+/** Asks what was wrong with a reply. Resolves with what the user wrote, which may be nothing; closing the sheet without sending gives no verdict. */
+function askWhy() {
+  return new Promise((resolve) => {
+    const input = h('input', { class: 'input', maxLength: 300, placeholder: '比如：太长了，我只要结论' });
+    const form = h('form', { class: 'stack' }, h('p', { class: 'muted small' }, '可以不写。写一句，它下次更容易改对；这条会记进它的工作日志。'), input,
+      h('div', { class: 'row end' }, h('button', { class: 'btn primary', type: 'submit' }, '提交')));
+    const close = sheet('哪里不对？', form);
+    form.addEventListener('submit', (event) => { event.preventDefault(); close(); resolve(input.value.trim()); });
+    input.focus();
+  });
+}
+
 function approval(call, m) {
-  const buttons = [['run', '允许', 'btn primary', 'check'], ['always', '本任务内都允许', 'btn', null], ['deny', '拒绝', 'btn', 'x']].map(([decision, label, cls, glyph]) => {
-    const button = h('button', { class: cls, type: 'button' }, glyph ? icon(glyph) : null, label);
+  // An email is asked about every time; "from now on" is offered only for a kind of action narrow enough to allow for good (call.permit says which).
+  const choices = [['run', '允许', 'btn primary', 'check'], call.name === 'mail_send' ? null : ['always', '本任务内都允许', 'btn', null],
+    call.permit ? ['forever', '以后都允许', 'btn', null] : null, ['deny', '拒绝', 'btn', 'x']].filter(Boolean);
+  const buttons = choices.map(([decision, label, cls, glyph]) => {
+    const button = h('button', { class: cls, type: 'button', title: decision === 'forever' ? call.permit : null }, glyph ? icon(glyph) : null, label);
     button.addEventListener('click', async () => {
       const others = buttons.filter((b) => b !== button);
       const ok = await run(button, async () => {
@@ -1006,13 +1038,15 @@ function approval(call, m) {
     });
     return button;
   });
+  const shell = call.name === 'run_command';  // every approval carries what will happen in call.command; only this one is a command
   return h('div', { class: 'approval' },
-    h('div', { class: 'approval-head' }, h('span', { class: 'tile round' }, icon(call.command ? 'terminal' : toolIcon(call.name))),
-      h('strong', null, call.command ? 'Jurvis 想运行一条命令' : (call.label || '需要你确认'))),
-    call.command ? h('pre', { class: 'mono' }, clip(call.command, 4000)) : null,
-    call.reason ? h('p', { class: 'approval-reason' }, String(call.reason)) : null,
+    h('div', { class: 'approval-head' }, h('span', { class: 'tile round' }, icon(shell ? 'terminal' : toolIcon(call.name))),
+      h('strong', null, shell ? 'Jurvis 想运行一条命令' : `Jurvis 想${call.label || '做一件事'}，等你确认`)),
+    call.command ? h('pre', { class: shell ? 'mono' : 'mono prose' }, clip(call.command, 4000)) : null,
+    call.reason && call.reason !== call.label ? h('p', { class: 'approval-reason' }, String(call.reason)) : null,
     call.cwd ? h('div', { class: 'muted small' }, '目录：' + call.cwd) : null,
-    h('div', { class: 'approval-actions' }, buttons));
+    h('div', { class: 'approval-actions' }, buttons),
+    call.permit ? h('div', { class: 'muted small' }, `「以后都允许」：${call.permit}。可以在 设置 → 不用再问的操作 里收回。`) : null);
 }
 
 // Cards: what a tool call made or found, shown as the thing itself instead of as a tool call.

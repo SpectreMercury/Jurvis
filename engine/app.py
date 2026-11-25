@@ -34,7 +34,7 @@ class Compress(GZipMiddleware):
         await super().__call__(scope,receive,send)
 
 
-MEMORY_COLUMNS="SELECT id,title,content,enabled,created_at,updated_at,importance,durable,tags,source,session_id,embed_model,page FROM memories"
+MEMORY_COLUMNS="SELECT id,title,content,enabled,created_at,updated_at,importance,durable,tags,source,session_id,embed_model,page,private FROM memories"
 
 
 
@@ -122,6 +122,11 @@ def create_app(settings=None, *, run_worker=True):
                                         ORDER BY m.created_at DESC LIMIT 5""",(time.time()-86400,)),
                 # Bookings made on the phone that no device has put in a calendar yet: the first app to claim one adds it.
                 "calendar":phone.calendar(),
+                # New events and reminders the assistant made, waiting for an app to put them in the system calendar or reminders.
+                "outbox":worker.tools.personal.outbox(),
+                # What the user should hear about (an action waiting for a yes, a background result): an open app announces these
+                # itself; a device whose app is closed gets them as a push (engine/push.py).
+                "notices":worker.push.recent(),
                 "chat_model":worker.llm.chat_model(),
                 "runtime":{"active":runtime.active,"memory_used_gib":round(psutil.virtual_memory().used/2**30,1),"memory_total_gib":round(psutil.virtual_memory().total/2**30,1)},
                 "last_event":(store.one("SELECT MAX(id) AS id FROM events")["id"] or 0)}
@@ -155,6 +160,27 @@ def create_app(settings=None, *, run_worker=True):
     async def decide_command(message_id:str,call_id:str,body:CommandDecision):
         worker.shell.decide(message_id,call_id,body.decision)
         return {"ok":True}
+
+    @app.post("/api/messages/{message_id}/feedback")
+    async def feedback(message_id:str,body:dict):
+        """The user's verdict on one reply: good, or not what they wanted (with a word on why). A reply marked down goes on the
+        assistant's improvement list; a check-in marked down also quiets what it was about for a week."""
+        rating=str(body.get("rating") or "")
+        if rating not in ("up","down",""):raise HTTPException(400,"rating 需为 up、down 或空")
+        row=store.one("SELECT m.session_id,m.content,m.metadata,s.incognito FROM messages m JOIN sessions s ON s.id=m.session_id WHERE m.id=? AND m.role='assistant'",(message_id,))
+        if not row:raise HTTPException(404,"消息不存在")
+        note=" ".join(str(body.get("note") or "").split())[:300]
+        meta=row["metadata"]
+        if rating:meta["feedback"]={"rating":rating,"note":note,"at":time.time()}
+        else:meta.pop("feedback",None)
+        store.execute("UPDATE messages SET metadata=? WHERE id=?",(dumps(meta),message_id))
+        store.event("messages",row["session_id"])
+        if rating=="down" and not row["incognito"]:
+            said=" ".join(row["content"].split())[:80]
+            journal.write("work","feedback","你说这条回复不对"+(f"：{note}" if note else "")+f"（回复开头：{said}）",owner="model",name="feedback",status="down",
+                          origin="checkin" if meta.get("checkin") else "chat",session_id=row["session_id"],message_id=message_id)
+            if meta.get("checkin"):worker.checkin.less()
+        return {"ok":True,"feedback":meta.get("feedback")}
 
     @app.delete("/api/sessions/{ident}")
     async def delete_session(ident:str):
@@ -370,7 +396,13 @@ def create_app(settings=None, *, run_worker=True):
     @app.get("/api/agenda")
     async def agenda():
         """The long-term goals and the scheduled work, for the Goals view."""
-        return {"goals":worker.tools.agenda.goals(),"schedules":worker.tools.agenda.schedules()}
+        return {"goals":worker.tools.agenda.goals(),"schedules":worker.tools.agenda.schedules(),"watches":worker.tools.watches.list()}
+
+    @app.delete("/api/watches/{ident}")
+    async def delete_watch(ident:str):
+        try:worker.tools.watches.cancel(ident)
+        except ValueError:raise HTTPException(404,"这个事件触发不存在")
+        return {"ok":True}
 
     @app.get("/api/spaces/{ident}")
     async def space(ident:str):
@@ -540,13 +572,14 @@ def create_app(settings=None, *, run_worker=True):
 
     @app.patch("/api/mail/{ident}")
     async def mail_share(ident:str,body:dict):
-        try:return {"accounts":worker.tools.mail.share(ident,bool(body.get("cloud")))}
-        except ValueError as exc:raise HTTPException(404,str(exc))
+        """Opens a mailbox to cloud models, or lets Jurvis send from it. Only what is in the body changes."""
+        try:return {"accounts":worker.tools.mail.share(ident,bool(body["cloud"]) if "cloud" in body else None,bool(body["send"]) if "send" in body else None)}
+        except ValueError as exc:raise HTTPException(400,str(exc))
 
     @app.post("/api/mail/connect/{kind}")
     async def mail_connect(kind:str,body:dict|None=None):
         """Gmail and Outlook: the address to sign in at. The browser comes back to /oauth/google or /oauth/microsoft."""
-        try:return worker.tools.mail.start(kind,bool((body or {}).get("cloud")))
+        try:return worker.tools.mail.start(kind,bool((body or {}).get("cloud")),bool((body or {}).get("send")))
         except ValueError as exc:raise HTTPException(400,str(exc))
 
     @app.put("/api/oauth/{provider}")
@@ -559,6 +592,87 @@ def create_app(settings=None, *, run_worker=True):
     @app.delete("/api/mail/{ident}")
     async def mail_remove(ident:str):
         worker.tools.mail.remove(ident);return {"accounts":worker.tools.mail.public()}
+
+    # ---- reaching the user's devices (engine/push.py) ----
+    push=worker.push
+
+    @app.get("/api/push")
+    async def push_status(request:Request):return push.status(request.state.identity["id"])
+
+    @app.post("/api/push/subscribe")
+    async def push_subscribe(body:dict,request:Request):
+        """A device says where a push reaches it: a browser's Web Push subscription, or the iPhone app's device token."""
+        return push.subscribe(request.state.identity["id"],str(body.get("kind") or ""),body)
+
+    @app.post("/api/push/unsubscribe")
+    async def push_unsubscribe(body:dict,request:Request):
+        push.unsubscribe(request.state.identity["id"],str(body.get("address") or "") or None);return push.status(request.state.identity["id"])
+
+    @app.delete("/api/push/targets/{ident}")
+    async def push_remove(ident:str,request:Request):
+        push.remove(ident);return push.status(request.state.identity["id"])
+
+    @app.put("/api/push/apns")
+    async def push_apns(body:dict,request:Request):
+        """The user's own Apple push key (.p8), its Key ID and their Team ID. The key is never sent back."""
+        push.set_apns(str(body.get("key") or ""),str(body.get("key_id") or ""),str(body.get("team_id") or ""));return push.status(request.state.identity["id"])
+
+    @app.delete("/api/push/apns")
+    async def push_apns_clear(request:Request):
+        push.clear_apns();return push.status(request.state.identity["id"])
+
+    @app.post("/api/push/test")
+    async def push_test(request:Request):return await push.test(request.state.identity["id"])
+
+    # ---- standing permissions (engine/permits.py) ----
+    @app.get("/api/permits")
+    async def permits():return {"permits":worker.tools.permits.list()}
+
+    @app.delete("/api/permits/{ident}")
+    async def revoke_permit(ident:str):
+        if not worker.tools.permits.revoke(ident):raise HTTPException(404,"这项许可已经不在了")
+        return {"permits":worker.tools.permits.list()}
+
+    # ---- calendar, reminders and contacts from the user's devices (engine/personal.py) ----
+    personal=worker.tools.personal
+
+    @app.get("/api/personal")
+    async def personal_status():return personal.status()
+
+    @app.post("/api/personal/sync")
+    async def personal_sync(body:dict,request:Request):
+        """A copy from the Jurvis app on a phone or Mac: whichever of events, reminders and contacts the user shares there."""
+        try:return {"kept":personal.sync(body,request.state.identity.get("name") or ""),**personal.status()}
+        except (KeyError,TypeError,ValueError,AttributeError) as exc:raise HTTPException(400,f"数据格式不对：{exc}")
+
+    @app.patch("/api/personal/{kind}")
+    async def personal_share(kind:str,body:dict):return personal.share(kind,bool(body.get("cloud")))
+
+    @app.delete("/api/personal/{kind}")
+    async def personal_forget(kind:str):return personal.forget(kind)
+
+    @app.post("/api/personal/outbox/{ident}/claim")
+    async def outbox_claim(ident:str,request:Request):
+        entry=personal.claim(ident,request.state.identity["id"])
+        if not entry:raise HTTPException(409,"已经有设备在添加这一条了")
+        return entry
+
+    @app.post("/api/personal/outbox/{ident}/done")
+    async def outbox_done(ident:str,body:dict,request:Request):
+        personal.added(ident,request.state.identity["id"],bool(body.get("ok")));return {"ok":True}
+
+    # ---- the nightly copy (engine/backup.py) ----
+    @app.get("/api/backup")
+    async def backup_status():return worker.backup.status()
+
+    @app.put("/api/backup")
+    async def backup_update(body:dict,request:Request):
+        if "folder" in body:local_only(request)  # where on the Mac's disks copies go is decided at the Mac
+        return worker.backup.update(body.get("enabled"),body.get("folder"),body.get("keep"),body.get("assets"))
+
+    @app.post("/api/backup/run")
+    async def backup_run():
+        await asyncio.to_thread(worker.backup.run);return worker.backup.status()
 
     # ---- phone calls ----
     @app.get("/api/phone")
@@ -629,15 +743,15 @@ def create_app(settings=None, *, run_worker=True):
 
     @app.post("/api/memories")
     async def memory(body:MemoryCreate):
-        result=worker.memory.save(body.title,body.content,importance=body.importance,durable=body.durable,tags=body.tags)
+        result=worker.memory.save(body.title,body.content,importance=body.importance,durable=body.durable,tags=body.tags,private=body.private)
         if not body.enabled:store.execute("UPDATE memories SET enabled=0 WHERE id=?",(result["saved"],))
         await worker.memory.index([result["saved"]])
         return store.one(MEMORY_COLUMNS+" WHERE id=?",(result["saved"],))
 
     @app.put("/api/memories/{ident}")
     async def update_memory(ident:str,body:MemoryCreate):
-        store.execute("UPDATE memories SET title=?,content=?,enabled=?,importance=?,durable=?,tags=?,updated_at=?,embedding=NULL,embed_model=NULL WHERE id=?",
-                      (body.title,body.content,int(body.enabled),body.importance,int(body.durable),dumps(body.tags),time.time(),ident))
+        store.execute("UPDATE memories SET title=?,content=?,enabled=?,importance=?,durable=?,tags=?,updated_at=?,embedding=NULL,embed_model=NULL,private=COALESCE(?,private) WHERE id=?",
+                      (body.title,body.content,int(body.enabled),body.importance,int(body.durable),dumps(body.tags),time.time(),None if body.private is None else int(body.private),ident))
         await worker.memory.index([ident])
         store.event("memories",ident)
         return {"ok":True}
@@ -723,6 +837,8 @@ def create_app(settings=None, *, run_worker=True):
             model=changes.get("chat_model") or worker.prefs.get()["chat_model"]
             if (wanted.get("step_compaction") or wanted.get("brief_summary")) and worker.llm.is_local(model):
                 raise ValueError("只有默认对话模型是在线模型时才能开启")
+        if "power" in changes and (set(changes["power"])-{"keep_awake"} or not all(isinstance(v,bool) for v in changes["power"].values())):
+            raise ValueError("power.keep_awake 需为开或关")
         worker.prefs.update(changes)
         store.event("settings","settings")
         return settings_view()
@@ -814,9 +930,13 @@ def create_app(settings=None, *, run_worker=True):
     async def events(request:Request,after:int=0):
         """Server-sent events: one line per change (entity, id), so clients need not poll."""
         async def feed():
-            last,idle=after,0
+            last,idle,seen=after,0,0.0
+            device=request.state.identity["id"]
             yield "retry: 2000\n\n"
             while not await request.is_disconnected():
+                if time.monotonic()-seen>5:
+                    # A page that is listening is open: it shows notices itself and needs no push meanwhile (engine/push.py).
+                    seen=time.monotonic();store.execute("UPDATE devices SET last_seen=? WHERE id=?",(time.time(),device))
                 rows=store.all("SELECT id,entity,entity_id FROM events WHERE id>? ORDER BY id LIMIT 200",(last,))
                 for row in rows:
                     last=row["id"]
@@ -913,7 +1033,7 @@ def create_app(settings=None, *, run_worker=True):
     @app.delete("/api/devices/{ident}")
     async def revoke(ident:str,request:Request):
         local_only(request)
-        store.execute("UPDATE devices SET revoked=1 WHERE id=?",(ident,));return {"ok":True}
+        store.execute("UPDATE devices SET revoked=1 WHERE id=?",(ident,));push.unsubscribe(ident);return {"ok":True}
 
     web=settings.root/"web"
     class Fresh(StaticFiles):

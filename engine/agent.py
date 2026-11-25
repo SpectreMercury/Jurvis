@@ -18,7 +18,8 @@ from pydantic import ValidationError
 
 from .agenda import make_rule
 from .runtime import strip_markup
-from .shell import excerpt
+from .shell import excerpt, risky
+from .permits import command_scope
 from .store import dumps, new_id
 from .stream import Stream
 from .asks import Asks
@@ -73,7 +74,7 @@ My latest message may end with a <jurvis_context> block. Jurvis adds it for this
 {language}
 """
 
-WEB_NONE = "- You cannot send email or messages or search the web for news and other current information. When asked, say so plainly and offer what you can do instead, such as drafting the text."
+WEB_NONE = "- You cannot send chat messages or search the web for news and other current information. When asked, say so plainly and offer what you can do instead, such as drafting the text."
 WEB_NATIVE = ("- You have live web search: for current information (news, prices, weather, recent events, documentation) search and answer from what you find, "
               "and name the sources. Use web_fetch to read a specific page in full. You cannot send email or messages.")
 WEB_TOOL = ("- For current information (news, prices, weather, recent events) call web_search, and web_fetch to read a specific page. "
@@ -178,6 +179,7 @@ FACTS = "\nFor your answer, measured by the system — documents written in this
 HEADING = re.compile(r"^\s*(?:#{1,4}\s*.+|第\s*[0-9一二三四五六七八九十百]+\s*[集章幕场节回][^\n]{0,30})$", re.M)
 HANDBACK = ("[Jurvis harness] I declined the command, so stop here and do not call tools. Reply to me briefly: "
             "what did not run, and what you need from me to continue.")
+ALWAYS_ASK = {"home_control", "phone_call", "mail_send"}  # never covered by "allow for this conversation"; a device still may be allowed for good, by kind
 QUESTION = re.compile(r"？|\?(\s|$)")  # a goal reply that asks the user something waits for their answer
 REVIEW = """You check whether an assistant really achieved the user's goal. Judge only from the tool calls and results shown, never from the assistant's claims.
 The goal is achieved only when a tool result proves it (tests passed with exit code 0, the package imports or shows its version, the file contains the change, and so on). Steps that failed, were skipped or were never verified mean it is not achieved.
@@ -226,6 +228,24 @@ COMPANION_OPEN = """- When the user starts sharing something that is weighing on
 PHONE = """- You can place a phone call to a business for the user with phone_call: booking a table, asking a question, changing or cancelling a booking. Before calling, have everything the call needs: the number (if the user did not give it, look it up and tell them where it came from), the date and time, how many people, the name to book under, and what to do if the first choice is not available; ask the user for what is missing instead of guessing. Set language to what the place speaks, not what the user writes in (a restaurant in Japan: ja; in Singapore: en), and write the brief itself in the user's language. The user approves each call. A call takes a few minutes and you hear nothing until it is over. Afterwards, report what the result says: what was agreed, or that it was not; never say something is booked unless the result's outcome is done. When the result has a calendar entry, tell the user the booking is being added to their calendar and give its day and time (with the place's time zone when it is not their own); without one, do not say anything was added. Never call emergency services, and never call a private person the user did not name.
 """
 MAIL = "- You can read the user's recent email (mail_recent, then mail_read for one message). Read-only: you cannot send, move or mark anything. Quote senders and subjects as they are; never invent a message.\n"
+MAIL_SEND = """- You can read the user's recent email (mail_recent, then mail_read for one message) and send email for them with mail_send; you cannot move, delete or mark anything. Quote senders and subjects as they are; never invent a message.
+- Send only what the user asked you to send, to an address they gave, one from find_contact, or the sender of the email being answered (reply_to); never to an address you guessed. Write the message complete, in the recipient's language and the user's voice, and call mail_send: the user sees all of it and decides. Do not paste the draft into your reply first and do not ask "shall I send it?": the approval is that question. If they decline, ask what to change. Say an email was sent only when the result says sent.
+"""
+PERSONAL = {
+    "calendar_events": "- The user's calendar is available to you as a copy from their own devices: call calendar_events for what is on, when they are free, or whether a time clashes. "
+                       "Check it before you propose a time, book something (a phone call for a table included) or schedule work around their day. The next day of it is in <jurvis_context>.\n",
+    "reminders_list": "- Their reminders (to-dos) are available with reminders_list.\n",
+    "find_contact": "- Their contacts are available one person at a time with find_contact: use it for a number or an address instead of guessing one, and say so when nobody matches.\n",
+    "add_event": "- To put something new on their calendar use add_event; for something they want to be reminded of on their phone use add_reminder. Their phone or Mac adds it shortly after: "
+                 "say it is being added, not that it is there. You cannot change or delete what is already on the calendar or in reminders.\n",
+}
+NOTE_AGENDA = "On my calendar from now through the next day (data; mention it only when it matters to this message):\n{events}\n"
+GUARDED = {  # tools a model may only call when the user opened them to it; asked for anyway, they answer with this
+    "calendar_events": ("The user's calendar is not open to you. They share it from the Jurvis app on their phone or Mac, and allow cloud models for it under 设置 → 日历与通讯录.", "日历未开放"),
+    "reminders_list": ("The user's reminders are not open to you. They share them from the Jurvis app on their phone or Mac, and allow cloud models for them under 设置 → 日历与通讯录.", "提醒事项未开放"),
+    "find_contact": ("The user's contacts are not open to you. They share them from the Jurvis app on their phone or Mac, and allow cloud models for them under 设置 → 日历与通讯录.", "通讯录未开放"),
+    "mail_send": ("No mailbox is open for sending. The user switches on 允许发送 for a mailbox under 设置 → 邮件.", "发信未开放"),
+}
 CHECKIN = """
 Reaching out: the user did not write to you. You are checking in on your own, right as their body data changed: {signals}.{also}
 Before you write, look quietly: call health_summary for the last few days, mail_recent for the last three days, and recent_conversations for what they told you lately. See whether something there plausibly explains it (a deadline, a hard email, a conflict, travel, a worry they mentioned).
@@ -236,6 +256,12 @@ Look first, without saying anything. Then write one short, warm message, like a 
 """
 AGENDA = """- When the user tells you about something they want to follow or keep doing over time, call agenda to see what is already tracked, then track_goal if it is new, and tell them it is saved under Goals.
 - Work that should happen by itself later or regularly (a weekly brief, a monthly review, a reminder) is set up with schedule_task. How often is the user's decision: if they have not said, ask first (offer a few cadences) and schedule only after they answer. After scheduling, tell them when the first run is, exactly as the result gives it.
+"""
+WATCH = """- Work that should start when something happens, not at a time, is set up with watch_for: an email arriving (from a sender, or mentioning certain words), a calendar event about to begin, a monthly budget being used up, a smart-home device changing state. Use it when the user says "when … happens, do / tell me …". Write the brief so it can be done without this conversation, and tell them what it waits for, exactly as the result gives it.
+"""
+WATCHED = """
+Triggered run: the user set up "{title}" to run {when}, and it just happened. They are not waiting on screen. The latest message is the brief, with what happened at its end; the clock in it is the time of this run.
+Do what the brief says about this one occurrence. The summary you pass to finish_goal is the message that delivers the result to them: what happened first, then what you did or found. Keep it short: they will read it as a notification.
 """
 SCHEDULED = """
 Scheduled run: the user set up "{title}" to run {when}, and this is one of those runs. They are not waiting on screen. The latest message is the brief; the clock in it is the time of this run.
@@ -436,11 +462,11 @@ class Agent:
         while messages and messages[0]["role"] != "user":
             messages.pop(0)
         if self.memory:
-            memories = await self.memory.for_turn(session, self.request, messages)
+            memories = await self.memory.for_turn(session, self.request, messages, cloud=self.cloud)
             memories = [{"title": m["title"], "content": m["content"]} for m in memories]
             # The rest of our one conversation: the stretches just before this one, and older ones this message seems to be about.
             around = ({"recent": [], "related": []} if self.task or self.checkin
-                      else await self.memory.background(session, self.request, wide=self.cloud))
+                      else await self.memory.background(session, self.request, wide=self.cloud, cloud=self.cloud))
             others = [] if self.incognito else [item["id"] for item in around["related"] + around["recent"]]
             excerpts = self.memory.excerpts(p["session_id"], self.folded(session), self.request, others=others)
         else:
@@ -462,6 +488,11 @@ class Agent:
         waiting = [] if self.incognito or self.task or self.checkin else self.asks.elsewhere(p["session_id"])
         if waiting:
             note += NOTE_WAITING.format(questions=dumps(waiting))
+        names = self.tool_names(p["session_id"], plan=self.mode == "plan")
+        if "calendar_events" in names and not self.incognito:
+            coming = self.tools.personal.upcoming()
+            if coming:
+                note += NOTE_AGENDA.format(events=dumps(coming))
         if around["recent"]:
             note += NOTE_RECENT.format(recent=dumps([{k: item[k] for k in ("when", "title", "text")} for item in around["recent"]]))
         if around["related"]:
@@ -479,7 +510,6 @@ class Agent:
             messages[-1] = {**last, "content": last["content"] + note}
         else:
             messages[-1] = {**last, "content": [{**b, "text": b["text"] + note} if n == 0 and b.get("type") == "text" else b for n, b in enumerate(last["content"])]}
-        names = self.tool_names(p["session_id"], plan=self.mode == "plan")
         web = (WEB_NATIVE if self.cloud and self.llm.searches(self.model) else WEB_TOOL if "web_search" in names
                else WEB_FETCH if "web_fetch" in names else WEB_NONE)
         self.cwd = Path.home()
@@ -500,7 +530,7 @@ class Agent:
             system += self.skills.prompt()
         if "search_conversations" in names:
             system += PAST
-        portrait = self.memory.portrait() if self.memory and not self.incognito and self.memory.prefs()["enabled"] else ""
+        portrait = self.memory.portrait(cloud=self.cloud) if self.memory and not self.incognito and self.memory.prefs()["enabled"] else ""
         if portrait:
             system += PORTRAIT.format(path=self.memory.portrait_file, portrait=portrait)
         if session.get("summary"):
@@ -518,13 +548,14 @@ class Agent:
         if "spending_summary" in names:
             system += LEDGER + ("" if "ledger_transactions" in names else LEDGER_CLOUD)
         if "schedule_task" in names:
-            system += AGENDA
+            system += AGENDA + (WATCH if "watch_for" in names else "")
         if "health_summary" in names:
             system += HEALTH + ("" if "cycle_status" in names else HEALTH_CLOUD)
         if "open_session" in names:
             system += COMPANION_OPEN
         if "mail_recent" in names:
-            system += MAIL
+            system += MAIL_SEND if "mail_send" in names else MAIL
+        system += "".join(text for name, text in PERSONAL.items() if name in names)
         if "phone_call" in names:
             system += PHONE
         if self.persona == "inner":
@@ -539,7 +570,9 @@ class Agent:
             system += CHECKIN.format(signals="; ".join(self.checkin.get("signals") or ["a tiring stretch"]),
                                      also=(" Already known and mentioned before, so not news: " + "; ".join(also) + ".") if also else "")
         if self.mode == "goal":
-            system += GOAL + (GOAL_PLAN if "update_plan" in self.tool_names(p["session_id"], goal=True) else "") + (SCHEDULED.format(title=self.task["title"], when=self.task["scheduled"]) if self.task and self.task.get("scheduled") else TASK if self.task else "")
+            system += GOAL + (GOAL_PLAN if "update_plan" in self.tool_names(p["session_id"], goal=True) else "") + (SCHEDULED.format(title=self.task["title"], when=self.task["scheduled"]) if self.task and self.task.get("scheduled")
+                                                                                                             else WATCHED.format(title=self.task["title"], when=self.task["watched"]) if self.task and self.task.get("watched")
+                                                                                                             else TASK if self.task else "")
         elif self.mode == "plan":
             system += PLAN
         elif "update_plan" in names:
@@ -612,7 +645,7 @@ class Agent:
             names.discard("ledger_transactions")  # single payments are for the local model only (engine/ledger.py)
             names.discard("cycle_status")  # so is the menstrual cycle (engine/health.py)
         if getattr(self, "incognito", False):
-            names -= {"remember", "track_goal", "schedule_task"}  # nothing from a private conversation is kept
+            names -= {"remember", "track_goal", "schedule_task", "watch_for"}  # nothing from a private conversation is kept
         elif not coding and self.memory and self.memory.prefs()["enabled"]:
             names |= self.tools.PAST  # what the context did not bring back, it can look up word for word
         if plan:
@@ -635,12 +668,19 @@ class Agent:
                 names.add("recent_conversations")
         if not self.tools.mail.accounts(self.cloud):
             names -= {"mail_recent", "mail_read"}  # no mailbox this model may read
+        if not self.tools.mail.senders(self.cloud):
+            names.discard("mail_send")  # sending is switched on per mailbox, by the user
+        for kind, tool in (("calendar", "calendar_events"), ("reminders", "reminders_list"), ("contacts", "find_contact")):
+            if not self.tools.personal.open(kind, self.cloud):
+                names.discard(tool)  # no copy from the user's devices yet, or kept for the local model
+        if coding:
+            names -= {"mail_send", "add_event", "add_reminder", "watch_for", "cancel_watch"}
         if (self.cloud or goal) and not getattr(self, "incognito", False) and not getattr(self, "checkin", None):
             names.add("jot")  # small local models reach for it in every reply, so in ordinary conversation it stays with cloud models
         if getattr(self, "persona", None) == "inner":
             names = (names & {"remember"}) | {"read_journal"}  # it talks about its own work; it does no other work here
         if getattr(self, "checkin", None):
-            names &= {"health_summary", "cycle_status", "mail_recent", "mail_read", "recent_conversations"}
+            names &= {"health_summary", "cycle_status", "mail_recent", "mail_read", "recent_conversations", "calendar_events"}
             names.add("recent_conversations")
         return names
 
@@ -701,7 +741,7 @@ class Agent:
         if goal:
             meta["goal"] = {"status": "running", "reviews": 0}
         if self.task:
-            meta["task"] = {k: self.task[k] for k in ("title", "scheduled") if self.task.get(k)}
+            meta["task"] = {k: self.task[k] for k in ("title", "scheduled", "watched") if self.task.get(k)}
         if self.checkin:
             meta["checkin"] = True  # the apps announce these as notifications
         background, began = bool(p.get("background")), time.monotonic()
@@ -709,7 +749,7 @@ class Agent:
         self.steps = steps
         # The work record: nothing from a private conversation, and not the conversation about the record itself.
         logged = not self.incognito and self.persona != "inner"
-        origin = ("schedule" if self.task.get("scheduled") else "task") if self.task else "checkin" if self.checkin else "goal" if goal else "chat"
+        origin = ("schedule" if self.task.get("scheduled") or self.task.get("watched") else "task") if self.task else "checkin" if self.checkin else "goal" if goal else "chat"
         about = {"session_id": p["session_id"], "message_id": mid, "job_id": job["id"], "origin": origin}
 
         def note(kind, text, owner="model", stream="work", **more):
@@ -732,6 +772,10 @@ class Agent:
             save("complete", force=True)
             if background:
                 self.store.deliver(mid)
+                # Nobody was waiting on this reply: it is announced, and pushed to devices whose app is closed.
+                said = [s["text"] for s in steps if s["text"]]
+                self.tell("checkin" if self.checkin else "result", "Jurvis" if self.checkin or not self.task else self.task["title"],
+                          said[-1] if said else "", ident=mid, session_id=p["session_id"])
             return {"message_id": mid, "steps": len(steps), "tools": sum(len(s["calls"]) for s in steps)}
 
         for index in range(limit + 1):
@@ -953,12 +997,21 @@ class Agent:
                         outcome, ended = await self.finish_goal(arguments, goal, steps, meta)
                     elif call["name"] == "cycle_status" and call["name"] not in allowed:
                         outcome = Outcome(False, {"error": "The cycle record stays on my Mac and is not available to you. Tell me to open 健康 to see it."}, "经期记录只在本机")
+                    elif call["name"] in GUARDED and call["name"] not in allowed:
+                        outcome = Outcome(False, {"error": GUARDED[call["name"]][0]}, GUARDED[call["name"]][1])
+                    elif call["name"] == "recall" and self.cloud:
+                        outcome = self.tools.invoke("recall", arguments) if not isinstance(arguments, dict) else self.recall(arguments)
+                    elif call["name"] in ("search_conversations", "read_conversation") and self.cloud:
+                        outcome = self.past(call["name"], arguments)
+                    elif call["name"] == "watch_for":
+                        outcome = await self.watch_call(p, arguments)
                     elif call["name"] == "start_task":
                         outcome = self.start_task(p, arguments)
                     elif call["name"] == "open_session":
                         outcome = self.open_session(p, arguments, meta)
                     elif tool and tool.effect == "mail":
-                        outcome = await self.mail_call(tool, arguments, call["name"] in allowed)
+                        outcome = await self.mail_call(tool, arguments, call["name"] in allowed, self.approval(job, p, entry, save))
+                        handback = handback or bool(outcome.result.get("declined"))
                     elif tool and tool.effect == "agenda":
                         outcome = self.agenda_call(p, tool, arguments)
                     elif call["name"] == "ask_user":
@@ -1098,13 +1151,59 @@ class Agent:
         return Outcome(True, {"job_id": job["id"], "started": True, "note": "Running in the background; the result will be posted in this conversation. "
                               "Do not do this work yourself and do not check on it. Tell me briefly that it is under way and what you are assuming."}, f"已开始 · {task['title']}"[:60])
 
-    async def mail_call(self, tool, arguments, allowed):
-        """Email is read for the model that may see it: cloud models only get the accounts the user opened to them."""
+    def recall(self, arguments):
+        """recall for a cloud model: the memories kept for the local model are not looked through."""
+        try:
+            args = self.tools.tools["recall"].args.model_validate(arguments)
+        except ValidationError as exc:
+            return Outcome(False, {"error": "参数无效：" + str(exc)[:300]}, "参数无效")
+        result = self.tools.recall(args.query, cloud=True)
+        return Outcome(True, result, self.tools.summarize("recall", result))
+
+    def past(self, name, arguments):
+        """The record of the conversation for a cloud model: without the quiet stretches and those a private fact was learned in."""
+        guarded = self.memory.guarded(True) if self.memory else True
+        try:
+            args = self.tools.tools[name].args.model_validate(arguments if isinstance(arguments, dict) else {})
+        except ValidationError as exc:
+            return Outcome(False, {"error": "参数无效：" + str(exc)[:300]}, "参数无效")
+        if name == "search_conversations":
+            result = {"query": args.query, "messages": self.stream.find(args.query, guarded=guarded)}
+            return Outcome(True, result, f"{len(result['messages'])} 条")
+        passage = self.stream.around(args.message_id.strip(), args.before, args.after, guarded=guarded)
+        if not passage:
+            return Outcome(False, {"error": "没有这条消息；message_id 要用 search_conversations 返回的"}, "没有这条消息")
+        return Outcome(True, passage, f"{passage['conversation'][:30]} · {len(passage['messages'])} 条")
+
+    async def watch_call(self, p, arguments):
+        """watch_for: like a schedule, a watch belongs to this conversation, which is where its results are posted."""
+        try:
+            args = self.tools.tools["watch_for"].args.model_validate(arguments if isinstance(arguments, dict) else {})
+            made = await self.tools.watches.create(p["session_id"], args.title, args.brief, args.when, sender=args.sender, words=args.words, minutes=args.minutes,
+                                                   category=args.category, percent=args.percent, device_id=args.device_id, key=args.key, value=args.value)
+        except ValidationError as exc:
+            return Outcome(False, {"error": str(exc)[:500]}, "参数无效")
+        except ValueError as exc:
+            return Outcome(False, {"error": str(exc)}, str(exc)[:60])
+        return Outcome(True, {"watch_id": made["id"], "waits_for": made["when"],
+                              "note": "Set up. Each time it happens the work runs and its result is posted in this conversation. Tell me what it waits for.",
+                              "card": {"kind": "schedule", "title": made["title"], "subtitle": "事件触发 · " + made["when"]}}, made["when"][:80])
+
+    async def mail_call(self, tool, arguments, allowed, approve=None):
+        """Email is read for the model that may see it: cloud models only get the accounts the user opened to them.
+        A message to send is shown to the user whole and goes out only on their yes, every time."""
         if not allowed:
             return Outcome(False, {"error": "No mailbox is open to you. The user connects one, or allows cloud models for it, under 设置 → 邮件."}, "邮箱未开放")
         try:
             args = tool.args.model_validate(arguments if isinstance(arguments, dict) else {})
-            if tool.name == "mail_read":
+            if tool.name == "mail_send":
+                what = (args.account.strip(), args.to, args.subject, args.body, args.reply_to, self.cloud)
+                question = await asyncio.to_thread(self.tools.mail.preview, *what)
+                refused = await approve(question) if approve else Outcome(False, {"error": "Nobody is there to approve this email, so it was not sent.", "declined": True}, "未发送")
+                if refused:
+                    return refused
+                result = await asyncio.to_thread(self.tools.mail.send, *what)
+            elif tool.name == "mail_read":
                 result = await asyncio.to_thread(self.tools.mail.read, args.id, self.cloud)
             else:
                 result = await asyncio.to_thread(self.tools.mail.recent, args.days, args.query, args.unread, 30, self.cloud)
@@ -1304,17 +1403,27 @@ class Agent:
 
     def approval(self, job, p, entry, save):
         """For tools that act outside the Mac (smart-home devices, MCP servers): shows what will happen and waits for the user."""
-        async def approve(question):
+        async def approve(question, permit=None):
             key = (p["session_id"], entry["name"])
-            if key in self.shell.allowed and entry["name"] not in ("home_control", "phone_call"):  # a door or a phone call is asked about every time
+            if key in self.shell.allowed and entry["name"] not in ALWAYS_ASK:  # a door, a phone call or an email is asked about every time
+                return None
+            if permit and self.tools.permits.allowed(permit[0], permit[1]):
+                entry["permitted"] = True  # the user allowed this kind of action for good (engine/permits.py)
                 return None
             entry.update(status="awaiting", command=question, reason=entry["label"], cwd="")
+            if permit:
+                entry["permit"] = permit[2]  # what "from now on" would cover, shown on the card
             self.store.update_job(job["id"], phase="等待你确认操作")
             save(force=True)
+            self.tell("approval", "等你确认 · " + entry["label"], question, ident=entry["id"], session_id=p["session_id"], message_id=p["message_id"], call_id=entry["id"])
             decision = await self.shell.ask(p["message_id"], entry["id"])
+            self.settle(entry["id"])
+            entry.pop("permit", None)
             if decision == "always":
                 self.shell.allowed.add(key)
-            if decision in ("run", "always"):
+            if decision == "forever" and permit:
+                self.tools.permits.allow(*permit)
+            if decision in ("run", "always", "forever"):
                 entry["status"] = "running"
                 save(force=True)
                 return None
@@ -1323,6 +1432,17 @@ class Agent:
                 return Outcome(False, {"error": "I declined this action, so it did not happen.", "declined": True}, "你拒绝了这个操作")
             return Outcome(False, {"error": "I did not approve the action within 15 minutes, so it did not happen.", "declined": True}, "等待确认超时，未执行")
         return approve
+
+    def tell(self, kind, title, body, **more):
+        """A notice for the user's devices (engine/push.py): shown by an open app, pushed to a closed one."""
+        push = getattr(self.tools, "push", None)
+        if push and not self.incognito:
+            push.notify(kind, title, body, **more)
+
+    def settle(self, ident):
+        push = getattr(self.tools, "push", None)
+        if push:
+            push.settle(ident)
 
     async def delegate(self, job, entry, arguments, save):
         """A helper with its own context works on a brief and reports back; only the report enters this conversation."""
@@ -1458,11 +1578,21 @@ class Agent:
         except (ValidationError, ValueError) as exc:
             return Outcome(False, {"error": str(exc)[:1000]}, "参数无效")
         entry.update(command=args.command, reason=args.reason, cwd=str(cwd))
-        if self.shell.needs_approval(p["session_id"], args.command):
+        permit = None if risky(args.command) else command_scope(args.command)  # the kind of command this is, when it is simple enough to have one
+        if self.shell.needs_approval(p["session_id"], args.command) and not (permit and self.tools.permits.allowed("run_command", permit[0])):
             entry["status"] = "awaiting"
+            if permit:
+                entry["permit"] = permit[1]
             self.store.update_job(job["id"], phase="等待你确认命令")
             save(force=True)
+            self.tell("approval", "等你确认 · 运行命令", args.command, ident=entry["id"], session_id=p["session_id"], message_id=p["message_id"], call_id=entry["id"])
             decision = await self.shell.wait(p["session_id"], p["message_id"], entry["id"])
+            self.settle(entry["id"])
+            entry.pop("permit", None)
+            if decision == "forever":
+                if permit:
+                    self.tools.permits.allow("run_command", *permit)
+                decision = "run"
             if decision != "run":
                 entry.pop("status")
                 if decision == "deny":

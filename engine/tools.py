@@ -25,8 +25,11 @@ from .health import Health
 from .journal import Journal
 from .mail import Mail
 from .oauth import OAuthApps
+from .personal import Personal
+from .watch import Watches
+from .permits import Permits, page_scope
 from .coding import Coding, CodeEdit, CodeTask
-from .home import ACTIONS as HOME_ACTIONS, TYPES as HOME_TYPES, ConnectorError
+from .home import ACTIONS as HOME_ACTIONS, TYPES as HOME_TYPES, SENSITIVE_ACTIONS as HOME_SENSITIVE_ACTIONS, SENSITIVE_TYPES as HOME_SENSITIVE_TYPES, ConnectorError
 from .mcp import McpError
 from .schemas import ImageRequest, ProjectCreate, VideoRequest
 from .store import dumps, new_id
@@ -230,6 +233,64 @@ class MailArgs(BaseModel):
 
 class MailReadArgs(BaseModel):
     id: str = Field(min_length=3, max_length=80, description="The id of a message from mail_recent")
+
+
+class MailSendArgs(BaseModel):
+    # Flat text on purpose (see EditFileArgs).
+    to: str = Field(default="", max_length=600, description="The address to send to; several separated by commas. May be empty when reply_to is given: the reply then goes to whoever wrote")
+    subject: str = Field(default="", max_length=300, description="The subject line. May be empty when reply_to is given: it becomes Re: the original subject")
+    body: str = Field(min_length=1, max_length=20000, description="The whole message as plain text, exactly as it should be sent, in the language of the recipient, with greeting and sign-off")
+    reply_to: str = Field(default="", max_length=120, description="To answer an email: its id from mail_recent, so the reply lands in the same thread")
+    account: str = Field(default="", max_length=40, description="Which of the user's mailboxes to send from, when more than one may send. Empty: the only one, or the one the answered email is in")
+
+
+class CalendarArgs(BaseModel):
+    start: str = Field(default="", description="The first day as YYYY-MM-DD; empty for today")
+    days: int = Field(default=7, ge=1, le=62, description="How many days from start, that day included")
+    query: str = Field(default="", max_length=100, description="Only events whose title, place or notes contain one of these words; empty for all")
+
+
+class RemindersArgs(BaseModel):
+    include_done: bool = Field(default=False, description="Also list reminders already ticked off")
+    query: str = Field(default="", max_length=100, description="Only reminders containing one of these words; empty for all")
+
+
+class ContactArgs(BaseModel):
+    name: str = Field(min_length=1, max_length=80, description="The person's name or part of it (or a company, an email address, digits of a number), as the user said it")
+
+
+class AddEventArgs(BaseModel):
+    title: str = Field(min_length=1, max_length=200, description="What the event is, in the user's language")
+    start: str = Field(description="When it starts, on the user's clock, as YYYY-MM-DDTHH:MM, e.g. 2026-11-28T19:00")
+    minutes: int = Field(default=60, ge=5, le=1440, description="How long it lasts")
+    place: str = Field(default="", max_length=200)
+    notes: str = Field(default="", max_length=1000)
+
+
+class AddReminderArgs(BaseModel):
+    title: str = Field(min_length=1, max_length=200, description="What to be reminded of, in the user's language")
+    due: str = Field(default="", description="When it is due, on the user's clock, as YYYY-MM-DDTHH:MM; empty for no date")
+    notes: str = Field(default="", max_length=1000)
+
+
+class WatchArgs(BaseModel):
+    title: str = Field(min_length=1, max_length=80, description="A short name for the watch, in the user's language, e.g. 房东来信提醒")
+    brief: str = Field(min_length=20, max_length=6000, description="What to do each time it happens, complete enough to do without this conversation: what to look at or produce, "
+                       "what the user cares about, the form of the result")
+    when: Literal["mail", "calendar", "budget", "device"] = Field(description="What to wait for. mail: an email arrives. calendar: an event on the user's calendar is about to begin. "
+                                                                   "budget: this month's spending reaches a share of a budget. device: a smart-home device changes to a state")
+    sender: str = Field(default="", max_length=120, description="when=mail: only mail whose sender name or address contains this; empty for any sender")
+    words: str = Field(default="", max_length=120, description="when=mail or calendar: only when the subject and first lines (or the event) contain one of these words; empty for any")
+    minutes: int = Field(default=30, ge=5, le=1440, description="when=calendar: how long before the event starts")
+    category: str = Field(default="", max_length=10, description="when=budget: the budget's category; empty or 总计 for all spending")
+    percent: int = Field(default=100, ge=10, le=300, description="when=budget: the share of the budget, e.g. 80 to hear before it is used up")
+    device_id: str = Field(default="", max_length=200, description="when=device: the device id from home_devices")
+    key: str = Field(default="", max_length=60, description="when=device: the field of the device's state to watch (as home_devices shows it), or online")
+    value: str = Field(default="", max_length=60, description="when=device: the value that field must change to, e.g. open, on, false")
+
+
+class WatchIdArgs(BaseModel):
+    watch_id: str = Field(description="The id of the watch, from agenda")
 
 
 class ConversationsArgs(BaseModel):
@@ -486,6 +547,7 @@ class Tool:
     parameters: dict | None = None      # a ready JSON schema (MCP tools) instead of an argument model
     confirm: Callable | None = None     # async (args) -> text shown to the user for approval, or None to run without asking
     summary: Callable | None = None     # (result) -> one line for the user
+    scope: Callable | None = None       # (args) -> (permit key, scope, label): the kind of action the user may allow for good, or None (engine/permits.py)
 
     def schema(self):
         if self.parameters is not None:
@@ -534,9 +596,13 @@ class ToolRegistry:
         self.oauth = OAuthApps(settings)  # the user's own Google, WHOOP and Microsoft apps, shared by health and mail
         self.mail = Mail(settings, self.oauth)
         self.coding = Coding(settings, store)
+        self.personal = Personal(settings, store)   # the copy of the user's calendar, reminders and contacts their devices send
+        self.watches = Watches(store, self.mail, self.personal, self.ledger, lambda session_id: False)  # the worker says which conversations a cloud model answers
         self.llm = self.memory = self.skills = self.home = self.mcp = None  # attached by the worker; tools that need them are offered only then
         self.shell = self.browser = self.media = None
         self.phone = None   # attached by the app once speech is up (engine/phone.py)
+        self.permits = Permits(store)   # kinds of action the user allowed for good
+        self.push = None    # attached by the worker (engine/push.py)
         self.page = {"url": "", "elements": {}}   # the page the browser last reported, so an approval card can name what will be clicked
         self.tools = {t.name: t for t in self.build()}
         self.dynamic = set()
@@ -565,7 +631,8 @@ class ToolRegistry:
                 return f"{server.name} · {tool['name']} {dumps(arguments)[:600]}"
             self.tools[name] = Tool(name, f"{server.name} · {tool['name']}"[:40], str(tool.get("description") or tool["name"])[:1500], None, run, "external",
                                     parameters=tool.get("inputSchema") or {"type": "object", "properties": {}}, confirm=confirm if ask else None,
-                                    summary=lambda r: "完成")
+                                    summary=lambda r: "完成",
+                                    scope=lambda a, name=name, server=server, tool=tool: ("mcp", name, f"以后用 {server.name} · {tool['name']} 都不用问"))
             self.dynamic.add(name)
 
     def available(self, model=None):
@@ -655,9 +722,9 @@ class ToolRegistry:
             T("browser_screenshot", "网页截图", "Save a screenshot of the open page for the user. You do not see the picture: read the page with browser_read.", NoArgs,
               self.browser_screenshot, summary=lambda r: "已截图"),
             T("browser_click", "点击页面", "Click one element on the open page.", BrowserTargetArgs,
-              lambda a: self.browsed(self.browser.click(a.target)), "external", confirm=self.confirm_browser("点击"), summary=lambda r: str(r.get("clicked") or "已点击")[:60]),
+              lambda a: self.browsed(self.browser.click(a.target)), "external", confirm=self.confirm_browser("点击"), scope=self.browser_scope, summary=lambda r: str(r.get("clicked") or "已点击")[:60]),
             T("browser_type", "输入文字", "Type into one field on the open page.", BrowserTypeArgs,
-              lambda a: self.browsed(self.browser.type(a.target, a.text, a.submit)), "external", confirm=self.confirm_browser("输入"),
+              lambda a: self.browsed(self.browser.type(a.target, a.text, a.submit)), "external", confirm=self.confirm_browser("输入"), scope=self.browser_scope,
               summary=lambda r: f"已输入 {r.get('typed', 0)} 字"),
             T("browser_eval", "运行页面脚本", "Run JavaScript in the open page and return its value. Only when reading and clicking cannot do it.", BrowserEvalArgs,
               lambda a: self.browser.evaluate(a.script), "external", confirm=self.confirm_browser("运行脚本"), summary=lambda r: "完成"),
@@ -670,7 +737,7 @@ class ToolRegistry:
             T("home_devices", "查看家居设备", "List the user's smart-home devices with their rooms, current state and the actions each supports. Call it before home_control to get device ids.",
               HomeDevicesArgs, lambda a: self.home.search(a.query, a.room, a.type or ""), summary=lambda r: f"{r['total']} 个设备"),
             T("home_control", "控制家居设备", "Perform one action on one smart-home device. For several devices, call it once per device. Locks, doors and cameras ask the user first.",
-              HomeControlArgs, lambda a: self.home.control(a.device_id, a.action, a.value), "external", confirm=self.confirm_home,
+              HomeControlArgs, lambda a: self.home.control(a.device_id, a.action, a.value), "external", confirm=self.confirm_home, scope=self.home_scope,
               summary=lambda r: f"{r['device']} · {r['action']}" + (f" {r['value']}" if "value" in r else "")),
             T("phone_call", "打电话", "Place a phone call to a business for the user (book a table, ask about opening hours, change or cancel a booking) and "
               "hold the conversation. The user approves each call first. It returns when the call is over, with the outcome, a summary and the transcript.",
@@ -723,6 +790,21 @@ class ToolRegistry:
               MailArgs, None, "mail", summary=lambda r: f"{len(r['messages'])} 封"),
             T("mail_read", "读邮件", "One email in full, by its id from mail_recent. Read-only.", MailReadArgs, None, "mail",
               summary=lambda r: r["subject"][:40]),
+            T("mail_send", "发邮件", "Send one email from a mailbox the user opened for sending, or answer one they received (reply_to). The user is shown the whole message and "
+              "it goes out only if they approve it. Write it complete and ready to send; never send anything they did not ask you to send.",
+              MailSendArgs, None, "mail", summary=lambda r: f"已发给 {r['to']}"[:60]),
+            T("calendar_events", "看日历", "What is on the user's calendar on given days: each event with its day, time, place and calendar. A copy from their own devices; read-only.",
+              CalendarArgs, lambda a: self.personal.events(a.start, a.days, a.query), summary=lambda r: f"{len(r['events'])} 个日程"),
+            T("reminders_list", "看提醒事项", "The user's reminders (to-dos) with their due time and list. A copy from their own devices; read-only.",
+              RemindersArgs, lambda a: self.personal.reminders(a.include_done, a.query), summary=lambda r: f"{len(r['reminders'])} 条提醒"),
+            T("find_contact", "查联系人", "Look one person or business up in the user's contacts by name: their phone numbers and email addresses. "
+              "Returns only the few that match. Use it instead of guessing a number or an address.", ContactArgs,
+              lambda a: self.personal.contact(a.name), summary=lambda r: f"{len(r['matches'])} 位"),
+            T("add_event", "加日程", "Put a new event on the user's calendar. Their phone or Mac adds it shortly after; you cannot change or delete events.",
+              AddEventArgs, self.add_event, "write", summary=lambda r: f"{r['title'][:30]} · {r['when']}"),
+            T("add_reminder", "加提醒", "Add a new reminder to the user's reminders app, with or without a due time. Use it for something they want to be reminded of "
+              "on their phone; for work you should do yourself at a time, use schedule_task.", AddReminderArgs, self.add_reminder, "write",
+              summary=lambda r: r["title"][:40]),
             T("recent_conversations", "看最近的对话", "What the user said to you in other conversations over the last few days (their own messages, with the conversation title and time). "
               "Kept on this Mac.", ConversationsArgs, self.recent_conversations, summary=lambda r: f"{len(r['messages'])} 条"),
             T("search_conversations", "翻对话记录", "Search everything the user and you have ever said to each other, word for word, by keywords. Returns the matching messages "
@@ -737,13 +819,19 @@ class ToolRegistry:
               OpenSessionArgs, None, "session"),
             T("agenda", "查看目标和定时任务", "List what you are already tracking and running for the user: their long-term goals and the scheduled work, each with its id. "
               "Call it before saving a goal or a schedule, so nothing is saved twice.", NoArgs,
-              lambda a: self.agenda.overview(), summary=lambda r: f"{len(r['goals'])} 个目标 · {len(r['schedules'])} 个定时任务"),
+              lambda a: {**self.agenda.overview(), "watches": [{"id": w["id"], "title": w["title"], "when": w["when"]} for w in self.watches.list()]},
+              summary=lambda r: f"{len(r['goals'])} 个目标 · {len(r['schedules'])} 个定时任务 · {len(r['watches'])} 个事件触发"),
             T("track_goal", "保存长期目标", "Save something the user wants to follow or keep doing over time as a long-term goal they can see under Goals. "
               "A goal with nearly the same title is updated instead of duplicated.", TrackGoalArgs, None, "agenda"),
             T("schedule_task", "设置定时任务", "Set up work that runs by itself at a time or on a cadence (a weekly brief, a monthly review, a reminder) and posts its result in this conversation. "
               "The cadence must be the user's choice: ask first if they have not said how often.", ScheduleArgs, None, "agenda"),
             T("cancel_schedule", "取消定时任务", "Cancel a scheduled task by its id.", ScheduleIdArgs,
               lambda a: self.agenda.cancel(a.schedule_id), "write", summary=lambda r: f"已取消 · {r['cancelled']}"[:60]),
+            T("watch_for", "设置事件触发", "Set up work that starts by itself when something happens: an email arrives, a calendar event is about to begin, "
+              "a monthly budget is used up, a smart-home device changes state. Its result is posted in this conversation each time. "
+              "Call agenda first so nothing is set up twice.", WatchArgs, None, "agenda"),
+            T("cancel_watch", "取消事件触发", "Cancel a watch by its id.", WatchIdArgs,
+              lambda a: self.watches.cancel(a.watch_id), "write", summary=lambda r: f"已取消 · {r['cancelled']}"[:60]),
             T("jot", "记一句心里话", "Note one sentence in your journal, which the user can read: something you had to guess, a mistake of yours, something that got in your way, "
               "or something that went well. Sparingly: only when it is worth noting, at most twice in a reply, and never instead of answering.", JotArgs, None, "read"),
             T("read_journal", "翻看工作日志", "Read your own journal further back: the notes you wrote while working, the times you were corrected, and how often each tool was used and failed.",
@@ -816,7 +904,10 @@ class ToolRegistry:
             if tool.confirm and approve:
                 question = await tool.confirm(args)
                 if question:
-                    refused = await approve(question)
+                    permit = tool.scope(args) if tool.scope else None
+                    if inspect.isawaitable(permit):
+                        permit = await permit
+                    refused = await approve(question, permit)
                     if refused:
                         return refused
             result = tool.run(args)
@@ -835,6 +926,18 @@ class ToolRegistry:
                 what = (f"「{seen['text'] or seen.get('name') or seen.get('placeholder') or a.target}」（{seen['role']}）" if seen else a.target) + (f" ← {a.text}" if hasattr(a, "text") else "")
             return f"浏览器 · {verb} {what[:400]}\n{self.page['url'] or '当前页面'}"
         return confirm
+
+    def browser_scope(self, a):
+        """Clicking and typing on one website is one kind of action."""
+        found = page_scope(self.page["url"])
+        return ("browser", *found) if found else None
+
+    async def home_scope(self, a):
+        """One device doing one thing. A lock, door, alarm or camera is asked about every time."""
+        device = await self.home.find(a.device_id)
+        if device["type"] in HOME_SENSITIVE_TYPES or a.action in HOME_SENSITIVE_ACTIONS:
+            return None
+        return "home", f"{a.device_id}:{a.action}", f"以后让「{device['name']}」{a.action} 都不用问"
 
     async def browsed(self, work):
         """Runs a browser call and remembers where it left the page."""
@@ -1050,14 +1153,14 @@ class ToolRegistry:
         path.write_text(text)
         return {"saved": path.name, "replacements": count, "characters": len(text), "replaced": old_text[:300]}
 
-    def recall(self, query):
+    def recall(self, query, cloud=False):
         # Any keyword may match, so "红色圆形 图片" still finds 红色圆形.png.
         terms = [t for t in query[:200].replace("，", " ").replace(",", " ").split() if t][:8]
         likes = ["%" + t + "%" for t in terms]
         memory_where = " OR ".join("title LIKE ? OR content LIKE ?" for _ in likes) or "1"
         asset_where = " OR ".join("name LIKE ? OR kind LIKE ?" for _ in likes) or "1"
         pairs = [x for like in likes for x in (like, like)]
-        memories = (self.memory.search(query) if self.memory else
+        memories = (self.memory.search(query, cloud=cloud) if self.memory else
                     self.store.all(f"SELECT id,title,content FROM memories WHERE enabled=1 AND ({memory_where}) ORDER BY updated_at DESC LIMIT 20", pairs))
         return {"memories": memories,
                 "assets": self.store.all(f"SELECT id,name,kind,mime,created_at FROM assets WHERE ({asset_where}) AND kind NOT LIKE 'avatar%' ORDER BY created_at DESC LIMIT 20", pairs)}
@@ -1089,6 +1192,24 @@ class ToolRegistry:
             request = ImageRequest(prompt=prompt, width=768, height=768, steps=20, seed=7)
             jobs = [self.store.create_job("image", {**request.model_dump(), "outfit_art": key})]
         card["image_job"] = jobs[0]["id"]
+
+    def has_app(self):
+        """True when a Jurvis app on a phone or Mac has ever handed over or taken an entry: only those can add to the calendar or reminders."""
+        return bool(self.personal.load()["synced"] or self.store.one("SELECT 1 AS x FROM personal_outbox WHERE status='added' LIMIT 1"))
+
+    def add_event(self, a):
+        result = self.personal.add_event(a.title, a.start, a.minutes, a.place, a.notes)
+        if not self.has_app():
+            result["note"] = ("Queued, but no Jurvis app on the user's phone or Mac has taken an entry yet: it is added only once they open one. Tell them that.")
+        result["card"] = {"kind": "schedule", "title": result["title"], "subtitle": "日程 · " + result["when"], "note": result["place"]}
+        return result
+
+    def add_reminder(self, a):
+        result = self.personal.add_reminder(a.title, a.due, a.notes)
+        if not self.has_app():
+            result["note"] = ("Queued, but no Jurvis app on the user's phone or Mac has taken an entry yet: it is added only once they open one. Tell them that.")
+        result["card"] = {"kind": "schedule", "title": result["title"], "subtitle": "提醒" + (" · " + result["due"].replace("T", " ") if result["due"] else "")}
+        return result
 
     def log_expense(self, a):
         when = None

@@ -11,10 +11,12 @@ const els = {};
 export function mount(root) {
   els.goals = h('div', { class: 'cards single' });
   els.schedules = h('div', { class: 'cards single' });
+  els.watches = h('div', { class: 'cards single' });
   root.append(h('div', { class: 'page' },
     h('header', { class: 'page-head' }, h('h1', null, '目标')),
     h('h2', { class: 'group-title' }, '长期目标'), els.goals,
-    h('h2', { class: 'group-title' }, '定时任务'), els.schedules));
+    h('h2', { class: 'group-title' }, '定时任务'), els.schedules,
+    h('h2', { class: 'group-title' }, '事件触发'), els.watches));
 }
 
 export function activate() { refresh(); }
@@ -65,6 +67,18 @@ function render(agenda) {
         await refresh();
       }, { class: 'btn small' }))))
     : empty('还没有定时任务', '让 Jurvis 按周或按月帮你做一件事，或者到点提醒你。'));
+  const watches = agenda.watches || [];
+  fill(els.watches, watches.length ? watches.map((item) => h('article', { class: 'card memory' },
+    h('div', { class: 'row' }, icon('spark', 15), h('strong', null, item.title), h('span', { class: 'badge' }, item.when)),
+    h('p', { class: 'memory-content' }, item.brief),
+    h('div', { class: 'row spread' },
+      h('span', { class: 'muted small' }, item.last_fired ? `触发过 ${item.fired} 次 · 上次 ${day(item.last_fired)}` : '还没有触发过'),
+      action('取消', async () => {
+        if (!await ui.ask(`取消“${item.title}”？之后这件事发生时不会再处理。`)) return;
+        await del('/api/watches/' + encodeURIComponent(item.id));
+        await refresh();
+      }, { class: 'btn small' }))))
+    : empty('还没有事件触发', '告诉 Jurvis“某人来邮件时”“开会前半小时”“餐饮预算快用完时”“门打开时”要做什么。'));
 }
 
 /** A goal opened as its space: what Jurvis knows about it, how often it looks at it, and where the two of you talked about it. */

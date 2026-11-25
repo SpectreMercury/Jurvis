@@ -40,6 +40,7 @@ Do NOT extract: passwords, keys, tokens or other secrets; one-off requests; that
 Write each memory in the language the user used, as one self-contained statement that makes sense without the conversation.
 Reply with JSON only, an array (empty if nothing qualifies) of:
 {"title": "short label", "content": "the fact", "importance": 0.0-1.0, "durable": true for lasting facts or false for things that expire within weeks, "tags": ["..."],
+ "private": true when the fact is about the user's or someone's health or body, mental state, money (income, debts, what they own), identity documents, home address, sexuality, legal trouble or a conflict in their family or relationship; false otherwise,
  "page": the page of the user's notes it belongs on: "人物/<name>" for a fact about a person in the user's life, "习惯/<kind of work>" for how the user wants something done, "主题/<subject>" for anything else. Use a page from the list of existing pages when one fits; otherwise a short new name}"""
 
 TIDY = """You keep one page of a personal assistant's notes about its user. Below are the facts on the page, oldest first, each with the date it was learned.
@@ -89,6 +90,12 @@ Write the labels and the lines in the language most of the facts use. Leave a la
 Put in what is true of the person and their life, not what they once asked the assistant to do. When two facts disagree, the newer one holds.
 Keep what is in the portrait so far unless a fact contradicts it: the user may have written it themselves. State only what the facts say; no guesses, no secrets.
 No preamble."""
+
+# A fact the model did not mark but that plainly is: the backstop for a local model that leaves the field out.
+SENSITIVE = re.compile(r"诊断|确诊|病史|抑郁|焦虑症|服药|用药|怀孕|流产|经期|月经|体检|手术|心理咨询|工资|薪水|年薪|月薪|存款|负债|欠款|贷款|房贷|身份证|护照号|银行卡|家庭住址|住址|出轨|离婚|性取向"
+                       r"|diagnos|medication|antidepress|therap(?:y|ist)|pregnan|miscarr|salary|\bdebt|\bloan\b|mortgage|passport|social security|home address|divorce|sexual"
+                       r"|診断|うつ病|妊娠|給料|年収|借金|住所", re.I)
+PUBLIC_PORTRAIT = "portrait-cloud.md"   # the portrait written from the facts a cloud model may see, next to the database
 
 WORD = re.compile(r"[a-z0-9_]+")
 CJK = re.compile(r"[㐀-鿿぀-ヿ가-힯]")
@@ -150,24 +157,33 @@ class Memory:
     def prefs(self):
         return self.llm.prefs.get()["memory"]
 
+    def guarded(self, cloud):
+        """True when what is private must be left out: a cloud model is asking, and the user has not said it may see everything."""
+        return bool(cloud) and bool(self.prefs().get("private_local", True))
+
+    # The stretches of the conversation a cloud model is not shown: the quiet ones, and those a private fact was learned in.
+    PRIVATE_STRETCH = "(COALESCE(s.persona,'')='companion' OR s.id IN (SELECT session_id FROM memories WHERE private=1 AND session_id IS NOT NULL))"
+
     # ---- writing ----
-    def save(self, title, content, *, importance=0.5, durable=True, tags=(), source="manual", session_id=None, page=None):
-        """Adds a memory, or updates the one that already says nearly the same thing. Vectors are added later by index()."""
+    def save(self, title, content, *, importance=0.5, durable=True, tags=(), source="manual", session_id=None, page=None, private=None):
+        """Adds a memory, or updates the one that already says nearly the same thing. Vectors are added later by index().
+        private=None lets the wording decide; once private, a memory stays so until the user says otherwise."""
         title, content = title.strip()[:100], content.strip()[:4000]
         importance = min(1.0, max(0.0, float(importance)))
         tags = [str(t)[:40] for t in tags if str(t).strip()][:8]
         wanted, now = features(title + " " + content), time.time()
+        private = int(bool(SENSITIVE.search(title + " " + content)) if private is None else bool(private))
         for row in self.store.all("SELECT id,title,content FROM memories"):
             if lexical(wanted, features(row["title"] + " " + row["content"])) >= DUPLICATE:
                 # A fact the user took out of their notes stays out when it is only overheard again; said on purpose, it comes back.
                 self.store.execute("UPDATE memories SET title=?,content=?,importance=MAX(importance,?),durable=MAX(durable,?),tags=?,updated_at=?,embedding=NULL,embed_model=NULL,"
-                                   "page=COALESCE(?,page),enabled=CASE WHEN ?='chat' THEN enabled ELSE 1 END WHERE id=?",
-                                   (title, content, importance, int(durable), dumps(tags), now, page, source, row["id"]))
+                                   "page=COALESCE(?,page),enabled=CASE WHEN ?='chat' THEN enabled ELSE 1 END,private=MAX(private,?) WHERE id=?",
+                                   (title, content, importance, int(durable), dumps(tags), now, page, source, private, row["id"]))
                 self.store.event("memories", row["id"])
                 return {"saved": row["id"], "title": title, "updated": True}
         ident = new_id()
-        self.store.execute("INSERT INTO memories(id,title,content,created_at,updated_at,importance,durable,tags,source,session_id,page) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                           (ident, title, content, now, now, importance, int(durable), dumps(tags), source, session_id, page))
+        self.store.execute("INSERT INTO memories(id,title,content,created_at,updated_at,importance,durable,tags,source,session_id,page,private) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                           (ident, title, content, now, now, importance, int(durable), dumps(tags), source, session_id, page, private))
         self.store.event("memories", ident)
         return {"saved": ident, "title": title}
 
@@ -199,12 +215,12 @@ class Memory:
         return done
 
     # ---- reading ----
-    async def retrieve(self, query, limit=None, threshold=None):
-        """The memories most relevant to the query, best first, each with a score."""
+    async def retrieve(self, query, limit=None, threshold=None, cloud=False):
+        """The memories most relevant to the query, best first, each with a score. For a cloud model the private ones are left out."""
         prefs = self.prefs()
         limit = limit or prefs["max_retrieved"]
         threshold = prefs["threshold"] if threshold is None else threshold
-        rows = self.store.all("SELECT id,title,content,importance,durable,tags,embedding,embed_model FROM memories WHERE enabled=1")
+        rows = self.store.all("SELECT id,title,content,importance,durable,tags,embedding,embed_model FROM memories WHERE enabled=1" + (" AND private=0" if self.guarded(cloud) else ""))
         if not rows:
             return []
         model = self.llm.prefs.get()["embed_model"]
@@ -233,7 +249,7 @@ class Memory:
             self.store.execute(f"UPDATE memories SET used_at=? WHERE id IN ({marks})", (time.time(), *[m["id"] for m in out]))
         return out
 
-    async def for_turn(self, session, request, history):
+    async def for_turn(self, session, request, history, cloud=False):
         """Memories to put in front of the model for this reply."""
         prefs = self.prefs()
         if not prefs["enabled"] or not prefs["auto_retrieve"] or (session and session.get("incognito")):
@@ -249,12 +265,12 @@ class Memory:
                 query = (reply.text.strip().splitlines() or [request])[0][:300] + " " + request
             except RuntimeError:
                 pass
-        return await self.retrieve(query)
+        return await self.retrieve(query, cloud=cloud)
 
     # ---- background work after a reply ----
-    def search(self, query, limit=20):
+    def search(self, query, limit=20, cloud=False):
         """Keyword lookup for the recall tool: any term may match; an empty query lists the newest."""
-        rows = self.store.all("SELECT id,title,content FROM memories WHERE enabled=1 ORDER BY updated_at DESC LIMIT 500")
+        rows = self.store.all("SELECT id,title,content FROM memories WHERE enabled=1" + (" AND private=0" if self.guarded(cloud) else "") + " ORDER BY updated_at DESC LIMIT 500")
         if not query.strip():
             return rows[:limit]
         wanted = features(query)
@@ -315,7 +331,8 @@ class Memory:
             except (TypeError, ValueError):
                 importance = 0.5
             tags = item.get("tags") if isinstance(item.get("tags"), list) else []
-            self.save(title, content, importance=min(importance, 0.85), durable=bool(item.get("durable", True)), tags=tags, source="chat", session_id=session["id"], page=page_of(item.get("page")))
+            self.save(title, content, importance=min(importance, 0.85), durable=bool(item.get("durable", True)), tags=tags, source="chat", session_id=session["id"], page=page_of(item.get("page")),
+                      private=True if item.get("private") is True or session.get("persona") == "companion" else None)
             saved += 1
         self.store.execute("UPDATE sessions SET memory_upto=? WHERE id=?", (rows[-1]["created_at"], session["id"]))
         return saved
@@ -409,14 +426,14 @@ class Memory:
                               (session_id,))
         return "\n".join(("User: " if r["role"] == "user" else "Assistant: ") + " ".join(r["content"].split())[:240] for r in rows[::-1])
 
-    async def background(self, session, request, wide=True):
+    async def background(self, session, request, wide=True, cloud=False):
         """Other stretches of the conversation worth having in mind for this reply: the latest ones, for continuity,
-        and older ones the request seems to be about. A local model gets fewer (wide=False)."""
+        and older ones the request seems to be about. A local model gets fewer (wide=False); a cloud model none of the private ones."""
         prefs = self.prefs()
         if not prefs["enabled"] or not prefs["auto_retrieve"] or not session or session.get("incognito"):
             return {"recent": [], "related": []}
         rows = self.store.all("""SELECT s.id,s.title,s.updated_at,d.text,d.embedding,d.embed_model FROM sessions s LEFT JOIN digests d ON d.session_id=s.id
-                                 WHERE s.incognito=0 AND s.id!=? ORDER BY s.updated_at DESC LIMIT 2000""", (session["id"],))
+                                 WHERE s.incognito=0 AND s.id!=?""" + (" AND NOT " + self.PRIVATE_STRETCH if self.guarded(cloud) else "") + " ORDER BY s.updated_at DESC LIMIT 2000", (session["id"],))
         now = time.time()
         def shown(row, text):
             return {"id": row["id"], "when": datetime.fromtimestamp(row["updated_at"]).strftime("%Y-%m-%d %H:%M"), "title": row["title"], "text": text[:600]}
@@ -602,9 +619,13 @@ class Memory:
     def portrait_file(self):
         return self.settings.data / "vault" / "我.md"
 
-    def portrait(self):
+    def portrait(self, cloud=False):
+        """The portrait for this reply. A cloud model gets the one written without the private facts, once there are any."""
+        path = self.portrait_file
+        if self.guarded(cloud) and self.store.one("SELECT 1 AS x FROM memories WHERE private=1 AND enabled=1 LIMIT 1"):
+            path = self.settings.data / PUBLIC_PORTRAIT  # not there yet: nothing, rather than the one that has everything
         try:
-            return self.portrait_file.read_text(encoding="utf-8").strip()[:4000]
+            return path.read_text(encoding="utf-8").strip()[:4000]
         except OSError:
             return ""
 
@@ -627,6 +648,19 @@ class Memory:
             return False
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text[:4000] + "\n", encoding="utf-8")
+        # The same portrait from only the facts a cloud model may see. It is not built on the user's file, which may say more.
+        public = self.settings.data / PUBLIC_PORTRAIT
+        open_rows = self.store.all("SELECT title,content,created_at FROM memories WHERE enabled=1 AND private=0 ORDER BY importance DESC,updated_at DESC LIMIT 60")
+        if len(open_rows) == len(rows) and not self.store.one("SELECT 1 AS x FROM memories WHERE private=1 AND enabled=1 LIMIT 1"):
+            public.unlink(missing_ok=True)  # nothing is private: one portrait serves both
+        elif len(open_rows) >= PORTRAIT_FACTS:
+            facts = "\n".join(f"- [{datetime.fromtimestamp(r['created_at']).strftime('%Y-%m-%d')}] {r['title']}: {r['content'][:300]}" for r in open_rows)
+            reply = await self.llm.stream([{"role": "system", "content": PORTRAIT}, {"role": "user", "content": f"Portrait so far:\n(none yet)\n\nRemembered facts:\n{facts}"}],
+                                          max_tokens=900, temperature=0.2, model=model, search=False)
+            if strip_markup(reply.text).strip():
+                public.write_text(strip_markup(reply.text).strip()[:4000] + "\n", encoding="utf-8")
+        else:
+            public.unlink(missing_ok=True)
         return True
 
     def prune(self):

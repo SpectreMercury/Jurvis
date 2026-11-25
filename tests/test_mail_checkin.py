@@ -77,7 +77,7 @@ def test_mail_is_read_only_and_never_shows_the_password(tmp_path):
     log = connect_mail(mail, [letter("7", "老板 <boss@co.com>", "方案还要再改", "周五前给我新版本，这版不行。"),
                               letter("8", "Newsletter <n@x.com>", "本周精选", "Hello", hours_ago=30, html=True)], seen={"8"})
     assert mail.public() == [{"id": "work", "kind": "qq", "name": "QQ 邮箱", "address": "me@example.com", "host": "imap.qq.com", "auth": "password",
-                              "cloud": False, "checked_at": mail.public()[0]["checked_at"], "error": None}]
+                              "cloud": False, "send": False, "checked_at": mail.public()[0]["checked_at"], "error": None}]
     assert "app-password" not in json.dumps(mail.public()) and (tmp_path / "security/mail.json").stat().st_mode & 0o077 == 0
     got = mail.recent(days=3)
     assert [m["subject"] for m in got["messages"]] == ["方案还要再改", "本周精选"]

@@ -336,7 +336,11 @@ document.addEventListener('visibilitychange', () => {
 function registerServiceWorker() {
   // Best effort: with the engine's self-signed certificate browsers may refuse it, and the app works without it.
   try {
-    if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('./sw.js').catch(() => {});
+      // A tapped push notification brings the user to the conversation.
+      navigator.serviceWorker.addEventListener('message', (event) => { if (event.data && event.data.type === 'jurvis-open-chat') go('chat', false); });
+    }
   } catch { /* unsupported or blocked */ }
 }
 

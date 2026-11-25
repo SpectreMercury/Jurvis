@@ -17,11 +17,12 @@ OWNERS = ("user", "model", "jurvis", "external")
 # What a tool reported, in the model's words, when the fault is not the tool's.
 _MODEL_FAULT = ("参数无效", "参数格式错误", "未知工具", "没有名为", "not available in plan mode", "Same call already", "is only for goal mode",
                 "不存在", "找不到", "没有找到", "not found", "No such file", "不读取本机")
-_EXTERNAL = {"web_fetch", "web_search", "mail_recent", "mail_read", "phone_call", "weather", "crypto_price", "convert_currency",
+_EXTERNAL = {"web_fetch", "web_search", "mail_recent", "mail_read", "mail_send", "phone_call", "weather", "crypto_price", "convert_currency",
              "home_devices", "home_control"}
 # Figures that stay on this Mac: the journal keeps that the call happened, not what it returned.
 PRIVATE = {"ledger_transactions", "spending_summary", "log_expense", "set_budget", "health_summary", "cycle_status", "log_period",
-           "end_period", "log_mood", "mail_recent", "mail_read", "recent_conversations"}
+           "end_period", "log_mood", "mail_recent", "mail_read", "recent_conversations", "mail_send", "calendar_events", "reminders_list", "find_contact",
+           "add_event", "add_reminder"}
 MOODS = {"say": "thinking", "thought": "calm", "doubt": "troubled", "friction": "troubled", "slip": "guilty", "glad": "happy"}
 
 

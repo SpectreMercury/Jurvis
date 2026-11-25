@@ -6,8 +6,8 @@
 
 <p align="center">
   <a href="pyproject.toml"><img alt="バージョン" src="https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2FSpectreMercury%2FJurvis%2Fmain%2Fpyproject.toml&query=%24.project.version&label=version&color=blue"></a>
-  <a href="docs/TESTING.md"><img alt="テスト" src="https://img.shields.io/badge/tests-167%20passed-brightgreen"></a>
-  <a href="docs/TESTING.md"><img alt="カバレッジ" src="https://img.shields.io/badge/coverage-81%25-green"></a>
+  <a href="docs/TESTING.md"><img alt="テスト" src="https://img.shields.io/badge/tests-308%20passed-brightgreen"></a>
+  <a href="docs/TESTING.md"><img alt="カバレッジ" src="https://img.shields.io/badge/coverage-85%25-green"></a>
   <a href="LICENSE"><img alt="ライセンス" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
   <img alt="Python" src="https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white">
   <img alt="プラットフォーム" src="https://img.shields.io/badge/platform-macOS%20%7C%20iOS%20%7C%20Web-lightgrey">
@@ -24,7 +24,10 @@
 |---|---|
 | **モデル** | 既定はローカルの視覚言語モデルで、完全にオフラインで動作します。[Miavo](https://miavo.xyz) のクラウドモデルや、OpenAI 互換のサービス（OpenAI、DeepSeek、OpenRouter、Ollama、LM Studio）も使えます。 |
 | **エージェント** | 計画モード、目標モード（自律実行と独立したレビュー）、読み取り専用サブタスクの並列実行、Web 検索とページの読み取り。 |
-| **記憶** | 長期的な事実をバックグラウンドで抽出。意味検索またはキーワード検索、シークレット対話、長い対話の要約。 |
+| **記憶** | 長期的な事実をバックグラウンドで抽出。意味検索またはキーワード検索、シークレット対話、長い対話の要約。プライベートな記憶はローカルモデルだけに渡します。 |
+| **予定と連絡先** | iPhone や Mac のアプリが、カレンダー、リマインダー、連絡先のコピーを自分の Mac に送ります。予約や日程調整の前に重なりを確認し、名前で電話番号を調べ、予定やリマインダーを追加します。 |
+| **自分から動く** | 定期タスク、イベントトリガー（特定の人からのメール、予定の開始前、予算の残りわずか、デバイスの状態変化）、体調データが悪化したときの声かけ。アプリを閉じていてもプッシュ通知で届きます。 |
+| **メール** | Gmail、Outlook、iCloud、QQ、163 を読みます。送信を許可したメールボックスからは、代わりにメールを書いて返信できます。送る前に必ず全文を表示します。 |
 | **スキルと MCP** | 標準の `SKILL.md` 形式で、`~/.claude/skills/` と共有できます。MCP サーバーはローカルプロセスと HTTP に対応。 |
 | **コード** | 許可したプロジェクトを読んで検索し、変更を差分として提示します。適用と取り消しができ、pytest / Swift / npm スクリプトを実行できます。 |
 | **コマンドとブラウザ** | Mac 上でコマンドを実行し、専用プロファイルのブラウザを操作します。操作ごとに確認します。 |
@@ -82,7 +85,8 @@ flowchart LR
 
 - **直接接続。** 端末は TLS で Mac に直接接続します。証明書のピン留めと一回限りのペアリング招待を使い、クラウドの中継はありません。
 - **既定はローカル。** ローカルモデルは何も外部に送信しません。クラウドモデルを選ぶと、対話、添付、取り出した記憶、ツールの結果がそのサービスに送信されます。
-- **まず確認。** コマンドの実行、コードの変更、ブラウザのクリックと入力、読み取り専用でない MCP ツール、錠、ドア、カメラ、そしてすべての電話は、実行前に確認します。
+- **まず確認。** コマンドの実行、コードの変更、ブラウザのクリックと入力、読み取り専用でない MCP ツール、錠、ドア、カメラ、そしてすべての電話とすべてのメールは、実行前に確認します。範囲の狭い操作（ひとつのサイトでのクリック、`git status` のようなコマンド）は「今後は常に許可」にでき、いつでも取り消せます。電話、メール、錠は毎回確認します。
+- **プッシュ通知は第三者を経由します。** アプリを閉じているときの通知は、ブラウザベンダーまたは Apple のプッシュサービスを通ります。ブラウザ向けはエンドツーエンドで暗号化され、iPhone アプリ向けは Apple が内容を読めます。プッシュ通知をオンにしなければ、何も経由しません。
 - **サンドボックスなし。** コマンドとプロジェクトのスクリプトは、Mac 上であなたのユーザー権限で実行されます。アシスタントが自動でコミット、プッシュ、公開することはありません。
 
 ## テスト
@@ -94,7 +98,7 @@ flowchart LR
 
 | スイート | 範囲 |
 |---|---|
-| `check.sh` | 単体テスト 167 件、`engine/` のステートメントカバレッジ 81% |
+| `check.sh` | 単体テスト 308 件、`engine/` のステートメントカバレッジ 85% |
 | `e2e.sh` | 実際のモデルで API の全工程：対話、画像の読み取り、画像生成、動画、ショートドラマ、コーディング、ペアリング |
 | `scenarios.sh` | 26 本の複数ターンの対話を 1 ターンずつ検査 |
 | `longtasks.sh` | モデルの 1 回の出力を超える長いタスクを、実測結果で判定 |
@@ -112,6 +116,7 @@ flowchart LR
 | [ネイティブアプリ](docs/APPS.md) | Mac 版のビルド、iPhone / iPad へのインストール、TestFlight |
 | [スマートホームのコネクタ](docs/CONNECTORS.md) | 対応ブランドと、それぞれに必要なトークン |
 | [電話](docs/PHONE.md) | 電話サービスの連携、通話の流れ、固定のルールと制限 |
+| [画面の前にいなくても動く](docs/REACH.md) | プッシュ通知、常に許可する操作、カレンダーと連絡先、イベントトリガー、メール送信、プライベートな記憶、バックアップ、ログイン時の自動起動 |
 | [クリエイティブ拡張](docs/EXTENSIONS.md) | 任意の動画コンポーネント、正確なバージョンとチェックサム |
 | [データと運用](docs/OPERATIONS.md) | データの配置、ポート、バックアップ、安全上の境界 |
 | [テスト](docs/TESTING.md) | 単体テスト、カバレッジ、受け入れスイート |

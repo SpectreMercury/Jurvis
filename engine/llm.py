@@ -22,12 +22,14 @@ DEFAULTS = {
     "tool_model": "",         # cheap model for summaries, memory extraction and query rewriting; empty = chat model
     "embed_model": "",        # "<provider>:<model>" for semantic memory search; empty = built-in lexical matching
     "web_search": True,
-    "memory": {"enabled": True, "auto_extract": True, "auto_retrieve": True, "max_retrieved": 8, "threshold": 0.3},
+    # private_local: memories marked private (health, money, identity, intimate life) and the quiet conversations are never sent to a cloud model.
+    "memory": {"enabled": True, "auto_extract": True, "auto_retrieve": True, "max_retrieved": 8, "threshold": 0.3, "private_local": True},
     # How much of a conversation a cloud model is sent, and two ways of keeping its context short that only cloud models may use.
     # cloud_history: times the local history budget (1-4). step_compaction: in goal mode each step starts from the task and the model's own
     # handoff notes instead of the whole record. brief_summary: older messages are folded into a brief for what is still open, not a full summary.
     "context": {"cloud_history": 4, "step_compaction": False, "brief_summary": False},
     "voice": {"speaker": "", "auto_speak": False},  # which voice reads replies aloud; auto_speak reads every reply in voice conversations
+    "power": {"keep_awake": False},  # on power, keep the Mac from sleeping on its own so scheduled work, watches and calls still run
     "home": {"confirm": "sensitive"},  # "sensitive": locks, doors, alarms and cameras ask first; "always": every action asks
 }
 

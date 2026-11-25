@@ -785,6 +785,12 @@ button.info-card:focus-visible { outline: 2px solid var(--ink); outline-offset: 
 .round-btn.mic.busy { color: var(--green); animation: voice-wait 1s ease-in-out infinite; }
 .msg-status .read { margin-left: auto; color: var(--ink-soft); }
 .msg-status .read[aria-pressed="true"] { background: var(--green-soft); color: var(--green); }
+/* The user's verdict on a reply: quiet until chosen. */
+.msg-status .rate { margin-left: auto; font-size: 13px; filter: grayscale(1); opacity: .45; }
+.msg-status .rate + .rate { margin-left: 0; }
+.msg-status .rate ~ .read { margin-left: 0; }
+.msg-status .rate:hover, .msg-status .rate.on { filter: none; opacity: 1; }
+.msg-status .rate.on { background: var(--green-soft); }
 .voice-screen { position: fixed; inset: 0; z-index: 45; background: var(--bg); display: flex; flex-direction: column; align-items: center;
   padding: calc(env(safe-area-inset-top) + 24px) 24px calc(env(safe-area-inset-bottom) + 24px); gap: 24px; }
 .voice-stage { flex: 1 1 0; min-height: 220px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; }
@@ -945,3 +951,5 @@ button.info-card:focus-visible { outline: 2px solid var(--ink); outline-offset: 
 .maker-pick img { width: 100%; height: 100%; object-fit: contain; display: block; }
 @media (max-width: 560px) { .stage { flex-direction: column; align-items: flex-start; } }
 @media (prefers-reduced-motion: reduce) { .bubble.pop, .buddy.talking .figure { animation: none; } }
+/* What an approval card shows for anything but a shell command (an email to send, a click, a call): words, not code. */
+.approval .mono.prose { font-family: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }

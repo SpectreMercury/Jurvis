@@ -37,7 +37,7 @@ PROVIDERS = {
         "token": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
         "console": "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade",
         "setup": "在 Microsoft Entra 管理中心「应用注册」里新建一个应用，账户类型选「任何组织目录中的帐户和个人 Microsoft 帐户」，"
-                 "重定向 URI 选 Web，填下面的回调地址。在「API 权限」里添加 Microsoft Graph 的 Mail.Read 和 offline_access，"
+                 "重定向 URI 选 Web，填下面的回调地址。在「API 权限」里添加 Microsoft Graph 的 Mail.Read 和 offline_access（要让 Jurvis 替你发信，再加 Mail.Send），"
                  "在「证书和密码」里新建一个客户端密码。然后把应用程序（客户端）ID 和密码的值填在这里。",
     },
 }

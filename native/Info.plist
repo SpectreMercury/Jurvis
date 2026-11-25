@@ -38,10 +38,14 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>你在设置里打开「日历」后，Jurvis 读取近期的日程，只发送到你自己的 Mac，用来回答你的安排、避开冲突；它只新增，不改不删。</string>
 	<key>NSCalendarsWriteOnlyAccessUsageDescription</key>
-	<string>Jurvis 替你打电话订好位后，把这次预订加进日历。它只添加，不读取你的日历。</string>
+	<string>Jurvis 替你订好位或安排好事情后，把它加进日历。</string>
 	<key>NSCameraUsageDescription</key>
 	<string>扫描 Mac 上的配对二维码。</string>
+	<key>NSContactsUsageDescription</key>
+	<string>你在设置里打开「通讯录」后，Jurvis 读取联系人的姓名、电话和邮箱，只发送到你自己的 Mac，用来按名字查号码和地址。</string>
 	<key>NSHealthShareUsageDescription</key>
 	<string>读取睡眠、运动、心率和经期记录，只发送到你自己的 Mac，用来回答你的健康问题。</string>
 	<key>NSHealthUpdateUsageDescription</key>
@@ -52,6 +56,8 @@
 	<string>连接你的 Mac，使用本地助理、生图和短剧工具。</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>用语音向 Jurvis 提问，录音只发送到你自己的 Mac。</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>你在设置里打开「提醒事项」后，Jurvis 读取未完成的提醒并替你新增提醒，只发送到你自己的 Mac。</string>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedInterfaceOrientations</key>

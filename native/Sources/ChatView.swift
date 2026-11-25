@@ -696,6 +696,7 @@ struct AssistantMessage: View {
             HStack(spacing: 4) {
                 if hasContent { CopyButton(text: message.content) }
                 if message.status == "complete", !words.isEmpty { ReadAloudButton(id: message.id, text: words) }
+                if message.status == "complete", !words.isEmpty { RateButtons(message: message) }
                 if ["failed", "cancelled", "interrupted"].contains(message.status), store.messages.last?.id == message.id {
                     ActionButton(title: "重试", busyTitle: "正在重试", icon: "arrow.clockwise", kind: .ghost, scale: .small) { await store.retryMessage(message) }
                 }
@@ -1021,6 +1022,30 @@ struct Sparkline: Shape {
     }
 }
 
+/// The user's verdict on a reply. Marking it down asks, optionally, what was wrong: that goes on the assistant's improvement list.
+struct RateButtons: View {
+    @EnvironmentObject var store: AppStore
+    var message: Message
+    @State private var asking = false
+    @State private var note = ""
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Button { Task { await store.rate(message, "up") } } label: { Image(systemName: message.rating == "up" ? "hand.thumbsup.fill" : "hand.thumbsup") }
+                .buttonStyle(.jurvisIcon()).help("有帮助").accessibilityLabel("有帮助")
+            Button {
+                if message.rating == "down" { Task { await store.rate(message, "down") } } else { note = ""; asking = true }
+            } label: { Image(systemName: message.rating == "down" ? "hand.thumbsdown.fill" : "hand.thumbsdown") }
+                .buttonStyle(.jurvisIcon()).help("不对").accessibilityLabel("不对")
+        }
+        .alert("哪里不对？", isPresented: $asking) {
+            TextField("比如：太长了，我只要结论", text: $note)
+            Button("提交") { Task { await store.rate(message, "down", note: note) } }
+            Button("取消", role: .cancel) {}
+        } message: { Text("可以不写。写一句，它下次更容易改对。") }
+    }
+}
+
 /// Something the assistant wants to do that needs a yes: the user sees exactly what and why, approves it, then watches the output.
 struct CommandCard: View {
     @EnvironmentObject var store: AppStore
@@ -1050,6 +1075,9 @@ struct CommandCard: View {
             if call.awaiting, isCommand { Text(reason).font(.jCallout).foregroundStyle(Color.inkSoft).fixedSize(horizontal: false, vertical: true) }
             if let cwd = call.cwd, !cwd.isEmpty { Text("在 " + cwd).font(.jMicro).foregroundStyle(Color.inkFaint).lineLimit(1).truncationMode(.middle) }
             if call.awaiting { approval }
+            if call.awaiting, let permit = call.permit {
+                Text("「以后都允许」：\(permit)。可以在设置里收回。").font(.jMicro).foregroundStyle(Color.inkFaint).fixedSize(horizontal: false, vertical: true)
+            }
             if call.isRunning, !(call.console ?? "").isEmpty { console(lines.suffix(8).joined(separator: "\n")) }
             if !call.isRunning, !call.awaiting, !(call.console ?? "").isEmpty {
                 Button { withAnimation(.easeOut(duration: 0.15)) { showOutput.toggle() } } label: {
@@ -1082,8 +1110,11 @@ struct CommandCard: View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 8) {
                 decisionButton("run", title: "允许", busy: "运行中", icon: "checkmark", kind: .primary)
-                decisionButton("always", title: "本任务内都允许", busy: "运行中", icon: nil, kind: .secondary)
-                    .help("之后这个任务里的命令直接运行；删除、sudo、git push 等仍会询问")
+                if !everyTime {
+                    decisionButton("always", title: "本任务内都允许", busy: "运行中", icon: nil, kind: .secondary)
+                        .help("之后这个任务里的命令直接运行；删除、sudo、git push 等仍会询问")
+                }
+                if let permit = call.permit { decisionButton("forever", title: "以后都允许", busy: "运行中", icon: nil, kind: .secondary).help(permit) }
                 decisionButton("deny", title: "拒绝", busy: "正在拒绝", icon: "xmark", kind: .ghost)
                 Spacer(minLength: 0)
             }
@@ -1092,10 +1123,14 @@ struct CommandCard: View {
                     decisionButton("run", title: "允许", busy: "运行中", icon: "checkmark", kind: .primary, fill: true)
                     decisionButton("deny", title: "拒绝", busy: "正在拒绝", icon: "xmark", kind: .secondary, fill: true)
                 }
-                decisionButton("always", title: "本任务内都允许", busy: "运行中", icon: nil, kind: .ghost, fill: true)
+                if !everyTime { decisionButton("always", title: "本任务内都允许", busy: "运行中", icon: nil, kind: .ghost, fill: true) }
+                if call.permit != nil { decisionButton("forever", title: "以后都允许", busy: "运行中", icon: nil, kind: .ghost, fill: true) }
             }
         }
     }
+
+    /// An email is asked about every time: "for this task" is not offered for it.
+    var everyTime: Bool { call.name == "mail_send" }
 
     func decisionButton(_ choice: String, title: String, busy: String, icon: String?, kind: ButtonKind, fill: Bool = false) -> some View {
         ActionButton(title: title, busyTitle: busy, icon: icon, kind: kind, scale: .regular, fill: fill, isBusy: decision == choice) {

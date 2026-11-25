@@ -26,6 +26,8 @@ from .skills import Skills
 from .home import Home
 from .mcp import Mcp
 from .avatar import Avatar
+from .push import Push
+from .backup import Backup
 
 log=logging.getLogger("jurvis.worker")
 
@@ -71,6 +73,12 @@ class Worker:
         self.checkin=Checkin(settings,store,self.tools.health)
         self.stream=Stream(store)
         self.asks=Asks(store)
+        self.push=self.tools.push=Push(settings,store)
+        self.backup=Backup(settings,store)
+        self.tools.watches.home=self.home
+        # A watch reads mail with the rights of the model that will do its task.
+        self.tools.watches.cloud_of=lambda session_id:not self.llm.is_local(self.llm.chat_model((self.store.one("SELECT model FROM sessions WHERE id=?",(session_id,)) or {}).get("model")))
+        self.sending=self.watching=self.copying=self.awake=None
         self.records_after=0.0
         self.task=None
         self.running={}      # job id -> (task, lane)
@@ -91,7 +99,8 @@ class Worker:
             log.exception("MCP servers could not be connected")
 
     async def close(self):
-        for task in [self.task,self.connecting,*[t for t,_ in self.running.values()]]:
+        if self.awake and self.awake.returncode is None:self.awake.terminate()
+        for task in [self.task,self.connecting,self.sending,self.watching,self.copying,*[t for t,_ in self.running.values()]]:
             if task:
                 task.cancel()
                 try: await task
@@ -144,9 +153,28 @@ class Worker:
                 cloud_free-=1;picked.append((job,lane))
         return picked
 
+    async def take_copy(self):
+        try:
+            await asyncio.to_thread(self.backup.run)
+        except ValueError as exc:
+            log.warning("%s",exc)  # also kept in the backup's status, where 设置 shows it
+
+    async def keep_awake(self):
+        """While the user wants it and the Mac is on power, the Mac does not go to sleep on its own: schedules, watches and
+        calls keep working with the lid open and the screen off. The helper ends with the engine."""
+        import os
+        wanted=bool(self.prefs.get()["power"]["keep_awake"]) and Path('/usr/bin/caffeinate').exists()
+        running=self.awake and self.awake.returncode is None
+        if wanted and not running:
+            self.awake=await asyncio.create_subprocess_exec('/usr/bin/caffeinate','-s','-w',str(os.getpid()))
+        elif not wanted and running:
+            self.awake.terminate();await self.awake.wait();self.awake=None
+
     async def loop(self):
         checked=0.0
         while True:
+            if not self.sending or self.sending.done():
+                self.sending=asyncio.create_task(self.push.flush())  # notices for devices whose app is closed
             for queued,lane in self.startable():
                 job=self.store.claim(queued["id"])
                 if not job:
@@ -172,6 +200,14 @@ class Worker:
                     self.keep_records()
                 except Exception:
                     log.exception("Records of finished conversations could not be queued")
+                if not self.watching or self.watching.done():
+                    self.watching=asyncio.create_task(self.tools.watches.tick())  # mail that arrived, an event about to begin, a budget, a device
+                if (not self.copying or self.copying.done()) and self.backup.due():
+                    self.copying=asyncio.create_task(self.take_copy())  # the nightly copy
+                try:
+                    await self.keep_awake()
+                except Exception:
+                    log.exception("Could not keep the Mac awake")
             await asyncio.sleep(.2 if self.running else .4)
 
     async def execute(self,job,lane):

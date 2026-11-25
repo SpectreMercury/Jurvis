@@ -793,11 +793,11 @@ struct Outreach: Codable, Equatable, Hashable { var id: String; var session_id: 
     func deliver(_ list: [Outreach], store: AppStore) async {
         self.store = store
         let center = UNUserNotificationCenter.current()
-        if center.delegate == nil { center.delegate = self }
+        if center.delegate == nil { prepare() }
         var done = UserDefaults.standard.stringArray(forKey: key) ?? []
         let fresh = list.filter { !done.contains($0.id) && Date().timeIntervalSince1970 - $0.created_at < 6 * 3600 }
         guard !fresh.isEmpty else { return }
-        if !asked { asked = true; _ = try? await center.requestAuthorization(options: [.alert, .sound, .badge]) }
+        if !asked { asked = true; _ = try? await center.requestAuthorization(options: [.alert, .sound, .badge]); await PushRegistration.shared.register() }
         for item in fresh.reversed() {
             done.append(item.id)
             if store.section == .assistant && !store.streamPast && Self.appActive { continue }  // it is on screen as it arrives
@@ -827,7 +827,13 @@ struct Outreach: Codable, Equatable, Hashable { var id: String; var session_id: 
     }
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
-        let session = response.notification.request.content.userInfo["session_id"] as? String ?? ""
+        let info = response.notification.request.content.userInfo
+        // 允许 or 拒绝 pressed on the notification itself: the answer goes to the Mac without opening the conversation.
+        if ["run", "deny"].contains(response.actionIdentifier), let message = info["message_id"] as? String, let call = info["call_id"] as? String, !message.isEmpty {
+            await Notifier.shared.decide(message: message, call: call, response.actionIdentifier)
+            return
+        }
+        let session = info["session_id"] as? String ?? ""
         guard !session.isEmpty else { return }
         await Notifier.shared.open(session)
     }

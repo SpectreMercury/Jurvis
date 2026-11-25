@@ -63,7 +63,17 @@ cd Jurvis
 
 ## 开机自启
 
-引擎没有自带守护进程。Mac App 打开时会自动拉起引擎；只用网页版或手机时，可以用 launchd 让它开机就跑。把下面的文件存为 `~/Library/LaunchAgents/app.jurvis.engine.plist`，把两处路径换成你的项目位置：
+引擎没有自带守护进程。Mac App 打开时会自动拉起引擎；只用网页版或手机，或者想让定时任务、事件触发和推送在不开 App 时也照常工作，用 launchd 让它登录后就跑、停了自动重新拉起：
+
+```bash
+./scripts/install-service.sh           # 安装并启动；先停掉手动启动的引擎
+./scripts/install-service.sh status
+./scripts/install-service.sh remove
+```
+
+更新代码后用 `launchctl kickstart -k gui/$(id -u)/app.jurvis.engine` 重启。Mac 睡着时引擎也停，见[电源](REACH.md#开机自启和电源)。
+
+脚本写的就是下面这样一个文件（另外设了 PATH 和日志位置）。想手动安装，把它存为 `~/Library/LaunchAgents/app.jurvis.engine.plist`，把两处路径换成你的项目位置：
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -81,7 +91,7 @@ cd Jurvis
 launchctl load ~/Library/LaunchAgents/app.jurvis.engine.plist
 ```
 
-这份配置是按 launchd 的常规写法给出的，本项目没有对它做过长期运行验证。
+这份配置是按 launchd 的常规写法给出的，文件格式校验过，本项目没有对它做过长期运行验证。
 
 ## 从其他设备访问
 

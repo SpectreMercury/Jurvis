@@ -1,6 +1,7 @@
 // Jurvis service worker: caches the app shell only, network-first so updates arrive; the cache is the offline fallback.
 // API calls (/api/, /pair, …) are never handled here.
-const CACHE = 'jurvis-shell-v19';
+// It also shows what the engine pushes while no page is open (engine/push.py) and opens the conversation when a notification is tapped.
+const CACHE = 'jurvis-shell-v20';
 const SHELL = [
   './',
   './index.html',
@@ -24,6 +25,7 @@ const SHELL = [
   './health.js',
   './oauth.js',
   './settings.js',
+  './reach.js',
   './manifest.webmanifest',
   './icon.svg',
   './icon-192.png',
@@ -64,5 +66,28 @@ self.addEventListener('fetch', (event) => {
       if (cached) return cached;
       throw err;
     }
+  })());
+});
+
+self.addEventListener('push', (event) => {
+  let told = {};
+  try { told = event.data ? event.data.json() : {}; } catch { told = {}; }
+  // The tag is the notice's id: the page announcing the same notice later replaces this one instead of adding a second.
+  event.waitUntil(self.registration.showNotification(told.title || 'Jurvis', {
+    body: told.body || '', tag: told.id || undefined, icon: './icon-192.png', badge: './icon-192.png', data: told,
+  }));
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  event.waitUntil((async () => {
+    const pages = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const open = pages.find((page) => page.url.startsWith(self.registration.scope));
+    if (open) {
+      await open.focus();
+      open.postMessage({ type: 'jurvis-open-chat' });
+      return;
+    }
+    await self.clients.openWindow('./');
   })());
 });

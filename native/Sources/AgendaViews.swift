@@ -14,7 +14,11 @@ struct Space: Codable {
 struct Schedule: Codable, Identifiable, Equatable {
     var id: String; var title: String; var brief: String; var when: String; var next_run: Double; var last_run: Double?
 }
-struct Agenda: Codable, Equatable { var goals: [Goal]; var schedules: [Schedule] }
+/// Work that starts when something happens: an email arrives, an event is about to begin, a budget is used up, a device changes.
+struct Watch: Codable, Identifiable, Equatable {
+    var id: String; var title: String; var brief: String; var when: String; var last_fired: Double?; var fired: Int
+}
+struct Agenda: Codable, Equatable { var goals: [Goal]; var schedules: [Schedule]; var watches: [Watch]? }
 
 struct LedgerEntry: Codable, Identifiable, Equatable {
     var id: String; var at: Double; var amount_cents: Int; var direction: String; var category: String; var merchant: String; var note: String
@@ -80,6 +84,25 @@ struct GoalsView: View {
                             Spacer()
                             ActionButton(title: "取消", busyTitle: "正在取消", icon: "xmark", kind: .danger, scale: .small) {
                                 let _: JSONValue = try await store.requireAPI().request("/api/schedules/\(item.id)", method: "DELETE")
+                                await load()
+                            }
+                        }
+                    }
+                }
+                Eyebrow(text: "事件触发").padding(.top, 8)
+                if (agenda.watches ?? []).isEmpty { EmptyState(icon: "bolt", title: "还没有事件触发", detail: "比如「房东来邮件时告诉我他要什么」或「开会前半小时把相关的邮件整理给我」。") }
+                ForEach(agenda.watches ?? []) { item in
+                    Card {
+                        HStack(spacing: 8) {
+                            Label(item.title, systemImage: "bolt").font(.jHeading).lineLimit(2)
+                            Badge(text: item.when)
+                        }
+                        Text(item.brief).font(.jCallout).foregroundStyle(Color.inkSoft).lineLimit(4).textSelection(.enabled)
+                        HStack {
+                            Text(item.last_fired.map { "触发过 \(item.fired) 次 · 上次 " + $0.dayAndTime } ?? "还没有触发过").font(.jSmall).foregroundStyle(Color.inkFaint)
+                            Spacer()
+                            ActionButton(title: "取消", busyTitle: "正在取消", icon: "xmark", kind: .danger, scale: .small) {
+                                let _: JSONValue = try await store.requireAPI().request("/api/watches/\(item.id)", method: "DELETE")
                                 await load()
                             }
                         }

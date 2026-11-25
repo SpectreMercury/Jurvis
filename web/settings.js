@@ -9,6 +9,7 @@ import { connectorRows } from './health.js';
 import { appSetup } from './oauth.js';
 import { brandMark } from './connect.js';
 import { icon } from './icons.js';
+import * as reach from './reach.js';
 
 const SKILL_TEMPLATE = `---
 name: 我的技能
@@ -41,9 +42,10 @@ export function mount(container) {
     section('语音', els.voice, '语音识别和朗读都在这台 Mac 上完成，录音不会发到别处。'),
     section('记忆', els.memory),
     section('健康与运动', els.health, '睡眠、运动、心率和经期只存在这台 Mac 上；模型只看到汇总数字。'),
-    section('邮件', els.mail, '只读：Jurvis 只看，不发信，也不标已读。Gmail 和 Outlook 用账号登录授权；默认只有本机模型能读。'),
+    section('邮件', els.mail, '默认只读：Jurvis 只看，不标已读。Gmail 和 Outlook 用账号登录授权；默认只有本机模型能读。给某个邮箱打开「可以发信」之后，它才能替你发邮件，而且每一封都会先把全文给你看，你点了允许才发出去。'),
     section('主动关心', els.care, '睡眠、压力、恢复或心情一变差，Jurvis 就会用本机模型看看最近的邮件和对话，马上主动问候你，并发通知。同一件事不重复说，安静时段先攒着，到点再发。'),
     section('电话', els.phone, 'Jurvis 可以替你给餐厅等商家打电话订位、询问。用的是你自己的电话服务商账户：对方看到的是你的号码，话费记在你的账上。每一通都会先问你。'),
+    ...reach.sections().map(([title, el, hint]) => section(title, el, hint)),
     section('技能', els.skills, '技能是一份写给 Jurvis 的做法说明（SKILL.md），它会在合适的时候照着做。'),
     section('MCP 服务', els.mcp, '通过 MCP 给 Jurvis 接入外部工具。'),
     section('智能家居', els.home),
@@ -53,6 +55,7 @@ export function mount(container) {
 
 export function reset() {
   for (const key of Object.keys(data)) data[key] = null;
+  reach.reset();
 }
 
 const quiet = (err) => err instanceof ApiError && err.status === 401;
@@ -75,6 +78,7 @@ export function activate() {
   loadPart('mcp', '/api/mcp', (r) => r.servers || [], renderMcp);
   loadPart('home', '/api/home', (r) => r, renderHome);
   loadPart('devices', '/api/devices', (r) => r, renderDevices);
+  reach.activate();
   renderAbout();
 }
 
@@ -82,7 +86,7 @@ export function activate() {
 export function onSettingsEvent() {
   const active = document.activeElement;
   if (root && active && root.contains(active) && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName)) return;
-  loadSettings().then(() => { renderModels(); renderMemory(); renderHome(); }).catch(() => {});
+  loadSettings().then(() => { renderModels(); renderMemory(); renderHome(); reach.onSettings(); }).catch(() => {});
 }
 
 export function onState() { renderAbout(); }
@@ -242,6 +246,8 @@ function renderMemory() {
     toggle('启用记忆', m.enabled, set('enabled')),
     toggle('自动提取', m.auto_extract, set('auto_extract'), '从对话里记下值得长期保留的信息'),
     toggle('自动取回', m.auto_retrieve, set('auto_retrieve'), '回答前先找出相关的记忆'),
+    toggle('私密的记忆只给本机模型', m.private_local !== false, set('private_local'),
+      '关于健康、收入负债、证件、住址和家庭矛盾的记忆会标为「私密」，连同陪伴对话的内容，都不发给云端模型。可以在「记忆」页逐条改标记'),
     h('div', { class: 'control-row' }, h('span', { class: 'control-label grow' }, '每次最多取回（条）'), max),
     h('div', { class: 'control-row' }, h('span', { class: 'control-label grow' }, '相关度阈值（0–1）'), threshold),
     h('div', { class: 'control-row' }, h('span', { class: 'control-label grow' }, '在线模型带上的历史',
@@ -396,8 +402,10 @@ function renderMail() {
       brandMark(a.name, '', a.kind),
       h('div', { class: 'made-text grow' },
         h('strong', null, a.address),
-        h('span', { class: (a.error ? 'error-text' : 'muted') + ' small' }, a.error || `${a.name} · ${a.auth === 'oauth' ? '已登录授权' : '专用密码'} · 只读`)),
+        h('span', { class: (a.error ? 'error-text' : 'muted') + ' small' }, a.error || `${a.name} · ${a.auth === 'oauth' ? '已登录授权' : '专用密码'} · ${a.send ? '可读可发，每封先问你' : '只读'}`)),
       h('div', { class: 'row' },
+        action(a.send ? '可以发信' : '不发信', () => sendSwitch(a, apply),
+          { class: 'btn small', title: a.send ? '点一下改回只读' : '点一下允许 Jurvis 从这个邮箱发信（每封都先问你）' }),
         action(a.cloud ? '本机和云端模型' : '仅本机模型', async () => apply(await patch('/api/mail/' + encodeURIComponent(a.id), { cloud: !a.cloud })),
           { class: 'btn small', title: a.cloud ? '点一下改成只给本机模型读' : '点一下也允许云端模型读' }),
         action(icon('trash', 15), async () => { if (!await ui.ask(`移除邮箱 ${a.address}？`)) return; apply(await del('/api/mail/' + encodeURIComponent(a.id))); },
@@ -406,6 +414,20 @@ function renderMail() {
       brandMark(p.name, 'large', p.kind),
       h('span', { class: 'mail-name' }, p.name),
       h('span', { class: 'mail-how' }, p.auth === 'oauth' ? (p.kind === 'gmail' ? '用 Google 登录' : '用 Microsoft 登录') : p.secret)))));
+}
+
+/** Lets Jurvis send from a mailbox, or takes that back. Gmail and Outlook need one more permission, given by signing in again. */
+async function sendSwitch(a, apply) {
+  if (a.send) { apply(await patch('/api/mail/' + encodeURIComponent(a.id), { send: false })); return; }
+  if (!await ui.ask(`允许 Jurvis 从 ${a.address} 发邮件？它写好的每一封都会先把全文给你看，你点「允许」才会发出去。`, { ok: '允许发信' })) return;
+  try {
+    apply(await patch('/api/mail/' + encodeURIComponent(a.id), { send: true }));
+  } catch (err) {
+    if (a.auth !== 'oauth') throw err;
+    const { url } = await post('/api/mail/connect/' + a.kind, { cloud: a.cloud, send: true });
+    window.open(url, '_blank', 'noopener');
+    notify(`发信需要多一项授权：在新打开的页面里再登录一次 ${a.name}，完成后这里会自动更新。`, 'info');
+  }
 }
 
 export function refreshMail() { return loadPart('mail', '/api/mail', (r) => r, renderMail); }
@@ -546,7 +568,9 @@ function renderCare() {
   fill(el,
     toggle('身体数据一变差就主动问候我', c.enabled, async (want) => { if (want) askToNotify(); data.care = await put('/api/checkin', { enabled: want }); }),
     h('div', { class: 'control-row' }, h('span', { class: 'control-label grow' }, '安静时段（不打扰）'), time('quiet_start'), h('span', { class: 'muted' }, '到'), time('quiet_end')),
-    c.last_at ? h('p', { class: 'muted small' }, '上一次问候：' + new Date(c.last_at * 1000).toLocaleString('zh-CN')) : null,
+    c.last_at ? h('p', { class: 'muted small' }, '上一次问候：' + new Date(c.last_at * 1000).toLocaleString('zh-CN')
+      + (c.spacing > 3600 ? `。前几次你没有回，现在两次问候至少隔 ${Math.round(c.spacing / 3600)} 小时` : '')
+      + (c.muted_until && c.muted_until * 1000 > Date.now() ? `。你说过上次不合适，同样的事在 ${new Date(c.muted_until * 1000).toLocaleDateString('zh-CN')} 前不再提` : '')) : null,
     'Notification' in window && Notification.permission !== 'granted'
       ? h('p', { class: 'muted small' }, Notification.permission === 'denied' ? '浏览器关掉了通知，问候只会出现在页面里。' : '打开上面的开关时会请求通知权限。') : null,
     h('div', { class: 'row' }, action('现在看看', async () => {

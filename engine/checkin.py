@@ -7,7 +7,9 @@ It watches as data arrives (an iPhone sync, a WHOOP or Google sync, a mood the u
   but one that went away and came back is new again;
 - quiet hours hold a message until they end; so does the user being in the middle of talking to Jurvis;
 - messages are at least SPACING apart, so a flapping signal never turns into a stream of texts;
-- when the user already talked in a quiet conversation in the last hours, what showed up meanwhile counts as known.
+- when the user already talked in a quiet conversation in the last hours, what showed up meanwhile counts as known;
+- a check-in the user did not answer makes the next one wait longer (four times as long for each one ignored in a row, up to a day),
+  and one they marked as unwelcome silences the signs it was about for a week.
 """
 import json
 import time
@@ -18,6 +20,9 @@ from .store import new_id
 EVERY = 300           # looked at this often even without new data (quiet hours end, a held message is due)
 SPACING = 3600        # at least this long between two check-ins
 TALKING = 600         # the user wrote to Jurvis this recently: wait until they are done
+ANSWERED = 12 * 3600  # a check-in with no word from the user in its conversation for this long was ignored
+LONGEST = 86400       # however many were ignored, the wait between two check-ins is never longer than this
+MUTE_DAYS = 7         # how long the signs of an unwelcome check-in stay silent
 DEFAULTS = {"enabled": True, "quiet_start": "22:30", "quiet_end": "08:30"}
 
 
@@ -40,7 +45,32 @@ class Checkin:
     def settings(self):
         state = self.load()
         return {k: state[k] for k in DEFAULTS} | {"last_at": state.get("last_at"), "last_signals": state.get("last_signals", []),
-                                                   "watching": list(state.get("told", {}).values())}
+                                                   "watching": list(state.get("told", {}).values()), "spacing": self.spacing(),
+                                                   "muted_until": max((state.get("muted") or {}).values(), default=None)}
+
+    def spacing(self, now=None):
+        """How long to wait between two check-ins: longer for each of the latest ones the user let pass without a word."""
+        now = now or time.time()
+        sent = self.store.all("""SELECT m.session_id,m.created_at FROM messages m WHERE json_extract(m.metadata,'$.checkin') AND m.status='complete' AND m.content!=''
+                                 ORDER BY m.created_at DESC LIMIT 4""")
+        ignored = 0
+        for row in sent:
+            if now - row["created_at"] < ANSWERED:
+                continue  # still fresh: not answered yet is not ignored
+            if self.store.one("SELECT 1 AS x FROM messages WHERE session_id=? AND role='user' AND created_at>? AND created_at<? LIMIT 1",
+                              (row["session_id"], row["created_at"], row["created_at"] + ANSWERED)):
+                break
+            ignored += 1
+        return min(LONGEST, SPACING * 4 ** ignored)
+
+    def less(self, now=None):
+        """The user said the last check-in was not welcome: what it was about is not raised again for a week."""
+        now = now or time.time()
+        state = self.load()
+        kinds = list(state.get("told", {})) or ["stress", "sleep", "recovery", "mood"]
+        state["muted"] = {**(state.get("muted") or {}), **{k: now + MUTE_DAYS * 86400 for k in kinds}}
+        self.save(state)
+        return self.settings()
 
     def update(self, enabled=None, quiet_start=None, quiet_end=None):
         state = self.load()
@@ -104,7 +134,8 @@ class Checkin:
             return None
         self.looked = time.time()
         state = self.load()
-        found = self.found(now.date())
+        muted = state.get("muted") or {}
+        found = {k: v for k, v in self.found(now.date()).items() if force or muted.get(k, 0) < time.time()}
         told = {k: v for k, v in state.get("told", {}).items() if k in found}  # a sign that went away may be new again later
         new = [k for k in found if k not in told]
         if not force and not new:
@@ -120,7 +151,7 @@ class Checkin:
             self.save(state)
             return None
         held = (not state["enabled"] or self.quiet(now, state["quiet_start"], state["quiet_end"])
-                or time.time() - anywhere < TALKING or time.time() - (state.get("last_at") or 0) < SPACING)
+                or time.time() - anywhere < TALKING or time.time() - (state.get("last_at") or 0) < self.spacing())
         if (held and not force) or self.store.one(
                 "SELECT id FROM jobs WHERE kind='chat' AND status IN ('queued','running') AND json_extract(payload,'$.checkin') IS NOT NULL"):
             return None  # looked at again in a few minutes; nothing is marked as told

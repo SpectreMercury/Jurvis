@@ -62,6 +62,7 @@ function render() {
       h('span', { class: 'muted small' }, [
         `重要度 ${Math.round((Number(m.importance) || 0) * 100)}%`,
         m.durable ? '长期' : '短期',
+        m.private ? '私密 · 只给本机模型' : '',
         SOURCES[m.source] || (m.source ? String(m.source) : ''),
         m.updated_at ? shortTime(m.updated_at) : '',
       ].filter(Boolean).join(' · ')),
@@ -86,6 +87,7 @@ function edit(memory) {
   show();
   const enabled = ui.toggle({ checked: memory ? !!memory.enabled : true, 'aria-label': '启用' });
   const durable = ui.toggle({ checked: memory ? !!memory.durable : true, 'aria-label': '长期保留' });
+  const secret = ui.toggle({ checked: memory ? !!memory.private : false, 'aria-label': '私密' });
   const save = h('button', { class: 'btn primary', type: 'submit' }, '保存');
   const form = h('form', { class: 'stack' },
     h('label', { class: 'field' }, h('span', null, '标题'), title),
@@ -94,12 +96,13 @@ function edit(memory) {
     h('div', { class: 'control-row' }, h('span', { class: 'control-label' }, '重要度'), importance, shown),
     h('label', { class: 'control-row' }, h('span', { class: 'control-label grow' }, '启用'), enabled),
     h('label', { class: 'control-row' }, h('span', { class: 'control-label grow' }, '长期保留'), durable),
+    h('label', { class: 'control-row' }, h('span', { class: 'control-label grow' }, '私密', h('span', { class: 'muted small block' }, '只给本机模型，不发给云端模型')), secret),
     h('div', { class: 'row end' }, save));
   const close = sheet(memory ? '编辑记忆' : '添加记忆', form);
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     const body = {
-      title: title.value.trim(), content: content.value.trim(), enabled: enabled.checked, durable: durable.checked,
+      title: title.value.trim(), content: content.value.trim(), enabled: enabled.checked, durable: durable.checked, private: secret.checked,
       importance: Number(importance.value),
       tags: [...new Set(tags.value.split(/[,，、\n]/).map((t) => t.trim()).filter(Boolean))],
     };

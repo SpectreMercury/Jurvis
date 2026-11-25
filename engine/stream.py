@@ -141,7 +141,10 @@ class Stream:
         return found
 
     # ---- the record, for the assistant itself: everything said is kept, and it can look it up ----
-    def find(self, query, limit=FOUND):
+    # Stretches a cloud model is not shown: the quiet ones, and those a private fact was learned in (engine/memory.py).
+    GUARDED = " AND NOT (s.persona IS 'companion' OR s.id IN (SELECT session_id FROM memories WHERE private=1 AND session_id IS NOT NULL))"
+
+    def find(self, query, limit=FOUND, guarded=False):
         """Messages that contain any of the words, those with the most of them first, then the newest. Private stretches are left out."""
         terms = list(dict.fromkeys(t for t in query[:200].replace("，", " ").replace(",", " ").split() if t))[:8]
 
@@ -150,7 +153,7 @@ class Stream:
                 return []
             likes = ["%" + t.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%" for t in terms]
             rows = self.store.all("SELECT m.id,m.role,m.content,m.created_at,s.title FROM messages m JOIN sessions s ON s.id=m.session_id "
-                                  "WHERE m.status='complete' AND m.role IN ('user','assistant') AND s.incognito=0 AND ("
+                                  "WHERE m.status='complete' AND m.role IN ('user','assistant') AND s.incognito=0" + (self.GUARDED if guarded else "") + " AND ("
                                   + " OR ".join("m.content LIKE ? ESCAPE '\\'" for _ in likes) + ") ORDER BY m.created_at DESC LIMIT 400", likes)
             scored = [(sum(1 for t in terms if t.lower() in row["content"].lower()), row) for row in rows]
             return sorted(scored, key=lambda item: (-item[0], -item[1]["created_at"]))
@@ -171,11 +174,11 @@ class Stream:
                           "snippet": ("…" if lead else "") + text[lead:lead + SNIPPET] + ("…" if lead + SNIPPET < len(text) else "")})
         return found
 
-    def around(self, message_id, before=2, after=3):
+    def around(self, message_id, before=2, after=3, guarded=False):
         """A message word for word, with what was said just before and after it in the same stretch. None when there is no such
         message or it is in a private stretch. Long messages are cut to a budget, the one asked for last."""
         found = self.store.one("SELECT m.id,m.session_id,m.created_at,s.title FROM messages m JOIN sessions s ON s.id=m.session_id "
-                               "WHERE m.id=? AND s.incognito=0", (message_id,))
+                               "WHERE m.id=? AND s.incognito=0" + (self.GUARDED if guarded else ""), (message_id,))
         if not found:
             return None
         said = "SELECT id,role,content,created_at FROM messages WHERE session_id=? AND status='complete' AND role IN ('user','assistant') AND content!='' "

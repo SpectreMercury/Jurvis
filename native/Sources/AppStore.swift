@@ -138,6 +138,9 @@ import ImageIO
             if state != snapshot { snapshot = state }
             if let outreach = state.outreach, !outreach.isEmpty { await Notifier.shared.deliver(outreach, store: self) }
             if let bookings = state.calendar, !bookings.isEmpty { Task { await CalendarSync.shared.add(bookings, store: self) } }
+            if let notices = state.notices, !notices.isEmpty { await Notifier.shared.announce(notices, store: self) }
+            if let waiting = state.outbox, !waiting.isEmpty { Task { await PersonalSync.shared.add(waiting, store: self) } }
+            await PushRegistration.shared.send(store: self)
             if !connected { connected = true }
             if connectionStatus != "Mac 已连接" { connectionStatus = "Mac 已连接" }
             await refreshMessages()
@@ -388,7 +391,16 @@ import ImageIO
         }
         await retry(job)
     }
-    /// The user's answer to a command the assistant wants to run: "run", "deny" or "always" (allow the whole conversation).
+    /// The user's verdict on a reply. The same verdict again takes it back. A reply marked down goes on the assistant's improvement list.
+    func rate(_ message: Message, _ rating: String, note: String = "") async {
+        await perform {
+            let _: JSONValue = try await self.requireAPI().request("/api/messages/\(message.id)/feedback", method: "POST",
+                                                                   body: ["rating": message.rating == rating ? "" : rating, "note": note])
+            await self.refreshMessages()
+        }
+    }
+    /// The user's answer to an action the assistant wants to take: "run", "deny", "always" (allow the whole conversation) or
+    /// "forever" (this kind of action from now on).
     @discardableResult func decideCommand(message: String, call: String, _ decision: String) async -> Bool {
         await perform {
             let _: JSONValue = try await self.requireAPI().request("/api/messages/\(message)/commands/\(call)", method: "POST", body: ["decision": decision])

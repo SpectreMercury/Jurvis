@@ -80,6 +80,8 @@ extension Message {
     var options: [String] { metadata["ask"]["options"].array.map(\.string).filter { !$0.isEmpty } }
     /// A tool call that is waiting for the user's yes or no.
     var awaitingCall: ToolCall? { isLive ? steps.flatMap(\.calls).first(where: \.awaiting) : nil }
+    /// The user's verdict on this reply: "up", "down" or nothing.
+    var rating: String { metadata["feedback"]["rating"].string }
 }
 struct TraceStep: Codable, Hashable {
     var text: String
@@ -97,6 +99,8 @@ struct ToolCall: Codable, Hashable, Identifiable {
     }
     // run_command
     var command: String?; var reason: String?; var cwd: String?; var console: String?; var exit_code: Int?
+    /// What "以后都允许" would cover, when this kind of action can be allowed for good (engine/permits.py).
+    var permit: String?
     var isRunning: Bool { status == "running" }
     var awaiting: Bool { status == "awaiting" }
     var failed: Bool { status == "error" }
@@ -161,6 +165,10 @@ struct Snapshot: Codable, Equatable {
     /// Bookings made on the phone that are waiting to be put in a calendar.
     var calendar: [CalendarEntry]?
     var questions: [WaitingQuestion]?
+    /// What the engine wants the user to hear about: this app announces each once (Reach.swift).
+    var notices: [Notice]?
+    /// New events and reminders the assistant made, waiting for a device to add them.
+    var outbox: [OutboxEntry]?
     /// Where the user's notes are kept as Markdown on the Mac.
     var vault: String?
 }

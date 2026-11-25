@@ -13,7 +13,7 @@ uv pip install --python .venv/bin/python pytest-cov
 .venv/bin/python -m pytest --cov=engine
 ```
 
-2026-11-19 实测:167 项测试通过,`engine/` 语句覆盖率 81%。覆盖率低的主要是需要真实模型和 ComfyUI 的 `media.py`、`runtime.py`,它们由下面的验收脚本覆盖。
+2026-11-25 实测:308 项测试通过,`engine/` 语句覆盖率 85%。覆盖率低的主要是需要真实模型和 ComfyUI 的 `media.py`、`runtime.py`,它们由下面的验收脚本覆盖。
 
 ## 完整验收
 

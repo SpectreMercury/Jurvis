@@ -1,23 +1,28 @@
-"""Email, read-only.
+"""Email: read by default, sent only from accounts the user opened for sending, one approved message at a time.
 
 - Gmail and Outlook are connected by signing in (OAuth, read-only scopes: gmail.readonly, Mail.Read) and read through their APIs.
   No password is ever typed into Jurvis.
 - iCloud, QQ, 163 and 126 offer no sign-in for other apps: they are read over IMAP with an app-specific password or
   authorization code the user generates on the provider's site (never their account password).
 - Accounts and their tokens or codes live in data/security/mail.json, owner-only; the API never returns them.
-- Nothing is marked read, moved or sent (EXAMINE and BODY.PEEK over IMAP; read-only scopes over the APIs).
+- Nothing is marked read or moved (EXAMINE and BODY.PEEK over IMAP; read-only scopes over the APIs).
+- Sending is off for every account until the user switches it on for that account. Gmail and Outlook then ask for one more
+  permission at sign-in (gmail.send, Mail.Send); the others send over SMTP with the same app password. Every message is shown
+  to the user in full and goes out only after they approve it (engine/tools.py: mail_send); a sent message is not kept here.
 - What a model may read is decided per account: by default only the local model; an account can allow cloud models too.
 """
 import base64
 import email
 import imaplib
+import smtplib
 import json
 import re
 import ssl
 import time
 from datetime import datetime, timedelta
 from email.header import decode_header, make_header
-from email.utils import parseaddr, parsedate_to_datetime
+from email.message import EmailMessage
+from email.utils import formataddr, formatdate, getaddresses, make_msgid, parseaddr, parsedate_to_datetime
 from html import unescape
 
 import httpx
@@ -47,6 +52,11 @@ SCOPES = {"gmail": "https://www.googleapis.com/auth/gmail.readonly",
 GMAIL = "https://gmail.googleapis.com/gmail/v1/users/me"
 GRAPH = "https://graph.microsoft.com/v1.0/me"
 NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+SEND_SCOPES = {"gmail": "https://www.googleapis.com/auth/gmail.send", "outlook": "https://graph.microsoft.com/Mail.Send"}
+# Where the app-password accounts hand over outgoing mail: (host, port). 465 is TLS from the start, 587 upgrades.
+SMTP = {"icloud": ("smtp.mail.me.com", 587), "qq": ("smtp.qq.com", 465), "163": ("smtp.163.com", 465), "126": ("smtp.126.com", 465)}
+ADDRESS = re.compile(r"^[^@\s<>\"',;]+@[^@\s<>\"',;]+\.[^@\s<>\"',;]+$")
+RECIPIENTS = 10          # addresses one message may go to
 
 
 def text_of(value):
@@ -81,6 +91,7 @@ class Mail:
         self.path = settings.data / "security" / "mail.json"
         self.apps = apps
         self.connect = self._connect  # replaced in tests
+        self.deliver = self._deliver  # the SMTP hand-over; replaced in tests
         self.http = lambda: httpx.Client(timeout=20)  # replaced in tests
         self.ahttp = lambda: httpx.AsyncClient(timeout=20)
 
@@ -99,7 +110,7 @@ class Mail:
 
     def public(self):
         return [{"id": k, "kind": v.get("kind", "imap"), "name": PRESETS.get(v.get("kind"), PRESETS["imap"])["name"], "address": v["address"],
-                 "host": v.get("host", ""), "auth": "oauth" if v.get("oauth") else "password", "cloud": bool(v.get("cloud")),
+                 "host": v.get("host", ""), "auth": "oauth" if v.get("oauth") else "password", "cloud": bool(v.get("cloud")), "send": bool(v.get("send")),
                  "checked_at": v.get("checked_at"), "error": v.get("error")} for k, v in self.load().items()]
 
     def presets(self):
@@ -111,21 +122,28 @@ class Mail:
             out.append(item)
         return out
 
-    def share(self, ident, cloud):
-        """Opens an account to cloud models or keeps it for the local one."""
+    def share(self, ident, cloud=None, send=None):
+        """Opens an account to cloud models or keeps it for the local one; lets Jurvis send from it, or not."""
         accounts = self.load()
         if ident not in accounts:
             raise ValueError("没有这个邮箱")
-        accounts[ident]["cloud"] = bool(cloud)
+        account = accounts[ident]
+        if cloud is not None:
+            account["cloud"] = bool(cloud)
+        if send is not None:
+            if send and account.get("oauth") and not account.get("send_granted"):
+                raise ValueError("发送需要多一项授权：请在这个邮箱上点「允许发送」，重新登录一次")
+            account["send"] = bool(send)
         self.write(accounts)
         return self.public()
 
     # ---- signing in (Gmail, Outlook) ----
-    def start(self, kind, cloud=False):
+    def start(self, kind, cloud=False, send=False):
         if PRESETS.get(kind, {}).get("auth") != "oauth" or not self.apps:
             raise ValueError("这个邮箱不支持登录授权")
         extra = {"access_type": "offline", "prompt": "consent"} if kind == "gmail" else {"prompt": "select_account"}
-        return {"url": self.apps.start(PRESETS[kind]["app"], "mail", SCOPES[kind], {"kind": kind, "cloud": bool(cloud)}, **extra)}
+        scope = SCOPES[kind] + (" " + SEND_SCOPES[kind] if send else "")
+        return {"url": self.apps.start(PRESETS[kind]["app"], "mail", scope, {"kind": kind, "cloud": bool(cloud), "send": bool(send)}, **extra)}
 
     async def finish(self, provider, code, state):
         """The browser came back from Google or Microsoft: keep the tokens under the address they belong to."""
@@ -144,7 +162,7 @@ class Mail:
         if ident in accounts and accounts[ident]["address"] != address:
             ident = f"{ident}-{kind}"[:32]
         accounts[ident] = {"kind": kind, "address": address, "host": "", "oauth": {"provider": provider, **token},
-                           "cloud": bool(extra.get("cloud")), "checked_at": time.time()}
+                           "cloud": bool(extra.get("cloud")), "send": bool(extra.get("send")), "send_granted": bool(extra.get("send")), "checked_at": time.time()}
         self.write(accounts)
         return address
 
@@ -225,7 +243,8 @@ class Mail:
         host = (host or PRESETS.get(kind, PRESETS["imap"])["host"]).strip()
         if not host:
             raise ValueError("请填写 IMAP 服务器地址")
-        account = {"kind": kind, "address": address.strip(), "host": host, "password": password or old.get("password", ""), "cloud": bool(cloud)}
+        account = {"kind": kind, "address": address.strip(), "host": host, "password": password or old.get("password", ""), "cloud": bool(cloud),
+                   "send": bool(old.get("send"))}
         if not account["password"]:
             raise ValueError(f"请填写{PRESETS.get(kind, PRESETS['imap']).get('secret', '专用密码')}")
         with self.connect(account) as box:  # a wrong password is said now, not at the first question
@@ -322,3 +341,101 @@ class Mail:
         entry.pop("at"); entry.pop("unread")
         return {**entry, "to": text_of(message.get("To")), "text": plain(message, 8000),
                 "attachments": [text_of(p.get_filename()) for p in message.walk() if p.get_filename()][:10]}
+
+    # ---- sending ----
+    def senders(self, cloud):
+        """Accounts this model may send from: the user switched sending on, and the model may see the account at all."""
+        return {k: v for k, v in self.accounts(cloud).items() if v.get("send")}
+
+    def compose(self, ident, to, subject, body, reply_to="", cloud=False):
+        """The message as it will go out, and the account it goes from. Nothing is sent. Raises ValueError for what cannot be sent."""
+        senders = self.senders(cloud)
+        if not senders:
+            raise ValueError("没有可以发信的邮箱：需要你在 设置 → 邮件 里给一个邮箱打开「允许发送」")
+        original = None
+        if reply_to.strip():
+            account_id, _, ref = reply_to.strip().partition(":")
+            if account_id not in senders:
+                raise ValueError("这封邮件所在的邮箱没有打开「允许发送」，或不对当前模型开放")
+            ident = ident or account_id
+            original = email.message_from_bytes(self.raw(account_id, senders[account_id], ref))
+        ident = ident or (next(iter(senders)) if len(senders) == 1 else "")
+        if ident not in senders:
+            raise ValueError("要从哪个邮箱发？可以发信的有：" + "、".join(f"{k}（{v['address']}）" for k, v in senders.items()))
+        account = senders[ident]
+        to = [a for _, a in getaddresses([to if isinstance(to, str) else ",".join(to)]) if a]
+        if not to and original is not None:
+            to = [parseaddr(text_of(original.get("Reply-To") or original.get("From")))[1]]
+        to = list(dict.fromkeys(a.strip() for a in to if a.strip()))
+        if not to or len(to) > RECIPIENTS or not all(ADDRESS.match(a) for a in to):
+            raise ValueError(f"收件人需要是 1 到 {RECIPIENTS} 个完整的邮箱地址")
+        subject = " ".join(subject.split())[:300]
+        if not subject and original is not None:
+            subject = text_of(original.get("Subject"))
+            subject = subject if subject.lower().startswith("re:") or subject.startswith("回复") else "Re: " + subject
+        if not subject or not body.strip():
+            raise ValueError("主题和正文都不能为空")
+        message = EmailMessage()
+        message["From"] = formataddr((account.get("display") or "", account["address"]))
+        message["To"] = ", ".join(to)
+        message["Subject"] = subject
+        message["Date"] = formatdate(localtime=True)
+        message["Message-ID"] = make_msgid(domain=account["address"].rpartition("@")[2] or "localhost")
+        if original is not None and original.get("Message-ID"):
+            message["In-Reply-To"] = original["Message-ID"]
+            message["References"] = " ".join(filter(None, [" ".join((original.get("References") or "").split()), original["Message-ID"]]))[:2000]
+        message.set_content(body.strip() + "\n")
+        return ident, account, message, original is not None
+
+    def preview(self, ident, to, subject, body, reply_to="", cloud=False):
+        """What the user is shown before a message goes out: all of it."""
+        _, account, message, answering = self.compose(ident, to, subject, body, reply_to, cloud)
+        return (f"发邮件 · 从 {account['address']}\n收件人：{message['To']}\n主题：{message['Subject']}"
+                + ("\n（回复一封来信）" if answering else "") + "\n\n" + body.strip())
+
+    def send(self, ident, to, subject, body, reply_to="", cloud=False):
+        ident, account, message, _ = self.compose(ident, to, subject, body, reply_to, cloud)
+        raw = message.as_bytes()
+        try:
+            if account.get("oauth"):
+                with self.http() as http:
+                    auth = self.bearer(ident, account, http)
+                    if account["kind"] == "gmail":
+                        r = http.post(GMAIL + "/messages/send", json={"raw": base64.urlsafe_b64encode(raw).decode()}, headers=auth)
+                    else:  # Graph takes the message as MIME, base64 in a text body
+                        r = http.post(GRAPH + "/sendMail", content=base64.b64encode(raw), headers={**auth, "Content-Type": "text/plain"})
+                    if r.status_code in (401, 403):
+                        raise ValueError(f"{account['address']} 没有发送权限：请在 设置 → 邮件 里重新点一次「允许发送」")
+                    r.raise_for_status()
+            else:
+                self.deliver(account, message)
+        except (OSError, smtplib.SMTPException, httpx.HTTPError) as exc:
+            raise ValueError(f"没有发出去：{text_of(str(exc))[:200]}")
+        return {"sent": True, "from": account["address"], "to": message["To"], "subject": message["Subject"]}
+
+    def _deliver(self, account, message):
+        host, port = SMTP.get(account["kind"]) or (account.get("smtp") or account["host"].replace("imap.", "smtp.", 1), 465)
+        context = ssl.create_default_context()
+        if port == 465:
+            server = smtplib.SMTP_SSL(host, port, context=context, timeout=30)
+        else:
+            server = smtplib.SMTP(host, port, timeout=30)
+            server.starttls(context=context)
+        with server:
+            server.login(account["address"], account["password"])
+            server.send_message(message)
+
+    def raw(self, ident, account, ref):
+        """One message as it arrived, to answer it."""
+        if account.get("oauth"):
+            try:
+                return self.api_read(ident, account, ref)
+            except httpx.HTTPError as exc:
+                raise ValueError(f"读不到要回复的邮件：{exc}")
+        with self.connect(account) as box:
+            box.select("INBOX", readonly=True)
+            _, parts = box.uid("FETCH", ref, "(BODY.PEEK[HEADER])")
+        found = next((p[1] for p in parts if isinstance(p, tuple)), b"")
+        if not found:
+            raise ValueError("要回复的邮件已经不在收件箱里")
+        return found

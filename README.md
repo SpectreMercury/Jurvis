@@ -6,8 +6,8 @@
 
 <p align="center">
   <a href="pyproject.toml"><img alt="Version" src="https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2FSpectreMercury%2FJurvis%2Fmain%2Fpyproject.toml&query=%24.project.version&label=version&color=blue"></a>
-  <a href="docs/TESTING.md"><img alt="Tests" src="https://img.shields.io/badge/tests-167%20passed-brightgreen"></a>
-  <a href="docs/TESTING.md"><img alt="Coverage" src="https://img.shields.io/badge/coverage-81%25-green"></a>
+  <a href="docs/TESTING.md"><img alt="Tests" src="https://img.shields.io/badge/tests-308%20passed-brightgreen"></a>
+  <a href="docs/TESTING.md"><img alt="Coverage" src="https://img.shields.io/badge/coverage-85%25-green"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
   <img alt="Python" src="https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white">
   <img alt="Platforms" src="https://img.shields.io/badge/platform-macOS%20%7C%20iOS%20%7C%20Web-lightgrey">
@@ -24,7 +24,10 @@
 |---|---|
 | **Models** | Local vision-language model by default, fully offline. Optional cloud models through [Miavo](https://miavo.xyz) or any OpenAI-compatible service (OpenAI, DeepSeek, OpenRouter, Ollama, LM Studio). |
 | **Agent** | Plan mode, goal mode (autonomous, independently reviewed), parallel read-only subtasks, web search and page reading. |
-| **Memory** | Long-term facts extracted in the background, semantic or keyword retrieval, incognito conversations, summaries for long threads. |
+| **Memory** | Long-term facts extracted in the background, semantic or keyword retrieval, incognito conversations, summaries for long threads. Private memories stay with the local model. |
+| **Calendar and contacts** | The app on your iPhone or Mac sends a copy of your calendar, reminders and contacts to your Mac; the assistant checks for clashes before it books, looks a number up by name, and adds events and reminders. |
+| **Proactive** | Scheduled work, watches (mail from someone, an event about to begin, a budget nearly used up, a device changing state) and a check-in when your body data turns. Push reaches you when the app is closed. |
+| **Email** | Reads Gmail, Outlook, iCloud, QQ and 163. Once you open a mailbox for sending it can write and answer mail for you; you see every message in full before it goes. |
 | **Skills & MCP** | Standard `SKILL.md` skills, shared with `~/.claude/skills/`. MCP servers over stdio or HTTP. |
 | **Code** | Reads and searches an authorised project, proposes diffs you apply and can undo, runs pytest / Swift / npm scripts. |
 | **Shell & browser** | Runs commands and drives a separate browser profile on the Mac, with per-action confirmation. |
@@ -81,8 +84,9 @@ flowchart LR
 ## Security
 
 - **Direct connection.** Devices talk to the Mac over TLS with certificate pinning and one-time pairing invitations. There is no cloud relay.
-- **Local by default.** The local model sends nothing off the machine. A cloud model receives the conversation, attachments, retrieved memories and tool results.
-- **Confirmation first.** Shell commands, code changes, browser clicks and typing, non-read-only MCP tools, locks, doors and cameras, and every phone call all ask before acting.
+- **Local by default.** The local model sends nothing off the machine. A cloud model receives the conversation, attachments, retrieved memories and tool results, except memories marked private, the quiet companion conversations, and any mailbox, calendar or contacts you have not opened to cloud models.
+- **Confirmation first.** Shell commands, code changes, browser clicks and typing, non-read-only MCP tools, locks, doors and cameras, every phone call and every email all ask before acting. A narrow kind of action (clicks on one website, a command like `git status`) can be allowed from now on and taken back at any time; calls, email and locks always ask.
+- **Push goes through a third party.** Notifications for a closed app travel through the browser vendor's or Apple's push service: end-to-end encrypted for browsers, readable by Apple for the iPhone app. Without push switched on, nothing does.
 - **No sandbox.** Commands and project scripts run as your user on the Mac. The assistant never commits, pushes or publishes on its own.
 
 ## Testing
@@ -94,7 +98,7 @@ flowchart LR
 
 | Suite | Scope |
 |---|---|
-| `check.sh` | 167 unit tests, 81% statement coverage of `engine/` |
+| `check.sh` | 308 unit tests, 85% statement coverage of `engine/` |
 | `e2e.sh` | Full API flow with real models: chat, vision, images, video, short drama, coding, pairing |
 | `scenarios.sh` | 26 multi-turn conversations checked turn by turn |
 | `longtasks.sh` | Tasks longer than a single model output, judged by measured results |
@@ -112,6 +116,7 @@ The real-model suites show some run-to-run variance. Details are in [Testing](do
 | [Native apps](docs/APPS.md) | Build the Mac app, install on iPhone / iPad, TestFlight |
 | [Smart-home connectors](docs/CONNECTORS.md) | Supported brands and the token each one needs |
 | [Phone calls](docs/PHONE.md) | Bind a telephone provider, how a call runs, fixed rules and limits |
+| [Working while you are away](docs/REACH.md) | Push, standing permissions, calendar and contacts, watches, sending mail, private memories, backup, start at login |
 | [Creative extensions](docs/EXTENSIONS.md) | Optional video components, exact versions and checksums |
 | [Data and operations](docs/OPERATIONS.md) | Data layout, ports, backup, safety boundaries |
 | [Testing](docs/TESTING.md) | Unit tests, coverage and acceptance suites |

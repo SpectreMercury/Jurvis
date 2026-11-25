@@ -80,7 +80,9 @@ class Store:
             db.execute("CREATE INDEX IF NOT EXISTS messages_time ON messages(created_at)")
             columns = [r[1] for r in db.execute("PRAGMA table_info(memories)")]
             for name, kind in (("importance", "REAL NOT NULL DEFAULT 0.5"), ("durable", "INTEGER NOT NULL DEFAULT 1"), ("tags", "TEXT NOT NULL DEFAULT '[]'"),
-                               ("source", "TEXT NOT NULL DEFAULT 'manual'"), ("session_id", "TEXT"), ("embedding", "BLOB"), ("embed_model", "TEXT"), ("used_at", "REAL")):
+                               ("source", "TEXT NOT NULL DEFAULT 'manual'"), ("session_id", "TEXT"), ("embedding", "BLOB"), ("embed_model", "TEXT"), ("used_at", "REAL"),
+                               # A fact about the user's health, money, identity or intimate life: kept for the local model (engine/memory.py).
+                               ("private", "INTEGER NOT NULL DEFAULT 0")):
                 if name not in columns:
                     db.execute(f"ALTER TABLE memories ADD COLUMN {name} {kind}")
             db.execute("UPDATE schema_version SET version=2 WHERE version<2")

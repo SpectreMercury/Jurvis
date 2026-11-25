@@ -6,8 +6,8 @@
 
 <p align="center">
   <a href="pyproject.toml"><img alt="版本" src="https://img.shields.io/badge/dynamic/toml?url=https%3A%2F%2Fraw.githubusercontent.com%2FSpectreMercury%2FJurvis%2Fmain%2Fpyproject.toml&query=%24.project.version&label=version&color=blue"></a>
-  <a href="docs/TESTING.md"><img alt="测试" src="https://img.shields.io/badge/tests-167%20passed-brightgreen"></a>
-  <a href="docs/TESTING.md"><img alt="覆盖率" src="https://img.shields.io/badge/coverage-81%25-green"></a>
+  <a href="docs/TESTING.md"><img alt="测试" src="https://img.shields.io/badge/tests-308%20passed-brightgreen"></a>
+  <a href="docs/TESTING.md"><img alt="覆盖率" src="https://img.shields.io/badge/coverage-85%25-green"></a>
   <a href="LICENSE"><img alt="许可证" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
   <img alt="Python" src="https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white">
   <img alt="平台" src="https://img.shields.io/badge/platform-macOS%20%7C%20iOS%20%7C%20Web-lightgrey">
@@ -24,7 +24,10 @@
 |---|---|
 | **模型** | 默认使用本机视觉语言模型，完全离线。可选 [Miavo](https://miavo.xyz) 云端模型，或任何 OpenAI 兼容服务（OpenAI、DeepSeek、OpenRouter、Ollama、LM Studio）。 |
 | **Agent** | 计划模式、目标模式（自主执行并独立复核）、并行的只读子任务、联网搜索和网页读取。 |
-| **记忆** | 后台提取长期事实，语义或关键词检索，无痕对话，长对话自动摘要。 |
+| **记忆** | 后台提取长期事实，语义或关键词检索，无痕对话，长对话自动摘要。私密的记忆只给本机模型。 |
+| **日程与联系人** | iPhone 或 Mac 上的 App 把日历、提醒事项和通讯录的副本送到你的 Mac；助手订位、约时间前先看冲突，按名字查号码，新增日程和提醒。 |
+| **主动** | 定时任务、事件触发（来了某人的邮件、日程快开始、预算快用完、设备状态变了）和身体数据变差时的问候。App 关着时用推送找到你。 |
+| **邮件** | 读 Gmail、Outlook、iCloud、QQ、163；给某个邮箱打开发信后可以替你写信和回信，每一封都先给你看全文。 |
 | **技能与 MCP** | 通用的 `SKILL.md` 技能，与 `~/.claude/skills/` 共享。MCP 服务支持本地进程和 HTTP。 |
 | **代码** | 阅读和搜索已授权的项目，修改以差异卡片呈现，可应用可撤销，可运行 pytest / Swift / npm 脚本。 |
 | **命令与浏览器** | 在 Mac 上执行命令、操作独立用户目录的浏览器，每个动作先确认。 |
@@ -81,8 +84,9 @@ flowchart LR
 ## 安全
 
 - **直连。** 设备通过 TLS 直接连接 Mac，使用证书指纹固定和一次性配对邀请，没有云端中继。
-- **默认本地。** 本机模型不向外发送任何内容。选择云端模型时，对话、附件、取回的记忆和工具结果会发送给所选服务。
-- **先确认。** 执行命令、修改代码、浏览器点击和输入、非只读的 MCP 工具，门锁、门和摄像头，以及每一通电话，都先问你。
+- **默认本地。** 本机模型不向外发送任何内容。选择云端模型时，对话、附件、取回的记忆和工具结果会发送给所选服务；标为私密的记忆、陪伴对话的内容，以及没有对云端模型开放的邮箱、日历和通讯录除外。
+- **先确认。** 执行命令、修改代码、浏览器点击和输入、非只读的 MCP 工具，门锁、门和摄像头，每一通电话和每一封邮件，都先问你。窄的一类操作（一个网站上的点击、`git status` 这样的命令）可以选「以后都允许」，随时能收回；电话、邮件和门锁永远每次都问。
+- **推送经过第三方。** App 关着时的通知经浏览器厂商或 Apple 的推送服务转发：给浏览器的内容端到端加密，给 iPhone 的内容 Apple 能看到。不开推送就没有这一条。
 - **没有沙箱。** 命令和项目脚本以你的用户身份在 Mac 上运行。助手不会自动提交、推送或发布。
 
 ## 测试
@@ -94,7 +98,7 @@ flowchart LR
 
 | 套件 | 范围 |
 |---|---|
-| `check.sh` | 167 项单元测试，`engine/` 语句覆盖率 81% |
+| `check.sh` | 308 项单元测试，`engine/` 语句覆盖率 85% |
 | `e2e.sh` | 真实模型跑完整 API 流程：对话、读图、生图、视频、短剧、Coding、配对 |
 | `scenarios.sh` | 26 段多轮对话，逐轮检查 |
 | `longtasks.sh` | 超出单次模型输出的长任务，按实测结果判定 |
@@ -112,6 +116,7 @@ flowchart LR
 | [原生 App](docs/APPS.md) | 构建 Mac 版，装到 iPhone / iPad，TestFlight |
 | [智能家居连接器](docs/CONNECTORS.md) | 支持的品牌和各自需要的令牌 |
 | [打电话](docs/PHONE.md) | 绑定电话服务商、一通电话怎么打、固定的规矩和限制 |
+| [不在屏幕前也能办事](docs/REACH.md) | 推送通知、不用再问的操作、日历与通讯录、事件触发、发邮件、私密记忆、备份、开机自启 |
 | [创作扩展](docs/EXTENSIONS.md) | 可选的视频组件、准确版本和校验 |
 | [数据与运维](docs/OPERATIONS.md) | 数据目录、端口、备份、安全边界 |
 | [测试与验收](docs/TESTING.md) | 单元测试、覆盖率和验收脚本 |

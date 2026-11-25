@@ -6,6 +6,9 @@ import SwiftUI
 struct JurvisApp: App {
     @StateObject private var store = AppStore()
     @Environment(\.scenePhase) private var phase
+    #if os(iOS)
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var delegate  // the push token arrives there (Reach.swift)
+    #endif
     #if os(iOS) && canImport(HealthKit)
     init() { HealthKitSync.shared.watch() }  // a background launch for new Health data comes through here too
     #endif
@@ -14,6 +17,11 @@ struct JurvisApp: App {
             RootView().environmentObject(store).environmentObject(store.companion).tint(Color.ink)
                 .task { await store.start() }
                 .onOpenURL { url in Task { await store.pair(url.absoluteString) } }
+                // Coming to the front: a fresh copy of the calendar, reminders and contacts the user shares, and the push token if there is one.
+                .onChange(of: phase, initial: true) { _, now in
+                    guard now == .active else { return }
+                    Task { await PersonalSync.shared.sync(store: store); await PushRegistration.shared.register() }
+                }
                 #if os(iOS) && canImport(HealthKit)
                 // Apple Health is read on the phone and sent to the Mac whenever the app comes to the front (once the user turned it on).
                 .onChange(of: phase) { _, now in if now == .active { Task { await HealthKitSync.shared.syncIfDue(store: store) } } }
